@@ -313,10 +313,66 @@ fn window_info(x: i32, y: i32) -> (String, String) {
     }
 }
 
-/// On grab: take a higher-level context screenshot with the selected element boxed in
-/// blue, gather element + process + window + UIA-ancestry info, write a self-contained
-/// markdown doc (text + screenshot) to a per-grab folder, and copy a titled link to that
-/// doc — paste it to an AI and it reads the doc. Returns a short title for the HUD.
+/// Truncate to n chars with an ellipsis.
+fn short(s: &str, n: usize) -> String {
+    let t: String = s.chars().take(n).collect();
+    if s.chars().count() > n {
+        format!("{t}…")
+    } else {
+        t
+    }
+}
+
+/// Make a string safe + compact for a filename.
+fn sanitize(s: &str) -> String {
+    s.chars()
+        .map(|c| if "\\/:*?\"<>|\r\n\t".contains(c) { '_' } else { c })
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// A CJK-capable system font for caption rendering (Microsoft YaHei / SimSun / Segoe).
+fn load_font() -> Option<ab_glyph::FontVec> {
+    for p in [
+        "C:\\Windows\\Fonts\\msyh.ttc",
+        "C:\\Windows\\Fonts\\simsun.ttc",
+        "C:\\Windows\\Fonts\\msyh.ttf",
+        "C:\\Windows\\Fonts\\segoeui.ttf",
+    ] {
+        if let Ok(data) = std::fs::read(p) {
+            if let Ok(f) = ab_glyph::FontVec::try_from_vec_and_index(data, 0) {
+                return Some(f);
+            }
+        }
+    }
+    None
+}
+
+/// Stack the screenshot on top of a dark caption panel rendering the info lines.
+fn compose_caption(shot: &image::RgbaImage, lines: &[String]) -> image::RgbaImage {
+    use imageproc::drawing::draw_text_mut;
+    let (pad, lh) = (12i32, 26i32);
+    let scale = ab_glyph::PxScale::from(18.0);
+    let cap_h = pad * 2 + lh * lines.len() as i32;
+    let w = shot.width().max(640);
+    let h = shot.height() as i32 + cap_h;
+    let mut out = image::RgbaImage::from_pixel(w, h as u32, image::Rgba([20, 18, 16, 255]));
+    image::imageops::overlay(&mut out, shot, 0, 0);
+    if let Some(font) = load_font() {
+        let mut y = shot.height() as i32 + pad;
+        for ln in lines {
+            draw_text_mut(&mut out, image::Rgba([231, 233, 238, 255]), pad, y, scale, &font, ln);
+            y += lh;
+        }
+    }
+    out
+}
+
+/// On grab: build ONE self-contained PNG — a higher-level context screenshot with the
+/// selected element boxed in blue, plus a caption panel rendering the key info (element /
+/// process / window / UIA path / OCR). The filename says what was grabbed (kept short).
+/// Clipboard gets that short title + the path, so you hand the single image to an AI.
 fn grab(auto: &uiautomation::UIAutomation, x: i32, y: i32, e: &crate::uia::ElementInfo) -> Result<String, String> {
     let (rgba, sw, sh, mx, my, _scale) = crate::capture::capture_primary_raw()?;
     let full = image::RgbaImage::from_raw(sw, sh, rgba).ok_or("frame build failed")?;
@@ -335,15 +391,9 @@ fn grab(auto: &uiautomation::UIAutomation, x: i32, y: i32, e: &crate::uia::Eleme
     // blue box around the exact element within the context crop
     draw_rect(&mut crop, el - mx - rl, et - my - rt, er - mx - rl, eb - my - rt, [74, 163, 255, 255], 3);
 
-    let dir = std::path::Path::new(&std::env::var("USERPROFILE").unwrap_or_default())
-        .join("Pictures")
-        .join("waiela")
-        .join(format!("grab-{}", now_nanos()));
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    std::fs::write(dir.join("shot.png"), encode_png(&crop)?).map_err(|e| e.to_string())?;
-
+    // gather context
     let (proc_name, proc_path) = process_info(e.pid);
-    let (win_title, win_class) = window_info(x, y);
+    let (win_title, _win_class) = window_info(x, y);
     let chain = crate::uia::ancestry(auto, x, y);
 
     // OCR the exact element region when it exposes no readable name/value
@@ -361,58 +411,50 @@ fn grab(auto: &uiautomation::UIAutomation, x: i32, y: i32, e: &crate::uia::Eleme
         }
     }
 
-    let label = if e.name.trim().is_empty() {
-        e.control_type.clone()
-    } else {
-        format!("{}「{}」", e.control_type, e.name.trim())
-    };
-    let title = format!("{label} · {}", if proc_name.is_empty() { "?" } else { &proc_name });
-
-    let mut md = String::new();
-    md.push_str(&format!("# 选中：{title}\n\n"));
-    md.push_str("> 蓝框内即用户选中的元素；下面是它的结构化信息。\n\n");
-    md.push_str("![选区截图](shot.png)\n\n");
-    md.push_str("## 元素\n");
-    md.push_str(&format!("- 类型：{}\n", e.control_type));
-    md.push_str(&format!("- 名称：{}\n", if e.name.trim().is_empty() { "（无）" } else { e.name.trim() }));
+    // compact caption lines (truncated so nothing runs long)
+    let nm = e.name.trim();
+    let path_str: String = chain
+        .iter()
+        .map(|(c, n)| if n.trim().is_empty() { c.clone() } else { format!("{c}「{}」", short(n.trim(), 10)) })
+        .collect::<Vec<_>>()
+        .join(" ▸ ");
+    let mut lines: Vec<String> = Vec::new();
+    lines.push(format!("[{}] {}", e.control_type, if nm.is_empty() { "(无名)".to_string() } else { short(nm, 40) }));
     if !e.value.trim().is_empty() {
-        md.push_str(&format!("- 值：{}\n", e.value.trim()));
+        lines.push(format!("值: {}", short(e.value.trim(), 52)));
     }
-    if !e.automation_id.trim().is_empty() {
-        md.push_str(&format!("- AutomationId：{}\n", e.automation_id.trim()));
+    lines.push(format!("进程: {} (pid {})", if proc_name.is_empty() { "?".to_string() } else { proc_name.clone() }, e.pid));
+    if !win_title.is_empty() {
+        lines.push(format!("窗口: {}", short(&win_title, 46)));
     }
-    if !e.class_name.trim().is_empty() {
-        md.push_str(&format!("- 类名：{}\n", e.class_name.trim()));
+    if !path_str.is_empty() {
+        lines.push(format!("路径: {}", short(&path_str, 72)));
     }
-    md.push_str(&format!("- 屏幕范围：x={el} y={et} {ew}×{eh}\n"));
-    md.push_str("\n## 进程\n");
-    md.push_str(&format!("- pid：{}\n", e.pid));
-    md.push_str(&format!("- 名称：{}\n", if proc_name.is_empty() { "（未知）" } else { &proc_name }));
     if !proc_path.is_empty() {
-        md.push_str(&format!("- 路径：{}\n", proc_path));
-    }
-    md.push_str("\n## 窗口\n");
-    md.push_str(&format!("- 标题：{}\n", if win_title.is_empty() { "（无）" } else { &win_title }));
-    md.push_str(&format!("- 类名：{}\n", win_class));
-    if !chain.is_empty() {
-        md.push_str("\n## UIA 路径（外层窗口 → 选中元素）\n");
-        for (i, (ct, nm)) in chain.iter().enumerate() {
-            let indent = "  ".repeat(i);
-            let nms = if nm.trim().is_empty() { String::new() } else { format!("「{}」", nm.trim()) };
-            md.push_str(&format!("{indent}- {ct}{nms}\n"));
-        }
+        lines.push(format!("exe: {}", short(&proc_path, 64)));
     }
     if !ocr_text.is_empty() {
-        md.push_str(&format!("\n## OCR（元素区域文字）\n```\n{ocr_text}\n```\n"));
+        lines.push(format!("OCR: {}", short(&ocr_text.replace('\n', " "), 72)));
     }
-    let md_path = dir.join("grab.md");
-    std::fs::write(&md_path, md).map_err(|e| e.to_string())?;
 
-    let clip = format!("选中「{title}」——详情文档（含选区截图，AI 可直接读）：\n{}", md_path.display());
+    // one captioned PNG, descriptively + concisely named
+    let out = compose_caption(&crop, &lines);
+    let name_tag = if nm.is_empty() { String::new() } else { format!("-{}", sanitize(&short(nm, 10))) };
+    let proc_tag = if proc_name.is_empty() { String::new() } else { format!("-{}", sanitize(proc_name.trim_end_matches(".exe"))) };
+    let fname = format!("{}{}{}-{:06}.png", sanitize(&e.control_type), name_tag, proc_tag, (now_nanos() % 1_000_000) as u32);
+    let dir = std::path::Path::new(&std::env::var("USERPROFILE").unwrap_or_default())
+        .join("Pictures")
+        .join("waiela");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(&fname);
+    std::fs::write(&path, encode_png(&out)?).map_err(|e| e.to_string())?;
+
+    let label = format!("{} {}", e.control_type, if nm.is_empty() { "(无名)".to_string() } else { short(nm, 16) });
+    let clip = format!("选中 {label}（图含全部信息，AI 可直接读）：\n{}", path.display());
     if let Ok(mut cb) = arboard::Clipboard::new() {
         let _ = cb.set_text(clip);
     }
-    Ok(title)
+    Ok(label)
 }
 
 /// Enter live-inspect: highlight + HUD follow the cursor, click grabs, Esc exits.
