@@ -1,0 +1,29 @@
+[package]
+name = "poof"
+version = "0.1.0"
+description = "Poof, There It Is — summoned overlay shell for omnidashboard-os"
+authors = ["you"]
+edition = "2021"
+
+[lib]
+name = "poof_lib"
+# desktop-only: rlib only. (cdylib/staticlib are for mobile and overflow the
+# mingw/gnu linker's export-ordinal limit — "export ordinal too large".)
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = [
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_System_SystemInformation",
+  "Win32_System_LibraryLoader",
+] }

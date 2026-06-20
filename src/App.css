@@ -1,0 +1,339 @@
+* {
+  box-sizing: border-box;
+}
+
+:root {
+  font-family: "Segoe UI", Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  color: #e7e7ea;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+}
+
+.overlay {
+  height: 100vh;
+  width: 100vw;
+  display: flex;
+  padding: 10px;
+}
+
+.panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: rgba(18, 19, 24, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(18px);
+  overflow: hidden;
+}
+
+/* topbar */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  user-select: none;
+}
+.brand {
+  font-weight: 800;
+  letter-spacing: 0.4px;
+}
+.cmd-trigger {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: #cfd2da;
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.cmd-trigger kbd {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 11px;
+}
+.hint {
+  margin-left: auto;
+  font-size: 12px;
+  color: #7f828d;
+}
+
+/* layout */
+.layout {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+.sidebar {
+  width: 132px;
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  color: #b9bcc6;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.nav-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.nav-item.on {
+  background: rgba(99, 102, 241, 0.22);
+  color: #fff;
+}
+.nav-icon {
+  font-size: 15px;
+}
+.stage {
+  flex: 1;
+  padding: 16px;
+  overflow: auto;
+  min-width: 0;
+}
+
+.muted {
+  color: #80838d;
+}
+.error {
+  color: #ff8087;
+  white-space: pre-wrap;
+}
+
+/* project cards */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+.card {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+.card-title {
+  font-weight: 700;
+}
+.card-meta {
+  display: flex;
+  gap: 6px;
+  margin: 6px 0;
+  flex-wrap: wrap;
+}
+.chip {
+  font-size: 11px;
+  background: rgba(99, 102, 241, 0.25);
+  border-radius: 6px;
+  padding: 1px 7px;
+}
+.chip.ghost {
+  background: rgba(255, 255, 255, 0.08);
+}
+.card-desc {
+  font-size: 12px;
+  color: #9aa0ad;
+  line-height: 1.5;
+}
+
+/* find */
+.find-input,
+.talk-input textarea {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #fff;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 14px;
+  outline: none;
+}
+.find-results {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.find-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 8px;
+}
+.find-row:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.find-name {
+  font-weight: 600;
+}
+.find-desc {
+  color: #888c96;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* talk */
+.talk-input {
+  display: flex;
+  gap: 8px;
+}
+.talk-input textarea {
+  height: 64px;
+  resize: none;
+}
+.talk-input button,
+.dispatch button {
+  background: #6366f1;
+  border: none;
+  color: #fff;
+  border-radius: 8px;
+  padding: 0 16px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.talk-answer {
+  margin-top: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  padding: 12px;
+}
+.answer-body {
+  white-space: pre-wrap;
+  line-height: 1.55;
+  max-height: 280px;
+  overflow: auto;
+}
+.dispatch {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+}
+.dispatch button {
+  padding: 5px 12px;
+  font-size: 12px;
+}
+
+/* review */
+.review-h {
+  font-weight: 700;
+  margin: 4px 0 8px;
+  color: #cfd2da;
+}
+.review-item {
+  padding: 7px 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* note */
+.note-placeholder {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 10px;
+}
+.big2 {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+/* tldraw canvas */
+.canvas-wrap {
+  position: relative;
+  height: 470px;
+  width: 100%;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* command palette */
+.palette-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 14vh;
+}
+.palette {
+  width: 540px;
+  max-width: 86vw;
+  background: rgba(26, 27, 33, 0.99);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+}
+.palette [cmdk-input] {
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  color: #fff;
+  padding: 14px 16px;
+  font-size: 15px;
+  outline: none;
+}
+.palette [cmdk-list] {
+  max-height: 320px;
+  overflow: auto;
+  padding: 6px;
+}
+.palette [cmdk-group-heading] {
+  font-size: 11px;
+  color: #777b85;
+  padding: 8px 8px 4px;
+}
+.palette [cmdk-item] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.palette [cmdk-item][data-selected="true"] {
+  background: rgba(99, 102, 241, 0.28);
+}
+.palette [cmdk-empty] {
+  padding: 16px;
+  color: #80838d;
+  font-size: 13px;
+}
+.palette code {
+  background: rgba(255, 255, 255, 0.1);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
