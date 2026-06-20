@@ -11,6 +11,7 @@ import {
   Code,
   CornerDownLeft,
   Menu,
+  Loader2,
 } from "lucide-react";
 import {
   search,
@@ -58,6 +59,7 @@ export function SearchBar({
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [sel, setSel] = useState(0);
   const [composing, setComposing] = useState(false);
+  const [searching, setSearching] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number; hit: SearchHit } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const qRef = useRef("");
@@ -89,10 +91,12 @@ export function SearchBar({
       return;
     }
     let alive = true;
+    setSearching(true);
     const t = setTimeout(() => {
       search(q, 40)
         .then((r) => alive && (setHits(r), setSel(0)))
-        .catch(() => alive && setHits([]));
+        .catch(() => alive && setHits([]))
+        .finally(() => alive && setSearching(false));
     }, 110);
     return () => {
       alive = false;
@@ -176,6 +180,7 @@ export function SearchBar({
         placeholder="检索文件 · 文件夹 · 应用…   Ctrl+Enter 问 AI · ↑↓ 历史"
         spellCheck={false}
       />
+      {searching && <Loader2 size={16} className="spin search-spin" />}
       {showResults && (
         <div className="search-results">
           {items.map((it, i) =>

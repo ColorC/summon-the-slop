@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Plus, X } from "lucide-react";
 import { TerminalView } from "./Terminal";
 import { runShell } from "../lib";
+import { drainChatIntents, CHAT_EVENT } from "../chatIntents";
 
 interface Tab {
   id: string;
@@ -23,6 +24,7 @@ function cmdFor(provider: string): { cmd?: string; title: string } {
 export function TerminalBar() {
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [active, setActive] = useState("");
+  const handled = useRef<Set<number>>(new Set());
 
   function addTab(title: string, cmd?: string, initialInput?: string) {
     const id = "term-" + ++counter;
@@ -35,13 +37,17 @@ export function TerminalBar() {
   }
 
   useEffect(() => {
-    const onNew = (e: Event) => {
-      const d = (e as CustomEvent).detail || {};
-      const { cmd, title } = cmdFor(d.provider || "claude");
-      addTab(title, cmd, d.query || undefined);
+    const consume = () => {
+      for (const i of drainChatIntents()) {
+        if (handled.current.has(i.id)) continue;
+        handled.current.add(i.id);
+        const { cmd, title } = cmdFor(i.provider || "claude");
+        addTab(title, cmd, i.query || undefined);
+      }
     };
-    window.addEventListener("poof-new-chat", onNew as EventListener);
-    return () => window.removeEventListener("poof-new-chat", onNew as EventListener);
+    consume(); // drain anything queued before this bar mounted
+    window.addEventListener(CHAT_EVENT, consume);
+    return () => window.removeEventListener(CHAT_EVENT, consume);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

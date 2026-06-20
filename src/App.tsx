@@ -9,161 +9,167 @@ import {
   Bell,
   Pin,
   PinOff,
-  ChevronLeft,
-  X,
 } from "lucide-react";
 import { SearchBar } from "./regions/SearchBar";
 import { Notifications } from "./regions/Notifications";
 import { TerminalBar } from "./regions/TerminalBar";
 import { NoteSurface, ProjectSurface, ReviewSurface } from "./surfaces";
+import { PanelFrame, type PanelKind } from "./panels";
+import { pushChatIntent } from "./chatIntents";
 import "./App.css";
 
-type Panel = "home" | "canvas" | "project" | "review";
+const PIN_KEY = "poof-panels-pinned";
+function loadPinned(): PanelKind[] {
+  try {
+    return JSON.parse(localStorage.getItem(PIN_KEY) || "[]");
+  } catch {
+    return [];
+  }
+}
 
-/** The whole experience lives INSIDE the summoned overlay (no separate OS windows):
- *  search pill (top) + action bar (bottom); a center panel for canvas/project/review;
- *  a right side panel for the AI terminal ("侧边对话"). Transparent, no dim until a
- *  panel/chat opens (then the rest dims; Esc steps back). */
+/** The overlay: a top search pill + a bottom action bar (always above everything), and a
+ *  middle "stage" hosting draggable/resizable panels (chat / project / review / notes).
+ *  Panels default-dock to the right, can be floated, remember geometry, and can be pinned
+ *  to survive summons. No dimming — panels are opaque. The window is fixed-fullscreen. */
 export default function App() {
-  const [panel, setPanel] = useState<Panel>("home");
-  const [chatOpen, setChatOpen] = useState(false);
+  const [pinned, setPinned] = useState<PanelKind[]>(loadPinned);
+  const [open, setOpen] = useState<PanelKind[]>(() => loadPinned());
   const [notifOpen, setNotifOpen] = useState(false);
-  const [pinned, setPinned] = useState(true);
+  const [onTop, setOnTop] = useState(true);
+
+  useEffect(() => {
+    localStorage.setItem(PIN_KEY, JSON.stringify(pinned));
+  }, [pinned]);
+
+  const isOpen = (k: PanelKind) => open.includes(k);
+  const openPanel = useCallback(
+    (k: PanelKind) => setOpen((o) => (o.includes(k) ? o : [...o, k])),
+    []
+  );
+  const closePanel = useCallback((k: PanelKind) => setOpen((o) => o.filter((x) => x !== k)), []);
+  const togglePanel = (k: PanelKind) => (isOpen(k) ? closePanel(k) : openPanel(k));
+  const togglePin = (k: PanelKind) =>
+    setPinned((p) => (p.includes(k) ? p.filter((x) => x !== k) : [...p, k]));
 
   const hide = useCallback(() => {
     getCurrentWindow().hide();
     setNotifOpen(false);
-    setPanel("home");
-    setChatOpen(false);
+    setOpen(loadPinned()); // keep only pinned panels across summons
   }, []);
-  const togglePin = useCallback(async () => {
-    const v = !pinned;
+
+  const toggleOnTop = useCallback(async () => {
+    const v = !onTop;
     await getCurrentWindow().setAlwaysOnTop(v);
-    setPinned(v);
-  }, [pinned]);
+    setOnTop(v);
+  }, [onTop]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        if (notifOpen) setNotifOpen(false);
-        else if (chatOpen) setChatOpen(false);
-        else if (panel !== "home") setPanel("home");
-        else hide();
-      } else if (e.key === "ArrowRight" && panel === "home" && !chatOpen && !notifOpen) {
-        setPanel("canvas");
-      } else if (e.key === "ArrowLeft" && panel === "canvas") {
-        setPanel("home");
-      }
+      if (e.key !== "Escape") return;
+      if (notifOpen) setNotifOpen(false);
+      else if (open.some((k) => !pinned.includes(k))) setOpen(pinned); // close non-pinned first
+      else hide();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [notifOpen, chatOpen, panel, hide]);
+  }, [notifOpen, open, pinned, hide]);
 
   function newChat(provider: string, query?: string) {
-    setChatOpen(true);
-    window.dispatchEvent(new CustomEvent("poof-new-chat", { detail: { provider, query } }));
+    openPanel("chat");
+    pushChatIntent(provider, query);
   }
-  function askAI(query: string) {
-    newChat("claude", query || undefined);
-  }
-  function onLaunched() {
-    hide();
-  }
+  const askAI = (query: string) => newChat("claude", query || undefined);
+  const onLaunched = () => hide();
 
   function onBackdrop(e: React.MouseEvent) {
     if (e.target !== e.currentTarget) return;
     if (notifOpen) setNotifOpen(false);
-    else if (chatOpen) setChatOpen(false);
-    else if (panel !== "home") setPanel("home");
+    else if (open.some((k) => !pinned.includes(k))) setOpen(pinned);
     else hide();
   }
 
-  const dim = chatOpen || panel !== "home";
+  function panelContent(k: PanelKind) {
+    if (k === "chat") return <TerminalBar />;
+    if (k === "notes") return <NoteSurface />;
+    return (
+      <div className="pf-scroll">{k === "project" ? <ProjectSurface /> : <ReviewSurface />}</div>
+    );
+  }
 
   return (
-    <div className={"pf-root" + (dim ? " dim" : "")} onMouseDown={onBackdrop}>
-      {/* center: canvas (fullscreen, transparent) */}
-      {panel === "canvas" && (
-        <div className="pf-center canvas" onMouseDown={(e) => e.stopPropagation()}>
-          <button className="pf-back" onClick={() => setPanel("home")}>
-            <ChevronLeft size={16} /> 返回 (←)
+    <div className="pf-root" onMouseDown={onBackdrop}>
+      {/* middle stage — draggable panels live here, between the two bars */}
+      <div className="pf-stage" onMouseDown={(e) => e.stopPropagation()}>
+        {open.map((k) => (
+          <PanelFrame
+            key={k}
+            kind={k}
+            pinned={pinned.includes(k)}
+            onPin={() => togglePin(k)}
+            onClose={() => closePanel(k)}
+          >
+            {panelContent(k)}
+          </PanelFrame>
+        ))}
+      </div>
+
+      {/* top search */}
+      <div className="pf-top" onMouseDown={(e) => e.stopPropagation()}>
+        <SearchBar onAskAI={askAI} onLaunched={onLaunched} />
+      </div>
+
+      {/* bottom action bar */}
+      <div className="pf-bottom" onMouseDown={(e) => e.stopPropagation()}>
+        {notifOpen && (
+          <div className="pf-notif">
+            <Notifications />
+          </div>
+        )}
+        <div className="pf-bar">
+          <button className="pf-btn accent" onClick={() => askAI("")} title="新对话 (Claude/Codex CLI)">
+            <MessageSquarePlus size={17} /> 新对话
           </button>
-          <NoteSurface />
-        </div>
-      )}
-      {/* center: project / review (card) */}
-      {(panel === "project" || panel === "review") && (
-        <div className="pf-center card" onMouseDown={(e) => e.stopPropagation()}>
-          <div className="pf-card-head">
-            <span>{panel === "project" ? "项目" : "审阅台"}</span>
-            <button className="pf-icon-btn" onClick={() => setPanel("home")}>
-              <X size={16} />
-            </button>
-          </div>
-          <div className="pf-card-body">
-            {panel === "project" ? <ProjectSurface /> : <ReviewSurface />}
-          </div>
-        </div>
-      )}
-
-      {/* top search + bottom bar (hidden in canvas mode) */}
-      {panel !== "canvas" && (
-        <>
-          <div className="pf-top" onMouseDown={(e) => e.stopPropagation()}>
-            <SearchBar onAskAI={askAI} onLaunched={onLaunched} />
-          </div>
-          <div className="pf-bottom" onMouseDown={(e) => e.stopPropagation()}>
-            {notifOpen && (
-              <div className="pf-notif">
-                <Notifications />
-              </div>
-            )}
-            <div className="pf-bar">
-              <button className="pf-btn accent" onClick={() => askAI("")} title="新对话 (Claude/Codex CLI)">
-                <MessageSquarePlus size={17} /> 新对话
-              </button>
-              <span className="pf-sep" />
-              <button className="pf-btn" onClick={() => setPanel("canvas")} title="笔记画布 (→)">
-                <PenLine size={17} />
-              </button>
-              <button className="pf-btn" onClick={() => setPanel("project")} title="项目">
-                <FolderKanban size={17} />
-              </button>
-              <button className="pf-btn" onClick={() => setPanel("review")} title="审阅台">
-                <CheckSquare size={17} />
-              </button>
-              <button
-                className={"pf-btn" + (chatOpen ? " on" : "")}
-                onClick={() => setChatOpen((o) => !o)}
-                title="终端 / 对话"
-              >
-                <SquareTerminal size={17} />
-              </button>
-              <span className="pf-sep" />
-              <button
-                className={"pf-btn" + (notifOpen ? " on" : "")}
-                onClick={() => setNotifOpen((o) => !o)}
-                title="通知"
-              >
-                <Bell size={17} />
-              </button>
-              <button className="pf-btn" onClick={togglePin} title="钉屏">
-                {pinned ? <Pin size={17} /> : <PinOff size={17} />}
-              </button>
-            </div>
-          </div>
-        </>
-      )}
-
-      {/* right side panel: AI terminal — always mounted to keep PTY sessions alive */}
-      <div className={"pf-chat" + (chatOpen ? " open" : "")} onMouseDown={(e) => e.stopPropagation()}>
-        <div className="pf-chat-head">
-          <span>对话 / 终端</span>
-          <button className="pf-icon-btn" onClick={() => setChatOpen(false)}>
-            <X size={16} />
+          <span className="pf-sep" />
+          <button
+            className={"pf-btn" + (isOpen("notes") ? " on" : "")}
+            onClick={() => togglePanel("notes")}
+            title="笔记空间"
+          >
+            <PenLine size={17} />
+          </button>
+          <button
+            className={"pf-btn" + (isOpen("project") ? " on" : "")}
+            onClick={() => togglePanel("project")}
+            title="项目"
+          >
+            <FolderKanban size={17} />
+          </button>
+          <button
+            className={"pf-btn" + (isOpen("review") ? " on" : "")}
+            onClick={() => togglePanel("review")}
+            title="审阅台"
+          >
+            <CheckSquare size={17} />
+          </button>
+          <button
+            className={"pf-btn" + (isOpen("chat") ? " on" : "")}
+            onClick={() => togglePanel("chat")}
+            title="终端 / 对话"
+          >
+            <SquareTerminal size={17} />
+          </button>
+          <span className="pf-sep" />
+          <button
+            className={"pf-btn" + (notifOpen ? " on" : "")}
+            onClick={() => setNotifOpen((o) => !o)}
+            title="通知"
+          >
+            <Bell size={17} />
+          </button>
+          <button className="pf-btn" onClick={toggleOnTop} title="钉屏（始终置顶）">
+            {onTop ? <Pin size={17} /> : <PinOff size={17} />}
           </button>
         </div>
-        <TerminalBar />
       </div>
     </div>
   );
