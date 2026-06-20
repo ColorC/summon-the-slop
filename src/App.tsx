@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
 import {
   MessageSquarePlus,
   PenLine,
@@ -7,6 +8,7 @@ import {
   CheckSquare,
   SquareTerminal,
   Crosshair,
+  ScanEye,
   Bell,
   Pin,
   PinOff,
@@ -77,6 +79,13 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [notifOpen, open, pinned, hide]);
+
+  // 活体洞察：hide poof (Rust side) so the real desktop is exposed, then the native
+  // highlight + element_from_point loop takes over until Esc.
+  const startInspect = useCallback(() => {
+    invoke("start_inspect").catch(() => {});
+    hide();
+  }, [hide]);
 
   function newChat(provider: string, query?: string) {
     openPanel("chat");
@@ -177,6 +186,10 @@ export default function App() {
             title="圈选 / 检视元素"
           >
             <Crosshair size={17} />
+          </button>
+          <span className="pf-sep" />
+          <button className="pf-btn" onClick={startInspect} title="活体洞察（系统级 · 指哪看哪 · 点击抓取元素+OCR→剪贴板 · Esc 退出）">
+            <ScanEye size={17} />
           </button>
           <span className="pf-sep" />
           <button

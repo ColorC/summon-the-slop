@@ -2,6 +2,15 @@
 mod pty;
 mod search;
 mod snapshot;
+// live-inspector 洞察 capability (ported from waiela)
+#[cfg(windows)]
+mod capture;
+#[cfg(windows)]
+mod inspect;
+#[cfg(windows)]
+mod ocr;
+#[cfg(windows)]
+mod uia;
 
 use std::io::Write;
 #[cfg(windows)]
@@ -251,6 +260,24 @@ fn shell_props(path: String) -> Result<(), String> {
     Err("windows only".into())
 }
 
+/// Enter live-inspect (the 抓取/洞察 axis): hide poof's overlay so the real desktop is
+/// exposed, then run the bare-Win32 highlight + element_from_point loop. Click grabs the
+/// element (region image + structured text → clipboard, OCR fallback); Esc exits.
+#[cfg(windows)]
+#[tauri::command]
+fn start_inspect(window: tauri::WebviewWindow) -> Result<(), String> {
+    let _ = window.hide();
+    if !inspect::is_running() {
+        std::thread::spawn(|| inspect::run_inspect(std::process::id() as i32));
+    }
+    Ok(())
+}
+#[cfg(not(windows))]
+#[tauri::command]
+fn start_inspect() -> Result<(), String> {
+    Err("windows only".into())
+}
+
 // pending AI chats (provider, optional query) handed to the terminal window
 static CHAT_INTENTS: std::sync::Mutex<Vec<(String, Option<String>)>> =
     std::sync::Mutex::new(Vec::new());
@@ -338,6 +365,7 @@ pub fn run() {
             new_chat,
             take_chat_intents,
             shell_props,
+            start_inspect,
             pty::pty_spawn,
             pty::pty_write,
             pty::pty_resize,
