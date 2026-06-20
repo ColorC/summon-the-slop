@@ -1,12 +1,31 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Plus, Search, X, Maximize2, Minimize2, Trash2, Hash } from "lucide-react";
+import {
+  Loader2,
+  Plus,
+  Search,
+  X,
+  Maximize2,
+  Minimize2,
+  Trash2,
+  Hash,
+  PanelLeft,
+} from "lucide-react";
 import "@toeverything/theme/style.css";
 import { Schema, DocCollection, type Doc } from "@blocksuite/store";
 import { AffineSchemas } from "@blocksuite/blocks";
 import { AffineEditorContainer } from "@blocksuite/presets";
 import { IndexedDBDocSource } from "@blocksuite/sync";
+import { OverrideThemeExtension } from "@blocksuite/affine-shared/services";
+import { signal } from "@preact/signals-core";
 import { effects as blocksEffects } from "@blocksuite/blocks/effects";
 import { effects as presetsEffects } from "@blocksuite/presets/effects";
+
+// force dark theme on the editor (toolbar + default elements = 深底浅字)
+const DARK = signal("dark" as any);
+const DARK_THEME = OverrideThemeExtension({
+  getAppTheme: () => DARK,
+  getEdgelessTheme: () => DARK,
+});
 
 let registered = false;
 function registerEffects() {
@@ -70,6 +89,7 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
   const [activeId, setActiveId] = useState<string>("");
   const [q, setQ] = useState("");
   const [full, setFull] = useState(false);
+  const [libOpen, setLibOpen] = useState(false);
   const [tags, setTags] = useState<TagMap>(loadTags);
   const [ready, setReady] = useState(false);
   const seeded = useRef(false);
@@ -113,6 +133,8 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
     if (!doc) return;
     doc.load();
     const editor = new AffineEditorContainer();
+    editor.edgelessSpecs = [...editor.edgelessSpecs, DARK_THEME];
+    editor.pageSpecs = [...editor.pageSpecs, DARK_THEME];
     editor.doc = doc;
     editor.mode = "edgeless" as any;
     host.current.innerHTML = "";
@@ -157,73 +179,96 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
       )
     : metas;
 
+  const activeTitle = metas.find((m) => m.id === activeId)?.title || "未命名笔记";
+
   return (
     <div className={"notes-ws" + (full ? " full" : "")}>
-      {/* left rail: library — browse / search / tags */}
-      <div className="notes-rail">
-        <div className="notes-rail-top">
-          <button className="notes-new" onClick={createNote}>
-            <Plus size={15} /> 新建笔记
-          </button>
-          <div className="notes-search">
-            <Search size={14} />
-            <input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="搜索标题 / 标签…"
-              spellCheck={false}
-            />
-          </div>
-        </div>
-        <div className="notes-list">
-          {!ready && (
-            <div className="notes-empty">
-              <Loader2 size={16} className="spin" /> 载入笔记库…
-            </div>
-          )}
-          {ready && filtered.length === 0 && <div className="notes-empty">无笔记</div>}
-          {filtered.map((m) => (
-            <div
-              key={m.id}
-              className={"notes-item" + (m.id === activeId ? " on" : "")}
-              onClick={() => setActiveId(m.id)}
-            >
-              <div className="notes-item-title">{m.title || "未命名笔记"}</div>
-              <div className="notes-item-tags">
-                {(tags[m.id] || []).map((t) => (
-                  <span className="notes-tag" key={t}>
-                    {t}
-                  </span>
-                ))}
-              </div>
-              <div className="notes-item-acts">
-                <button title="加标签" onClick={(e) => { e.stopPropagation(); addTag(m.id); }}>
-                  <Hash size={13} />
-                </button>
-                <button title="删除" onClick={(e) => { e.stopPropagation(); removeNote(m.id); }}>
-                  <Trash2 size={13} />
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
+      {/* canvas fills the whole workspace (maximized) */}
+      <div className="notespace" ref={host} />
+
+      {/* floating top bar (does not eat canvas space) */}
+      <div className="notes-bar">
+        <button
+          className={"notes-bar-btn" + (libOpen ? " on" : "")}
+          title="笔记库"
+          onClick={() => setLibOpen((o) => !o)}
+        >
+          <PanelLeft size={15} />
+        </button>
+        <button className="notes-bar-btn" title="新建笔记" onClick={createNote}>
+          <Plus size={15} />
+        </button>
+        <span className="notes-bar-title">{activeTitle}</span>
+        <span className="notes-bar-spacer" />
+        <button
+          className="notes-bar-btn"
+          title={full ? "退出全屏" : "无边全屏"}
+          onClick={() => setFull((f) => !f)}
+        >
+          {full ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+        </button>
+        <button className="notes-bar-btn" title="关闭" onClick={onClose}>
+          <X size={15} />
+        </button>
       </div>
 
-      {/* right: the editor (edgeless canvas) */}
-      <div className="notes-main">
-        <div className="notes-main-bar">
-          <span className="notes-main-title">笔记空间</span>
-          <div className="notes-main-acts">
-            <button title={full ? "退出全屏" : "无边全屏"} onClick={() => setFull((f) => !f)}>
-              {full ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
-            </button>
-            <button title="关闭" onClick={onClose}>
-              <X size={15} />
+      {/* toggleable library window (笔记库) — floats, not a permanent rail */}
+      {libOpen && (
+        <div className="notes-lib">
+          <div className="notes-lib-head">
+            <span>笔记库</span>
+            <button onClick={() => setLibOpen(false)} title="收起">
+              <X size={14} />
             </button>
           </div>
+          <div className="notes-rail-top">
+            <button className="notes-new" onClick={createNote}>
+              <Plus size={15} /> 新建笔记
+            </button>
+            <div className="notes-search">
+              <Search size={14} />
+              <input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="搜索标题 / 标签…"
+                spellCheck={false}
+              />
+            </div>
+          </div>
+          <div className="notes-list">
+            {!ready && (
+              <div className="notes-empty">
+                <Loader2 size={16} className="spin" /> 载入笔记库…
+              </div>
+            )}
+            {ready && filtered.length === 0 && <div className="notes-empty">无笔记</div>}
+            {filtered.map((m) => (
+              <div
+                key={m.id}
+                className={"notes-item" + (m.id === activeId ? " on" : "")}
+                onClick={() => setActiveId(m.id)}
+              >
+                <div className="notes-item-title">{m.title || "未命名笔记"}</div>
+                <div className="notes-item-tags">
+                  {(tags[m.id] || []).map((t) => (
+                    <span className="notes-tag" key={t}>
+                      {t}
+                    </span>
+                  ))}
+                </div>
+                <div className="notes-item-acts">
+                  <button title="加标签" onClick={(e) => { e.stopPropagation(); addTag(m.id); }}>
+                    <Hash size={13} />
+                  </button>
+                  <button title="删除" onClick={(e) => { e.stopPropagation(); removeNote(m.id); }}>
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
-        <div className="notespace" ref={host} />
-      </div>
+      )}
     </div>
   );
 }

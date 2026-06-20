@@ -10,10 +10,12 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@blocksuite/affine-shared": "^0.19.5",
     "@blocksuite/blocks": "^0.19.5",
     "@blocksuite/presets": "^0.19.5",
     "@blocksuite/store": "^0.19.5",
     "@blocksuite/sync": "^0.19.5",
+    "@preact/signals-core": "^1.14.3",
     "@toeverything/theme": "^1.1.23",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",

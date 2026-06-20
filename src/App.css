@@ -756,24 +756,99 @@ body,
   position: fixed;
   inset: 0;
   z-index: 9; /* below the bars (10) so search/actions stay reachable */
-  display: flex;
 }
 .notes-ws.full {
   z-index: 20; /* 无边全屏: cover the bars too */
 }
 
-/* left rail = the note library (opaque) */
-.notes-rail {
-  flex: 0 0 258px;
-  width: 258px;
+/* floating top bar — does not eat canvas space (画板最大面积化) */
+.notes-bar {
+  position: absolute;
+  top: 12px;
+  left: 16px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(18, 19, 25, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 11px;
+  padding: 5px 8px;
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
+}
+.notes-bar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: none;
+  color: #c3c6cf;
+  cursor: pointer;
+  border-radius: 7px;
+}
+.notes-bar-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+.notes-bar-btn.on {
+  background: rgba(45, 108, 246, 0.3);
+  color: #fff;
+}
+.notes-bar-title {
+  font-size: 13px;
+  color: #aeb4c2;
+  padding: 0 8px;
+  max-width: 240px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.notes-bar-spacer {
+  width: 4px;
+}
+
+/* toggleable library window (笔记库) — previous panel style, not a permanent rail */
+.notes-lib {
+  position: absolute;
+  top: 52px;
+  left: 16px;
+  bottom: 16px;
+  width: 282px;
+  z-index: 3;
   display: flex;
   flex-direction: column;
-  background: rgba(14, 15, 20, 0.98);
-  border-right: 1px solid rgba(255, 255, 255, 0.08);
-  padding-top: 74px; /* clear the top search pill */
+  background: rgba(16, 17, 22, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 13px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+  backdrop-filter: blur(10px);
 }
-.notes-ws.full .notes-rail {
-  padding-top: 12px;
+.notes-lib-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 10px 9px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 13px;
+  font-weight: 600;
+  color: #c7cad3;
+}
+.notes-lib-head button {
+  background: transparent;
+  border: none;
+  color: #9aa0ad;
+  cursor: pointer;
+  padding: 3px;
+  border-radius: 6px;
+  display: inline-flex;
+}
+.notes-lib-head button:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
 }
 .notes-rail-top {
   padding: 10px;
@@ -930,12 +1005,12 @@ body,
   display: block;
   height: 100%;
 }
-/* #3 transparent canvas fill — keep the dot grid, let the desktop/overlay show through */
+/* canvas: 半透明灰底（desktop 透出但泛灰，不是全透明） + 淡灰点阵（弱化，非白） */
 .notespace affine-edgeless-viewport,
 .notespace .edgeless-editor-container,
 .notespace edgeless-editor {
-  background: transparent !important;
-  --affine-background-primary-color: transparent !important;
+  --affine-background-primary-color: rgba(22, 23, 28, 0.55) !important;
+  --affine-edgeless-grid-color: rgba(165, 171, 186, 0.09) !important;
 }
 
 /* ===== 圈选 / 检视 element inspector ===== */
