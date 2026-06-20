@@ -417,7 +417,7 @@ fn grab(auto: &uiautomation::UIAutomation, x: i32, y: i32, e: &crate::uia::Eleme
         .iter()
         .map(|(c, n)| if n.trim().is_empty() { c.clone() } else { format!("{c}「{}」", short(n.trim(), 10)) })
         .collect::<Vec<_>>()
-        .join(" ▸ ");
+        .join(" > ");
     let mut lines: Vec<String> = Vec::new();
     lines.push(format!("[{}] {}", e.control_type, if nm.is_empty() { "(无名)".to_string() } else { short(nm, 40) }));
     if !e.value.trim().is_empty() {
