@@ -6,6 +6,7 @@ import {
   FolderKanban,
   CheckSquare,
   SquareTerminal,
+  Crosshair,
   Bell,
   Pin,
   PinOff,
@@ -15,6 +16,7 @@ import { Notifications } from "./regions/Notifications";
 import { TerminalBar } from "./regions/TerminalBar";
 import { ProjectSurface, ReviewSurface } from "./surfaces";
 import { NotesWorkspace } from "./regions/NotesWorkspace";
+import { Picker } from "./regions/Picker";
 import { PanelFrame, type PanelKind } from "./panels";
 import { pushChatIntent } from "./chatIntents";
 import "./App.css";
@@ -37,6 +39,7 @@ export default function App() {
   const [open, setOpen] = useState<PanelKind[]>(() => loadPinned());
   const [notifOpen, setNotifOpen] = useState(false);
   const [onTop, setOnTop] = useState(true);
+  const [picking, setPicking] = useState(false);
 
   useEffect(() => {
     localStorage.setItem(PIN_KEY, JSON.stringify(pinned));
@@ -120,6 +123,9 @@ export default function App() {
       {/* 笔记空间 — fixed fullscreen (no transform), persistent BlockSuite library */}
       {open.includes("notes") && <NotesWorkspace onClose={() => closePanel("notes")} />}
 
+      {/* 圈选 / 检视 — DOM element inspector over the whole overlay */}
+      {picking && <Picker onExit={() => setPicking(false)} onAskAI={(q) => askAI(q)} />}
+
       {/* top search */}
       <div className="pf-top" onMouseDown={(e) => e.stopPropagation()}>
         <SearchBar onAskAI={askAI} onLaunched={onLaunched} />
@@ -164,6 +170,13 @@ export default function App() {
             title="终端 / 对话"
           >
             <SquareTerminal size={17} />
+          </button>
+          <button
+            className={"pf-btn" + (picking ? " on" : "")}
+            onClick={() => setPicking((p) => !p)}
+            title="圈选 / 检视元素"
+          >
+            <Crosshair size={17} />
           </button>
           <span className="pf-sep" />
           <button
