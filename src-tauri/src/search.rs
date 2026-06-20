@@ -5,6 +5,7 @@ use ignore::WalkBuilder;
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -27,8 +28,51 @@ fn user_roots() -> Vec<PathBuf> {
             v.push(base.join(sub));
         }
     }
-    v.push(PathBuf::from("E:/WindowsWorkspace"));
-    v.into_iter().filter(|p| p.exists()).collect()
+    // primary work roots (where the user actually keeps projects). D:/P4/main itself
+    // is a huge Perforce branch, so index the specific AIWorkSpace dir, not the parent;
+    // broader roots go in poof-roots.txt below.
+    for p in ["E:/WindowsWorkspace", "D:/P4/main/AIWorkSpace"] {
+        v.push(PathBuf::from(p));
+    }
+    // user-extendable roots: %TEMP%/poof-roots.txt, one absolute path per line
+    if let Ok(s) = std::fs::read_to_string(std::env::temp_dir().join("poof-roots.txt")) {
+        for line in s.lines() {
+            let t = line.trim();
+            if !t.is_empty() && !t.starts_with('#') {
+                v.push(PathBuf::from(t));
+            }
+        }
+    }
+    // de-dup while keeping order; drop a root that is nested under an earlier one
+    let mut seen: Vec<PathBuf> = Vec::new();
+    v.into_iter()
+        .filter(|p| p.exists())
+        .filter(|p| {
+            if seen.iter().any(|s| p.starts_with(s)) {
+                return false;
+            }
+            seen.push(p.clone());
+            true
+        })
+        .collect()
+}
+
+// ---- usage frequency (most-used first) ----
+fn usage_file() -> PathBuf {
+    std::env::temp_dir().join("poof-usage.json")
+}
+fn load_usage() -> HashMap<String, u32> {
+    std::fs::read_to_string(usage_file())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+fn bump_usage(path: &str) {
+    let mut m = load_usage();
+    *m.entry(path.to_string()).or_insert(0) += 1;
+    if let Ok(s) = serde_json::to_string(&m) {
+        let _ = std::fs::write(usage_file(), s);
+    }
 }
 
 fn app_roots() -> Vec<PathBuf> {
@@ -109,25 +153,37 @@ pub fn search(query: String, limit: usize) -> Vec<SearchHit> {
 
     let mut matcher = Matcher::new(Config::DEFAULT);
     let pat = Pattern::parse(q, CaseMatching::Ignore, Normalization::Smart);
+    let usage = load_usage();
     let mut hits: Vec<SearchHit> = Vec::new();
     let mut buf: Vec<char> = Vec::new();
     for (kind, name, path) in index.iter() {
         buf.clear();
-        if let Some(score) = pat.score(Utf32Str::new(name, &mut buf), &mut matcher) {
-            // surface apps/folders/exes a bit above deep files
-            let bonus = match kind.as_str() {
-                "app" => 24,
-                "exe" => 16,
-                "folder" => 8,
-                _ => 0,
-            };
-            hits.push(SearchHit {
-                kind: kind.clone(),
-                name: name.clone(),
-                path: path.clone(),
-                score: score + bonus,
-            });
-        }
+        let sn = pat.score(Utf32Str::new(name, &mut buf), &mut matcher);
+        buf.clear();
+        let sp = pat.score(Utf32Str::new(path, &mut buf), &mut matcher);
+        // prefer a name match; fall back to a (lower-weighted) full-path match so
+        // path-shaped queries and multi-keyword/partial queries still find deep items
+        let base = match (sn, sp) {
+            (Some(n), Some(p)) => n.max(p / 2),
+            (Some(n), None) => n,
+            (None, Some(p)) => p / 3,
+            (None, None) => continue,
+        };
+        // surface apps/folders/exes a bit above deep files
+        let kind_bonus = match kind.as_str() {
+            "app" => 24,
+            "exe" => 16,
+            "folder" => 8,
+            _ => 0,
+        };
+        // most-used first: boost by how often this exact path was opened
+        let freq_bonus = usage.get(path).map(|c| (*c * 10).min(150)).unwrap_or(0);
+        hits.push(SearchHit {
+            kind: kind.clone(),
+            name: name.clone(),
+            path: path.clone(),
+            score: base + kind_bonus + freq_bonus,
+        });
     }
     hits.sort_by(|a, b| b.score.cmp(&a.score));
     hits.truncate(limit);
@@ -142,6 +198,7 @@ pub fn search_reindex() {
 /// Launch a file/folder/app with the OS default handler.
 #[tauri::command]
 pub fn open_path(path: String) -> Result<(), String> {
+    bump_usage(&path); // most-used-first ranking learns from real opens
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
