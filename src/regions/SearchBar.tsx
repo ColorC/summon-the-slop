@@ -10,8 +10,33 @@ import {
   Copy,
   Code,
   CornerDownLeft,
+  Menu,
 } from "lucide-react";
-import { search, openPath, revealPath, copyText, runShell, type SearchHit } from "../lib";
+import {
+  search,
+  openPath,
+  revealPath,
+  copyText,
+  runShell,
+  shellMenu,
+  type SearchHit,
+} from "../lib";
+
+const HISTORY_KEY = "poof-search-history";
+function loadHistory(): string[] {
+  try {
+    return JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]");
+  } catch {
+    return [];
+  }
+}
+function pushHistory(q: string) {
+  q = q.trim();
+  if (!q) return;
+  let h = loadHistory().filter((x) => x !== q);
+  h.unshift(q);
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(0, 50)));
+}
 
 function KindIcon({ kind }: { kind: string }) {
   if (kind === "folder") return <Folder size={16} />;
@@ -22,9 +47,6 @@ function KindIcon({ kind }: { kind: string }) {
 
 type Item = SearchHit | { kind: "ai"; name: string; path: ""; score: 0 };
 
-/** Top search bar — the ONLY input. Files / folders / apps / exes ranked in-process.
- *  Ctrl+Enter (or no result) → 询问 AI = open a claude/codex CLI. Right-click a result
- *  for file actions (open / reveal / copy path / VSCode). */
 export function SearchBar({
   onAskAI,
   onLaunched,
@@ -35,29 +57,35 @@ export function SearchBar({
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [sel, setSel] = useState(0);
+  const [composing, setComposing] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number; hit: SearchHit } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const qRef = useRef("");
+  const histIdx = useRef(-1);
+  qRef.current = q;
 
   const showResults = q.trim().length > 0;
-  // "ask AI" is always the last item, and the only item when nothing matches
-  const items: Item[] = showResults
-    ? [...hits, { kind: "ai", name: q, path: "", score: 0 }]
-    : [];
+  const items: Item[] = showResults ? [...hits, { kind: "ai", name: q, path: "", score: 0 }] : [];
 
   useEffect(() => {
     inputRef.current?.focus();
+    // each summon: remember the last input, then clear the box (#5, #6)
     const un = listen("summon", () => {
-      inputRef.current?.focus();
-      inputRef.current?.select();
+      pushHistory(qRef.current);
+      setQ("");
+      setHits([]);
+      histIdx.current = -1;
+      setTimeout(() => inputRef.current?.focus(), 0);
     });
     return () => {
       un.then((f) => f());
     };
   }, []);
 
+  // search — but never while an IME composition is in progress (#2 pinyin)
   useEffect(() => {
-    if (!q.trim()) {
-      setHits([]);
+    if (composing || !q.trim()) {
+      if (!q.trim()) setHits([]);
       return;
     }
     let alive = true;
@@ -70,14 +98,16 @@ export function SearchBar({
       alive = false;
       clearTimeout(t);
     };
-  }, [q]);
+  }, [q, composing]);
 
   function askAI() {
+    pushHistory(q);
     onAskAI(q.trim());
     setQ("");
     setHits([]);
   }
   function launch(hit: SearchHit) {
+    pushHistory(q);
     openPath(hit.path).catch(() => {});
     setQ("");
     setHits([]);
@@ -87,12 +117,36 @@ export function SearchBar({
     if (item.kind === "ai") askAI();
     else launch(item as SearchHit);
   }
+  function recall(dir: number) {
+    const h = loadHistory();
+    if (!h.length) return;
+    let idx = histIdx.current + dir;
+    idx = Math.max(0, Math.min(idx, h.length - 1));
+    histIdx.current = idx;
+    setQ(h[idx]);
+  }
 
   function onKey(e: React.KeyboardEvent) {
+    if (composing) return; // let the IME own the keys
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       askAI();
-    } else if (e.key === "ArrowDown") {
+      return;
+    }
+    if (!showResults) {
+      // empty box → recall input history with ↑/↓ (#6)
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        recall(1);
+      } else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        recall(-1);
+      } else if (e.key === "Enter" && q.trim()) {
+        askAI();
+      }
+      return;
+    }
+    if (e.key === "ArrowDown") {
       setSel((s) => Math.min(s + 1, items.length - 1));
       e.preventDefault();
     } else if (e.key === "ArrowUp") {
@@ -109,9 +163,17 @@ export function SearchBar({
         ref={inputRef}
         className="search-input"
         value={q}
-        onChange={(e) => setQ(e.target.value)}
+        onChange={(e) => {
+          setQ(e.target.value);
+          histIdx.current = -1;
+        }}
         onKeyDown={onKey}
-        placeholder="检索文件 · 文件夹 · 应用…   Ctrl+Enter 问 AI"
+        onCompositionStart={() => setComposing(true)}
+        onCompositionEnd={(e) => {
+          setComposing(false);
+          setQ(e.currentTarget.value);
+        }}
+        placeholder="检索文件 · 文件夹 · 应用…   Ctrl+Enter 问 AI · ↑↓ 历史"
         spellCheck={false}
       />
       {showResults && (
@@ -156,39 +218,21 @@ export function SearchBar({
         <>
           <div className="ctx-backdrop" onMouseDown={() => setMenu(null)} />
           <div className="ctx-menu" style={{ left: menu.x, top: menu.y }}>
-            <button
-              onClick={() => {
-                launch(menu.hit);
-                setMenu(null);
-              }}
-            >
+            <button onClick={() => { launch(menu.hit); setMenu(null); }}>
               <CornerDownLeft size={15} /> 打开
             </button>
-            <button
-              onClick={() => {
-                revealPath(menu.hit.path);
-                setMenu(null);
-                onLaunched();
-              }}
-            >
+            <button onClick={() => { revealPath(menu.hit.path); setMenu(null); onLaunched(); }}>
               <FolderOpen size={15} /> 打开所在文件夹
             </button>
-            <button
-              onClick={() => {
-                copyText(menu.hit.path);
-                setMenu(null);
-              }}
-            >
+            <button onClick={() => { copyText(menu.hit.path); setMenu(null); }}>
               <Copy size={15} /> 复制路径
             </button>
-            <button
-              onClick={() => {
-                runShell(`code -r "${menu.hit.path}"`);
-                setMenu(null);
-                onLaunched();
-              }}
-            >
+            <button onClick={() => { runShell(`code -r "${menu.hit.path}"`); setMenu(null); onLaunched(); }}>
               <Code size={15} /> 在 VS Code 中打开
+            </button>
+            <div className="ctx-div" />
+            <button onClick={() => { shellMenu(menu.hit.path, menu.x, menu.y); setMenu(null); }}>
+              <Menu size={15} /> 属性（系统）
             </button>
           </div>
         </>

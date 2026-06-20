@@ -219,6 +219,37 @@ async fn open_view(app: tauri::AppHandle, view: String) -> Result<(), String> {
     Ok(())
 }
 
+/// Native Windows file Properties dialog — the most-used standard right-click item.
+/// (The full IContextMenu menu is a separate focused effort; this is the v1 native action.)
+#[cfg(windows)]
+#[tauri::command]
+fn shell_props(path: String) -> Result<(), String> {
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    let verb: Vec<u16> = "properties\0".encode_utf16().collect();
+    let file: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    let r = unsafe {
+        ShellExecuteW(
+            0,
+            verb.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            1, // SW_SHOWNORMAL
+        )
+    };
+    if r as isize <= 32 {
+        Err(format!("ShellExecuteW(properties) failed: {}", r as isize))
+    } else {
+        Ok(())
+    }
+}
+#[cfg(not(windows))]
+#[tauri::command]
+fn shell_props(path: String) -> Result<(), String> {
+    let _ = path;
+    Err("windows only".into())
+}
+
 // pending AI chats (provider, optional query) handed to the terminal window
 static CHAT_INTENTS: std::sync::Mutex<Vec<(String, Option<String>)>> =
     std::sync::Mutex::new(Vec::new());
@@ -305,6 +336,7 @@ pub fn run() {
             open_view,
             new_chat,
             take_chat_intents,
+            shell_props,
             pty::pty_spawn,
             pty::pty_write,
             pty::pty_resize,

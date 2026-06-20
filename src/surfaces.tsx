@@ -191,11 +191,20 @@ export function ReviewSurface() {
 // ---------- 速记 / 画布 Note (P4: BlockSuite/Excalidraw) ----------
 
 export function NoteSurface() {
-  // spike 画布：tldraw 验证 WebView2 可挂真·无限画布编辑器（本地持久化=召出保留 buffer）。
-  // 生产替换 = BlockSuite EdgelessEditor（rich-text-on-canvas），见 DEMO.md。
+  // 透明深色无限画布：暗色主题 + 背景透明（CSS），让浮层/桌面透出,只剩元素。
+  // 生产替换 = BlockSuite EdgelessEditor（rich-text-on-canvas）。
   return (
     <div className="canvas-wrap">
-      <Tldraw persistenceKey="poof-note" />
+      <Tldraw
+        persistenceKey="poof-note"
+        onMount={(editor: any) => {
+          try {
+            editor.user.updateUserPreferences({ isDarkMode: true, colorScheme: "dark" });
+          } catch {
+            /* version差异 */
+          }
+        }}
+      />
     </div>
   );
 }

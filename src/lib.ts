@@ -27,6 +27,9 @@ export const search = (query: string, limit = 30) =>
 export const openPath = (path: string) => invoke<void>("open_path", { path });
 
 export const revealPath = (path: string) => invoke<void>("reveal_path", { path });
+/** Native Windows Properties dialog (v1 of the standard shell menu). */
+export const shellMenu = (path: string, _x?: number, _y?: number) =>
+  invoke<void>("shell_props", { path });
 
 // ---- pty (terminal) ----
 export const ptySpawn = (id: string, cols: number, rows: number) =>

@@ -10,28 +10,31 @@ import {
   Pin,
   PinOff,
   ChevronLeft,
+  X,
 } from "lucide-react";
 import { SearchBar } from "./regions/SearchBar";
 import { Notifications } from "./regions/Notifications";
-import { NoteSurface } from "./surfaces";
-import { openView, newChat } from "./lib";
+import { TerminalBar } from "./regions/TerminalBar";
+import { NoteSurface, ProjectSurface, ReviewSurface } from "./surfaces";
 import "./App.css";
 
-/** Summoned overlay = small floating widgets over a transparent screen.
- *  shade mode: search pill (top) + action bar (bottom). canvas mode: the infinite
- *  notes canvas fills the overlay (← back / →switch). Opening a heavy window dims the
- *  overlay and switches dismiss to Esc-only; otherwise click-outside dismisses. */
+type Panel = "home" | "canvas" | "project" | "review";
+
+/** The whole experience lives INSIDE the summoned overlay (no separate OS windows):
+ *  search pill (top) + action bar (bottom); a center panel for canvas/project/review;
+ *  a right side panel for the AI terminal ("侧边对话"). Transparent, no dim until a
+ *  panel/chat opens (then the rest dims; Esc steps back). */
 export default function App() {
-  const [mode, setMode] = useState<"shade" | "canvas">("shade");
-  const [windowOpen, setWindowOpen] = useState(false);
+  const [panel, setPanel] = useState<Panel>("home");
+  const [chatOpen, setChatOpen] = useState(false);
   const [notifOpen, setNotifOpen] = useState(false);
   const [pinned, setPinned] = useState(true);
 
   const hide = useCallback(() => {
     getCurrentWindow().hide();
-    setWindowOpen(false);
     setNotifOpen(false);
-    setMode("shade");
+    setPanel("home");
+    setChatOpen(false);
   }, []);
   const togglePin = useCallback(async () => {
     const v = !pinned;
@@ -43,26 +46,25 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         if (notifOpen) setNotifOpen(false);
-        else if (mode === "canvas") setMode("shade");
+        else if (chatOpen) setChatOpen(false);
+        else if (panel !== "home") setPanel("home");
         else hide();
-      } else if (e.key === "ArrowRight" && mode === "shade" && !notifOpen) {
-        setMode("canvas");
-      } else if (e.key === "ArrowLeft" && mode === "canvas") {
-        setMode("shade");
+      } else if (e.key === "ArrowRight" && panel === "home" && !chatOpen && !notifOpen) {
+        setPanel("canvas");
+      } else if (e.key === "ArrowLeft" && panel === "canvas") {
+        setPanel("home");
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [notifOpen, mode, hide]);
+  }, [notifOpen, chatOpen, panel, hide]);
 
-  function openWin(view: string) {
-    openView(view).catch(() => {});
-    setWindowOpen(true);
-    setNotifOpen(false);
+  function newChat(provider: string, query?: string) {
+    setChatOpen(true);
+    window.dispatchEvent(new CustomEvent("poof-new-chat", { detail: { provider, query } }));
   }
   function askAI(query: string) {
-    newChat("claude", query || undefined).catch(() => {});
-    setWindowOpen(true);
+    newChat("claude", query || undefined);
   }
   function onLaunched() {
     hide();
@@ -70,33 +72,46 @@ export default function App() {
 
   function onBackdrop(e: React.MouseEvent) {
     if (e.target !== e.currentTarget) return;
-    if (notifOpen) {
-      setNotifOpen(false);
-      return;
-    }
-    if (windowOpen) return; // a window is open → Esc-only
-    if (mode === "canvas") {
-      setMode("shade");
-      return;
-    }
-    hide();
+    if (notifOpen) setNotifOpen(false);
+    else if (chatOpen) setChatOpen(false);
+    else if (panel !== "home") setPanel("home");
+    else hide();
   }
 
+  const dim = chatOpen || panel !== "home";
+
   return (
-    <div className={"pf-root" + (windowOpen ? " dim" : "")} onMouseDown={onBackdrop}>
-      {mode === "canvas" ? (
-        <div className="pf-canvas" onMouseDown={(e) => e.stopPropagation()}>
-          <button className="pf-canvas-back" onClick={() => setMode("shade")}>
+    <div className={"pf-root" + (dim ? " dim" : "")} onMouseDown={onBackdrop}>
+      {/* center: canvas (fullscreen, transparent) */}
+      {panel === "canvas" && (
+        <div className="pf-center canvas" onMouseDown={(e) => e.stopPropagation()}>
+          <button className="pf-back" onClick={() => setPanel("home")}>
             <ChevronLeft size={16} /> 返回 (←)
           </button>
           <NoteSurface />
         </div>
-      ) : (
+      )}
+      {/* center: project / review (card) */}
+      {(panel === "project" || panel === "review") && (
+        <div className="pf-center card" onMouseDown={(e) => e.stopPropagation()}>
+          <div className="pf-card-head">
+            <span>{panel === "project" ? "项目" : "审阅台"}</span>
+            <button className="pf-icon-btn" onClick={() => setPanel("home")}>
+              <X size={16} />
+            </button>
+          </div>
+          <div className="pf-card-body">
+            {panel === "project" ? <ProjectSurface /> : <ReviewSurface />}
+          </div>
+        </div>
+      )}
+
+      {/* top search + bottom bar (hidden in canvas mode) */}
+      {panel !== "canvas" && (
         <>
           <div className="pf-top" onMouseDown={(e) => e.stopPropagation()}>
             <SearchBar onAskAI={askAI} onLaunched={onLaunched} />
           </div>
-
           <div className="pf-bottom" onMouseDown={(e) => e.stopPropagation()}>
             {notifOpen && (
               <div className="pf-notif">
@@ -108,16 +123,20 @@ export default function App() {
                 <MessageSquarePlus size={17} /> 新对话
               </button>
               <span className="pf-sep" />
-              <button className="pf-btn" onClick={() => setMode("canvas")} title="笔记画布 (→)">
+              <button className="pf-btn" onClick={() => setPanel("canvas")} title="笔记画布 (→)">
                 <PenLine size={17} />
               </button>
-              <button className="pf-btn" onClick={() => openWin("project")} title="项目">
+              <button className="pf-btn" onClick={() => setPanel("project")} title="项目">
                 <FolderKanban size={17} />
               </button>
-              <button className="pf-btn" onClick={() => openWin("review")} title="审阅台">
+              <button className="pf-btn" onClick={() => setPanel("review")} title="审阅台">
                 <CheckSquare size={17} />
               </button>
-              <button className="pf-btn" onClick={() => openWin("terminal")} title="终端">
+              <button
+                className={"pf-btn" + (chatOpen ? " on" : "")}
+                onClick={() => setChatOpen((o) => !o)}
+                title="终端 / 对话"
+              >
                 <SquareTerminal size={17} />
               </button>
               <span className="pf-sep" />
@@ -135,6 +154,17 @@ export default function App() {
           </div>
         </>
       )}
+
+      {/* right side panel: AI terminal — always mounted to keep PTY sessions alive */}
+      <div className={"pf-chat" + (chatOpen ? " open" : "")} onMouseDown={(e) => e.stopPropagation()}>
+        <div className="pf-chat-head">
+          <span>对话 / 终端</span>
+          <button className="pf-icon-btn" onClick={() => setChatOpen(false)}>
+            <X size={16} />
+          </button>
+        </div>
+        <TerminalBar />
+      </div>
     </div>
   );
 }

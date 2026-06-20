@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
-import { listen } from "@tauri-apps/api/event";
 import { Plus, X } from "lucide-react";
 import { TerminalView } from "./Terminal";
-import { runShell, takeChatIntents } from "../lib";
+import { runShell } from "../lib";
 
 interface Tab {
   id: string;
@@ -18,9 +17,9 @@ function cmdFor(provider: string): { cmd?: string; title: string } {
   return { cmd: "claude", title: "Claude" };
 }
 
-/** Multi-tab terminal window. A "new chat" = a tab running claude/codex over PTY,
- *  optionally pre-fed an AI query. Chat intents are queued by the overlay and drained
- *  here (on mount + on the poof:new-chat event). */
+/** AI terminal living inside the overlay's right side panel. New chats arrive as a
+ *  window "poof-new-chat" CustomEvent from the shade. Tabs stay mounted so PTY
+ *  sessions keep streaming in the background. */
 export function TerminalBar() {
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [active, setActive] = useState("");
@@ -34,25 +33,15 @@ export function TerminalBar() {
     setTabs((t) => t.filter((x) => x.id !== id));
     setActive((a) => (a === id ? "" : a));
   }
-  function drain(openDefault: boolean) {
-    takeChatIntents().then((list) => {
-      if (list.length) {
-        for (const [provider, query] of list) {
-          const { cmd, title } = cmdFor(provider);
-          addTab(title, cmd, query ?? undefined);
-        }
-      } else if (openDefault) {
-        addTab("Claude", "claude");
-      }
-    });
-  }
 
   useEffect(() => {
-    drain(true);
-    const un = listen("poof:new-chat", () => drain(false));
-    return () => {
-      un.then((f) => f());
+    const onNew = (e: Event) => {
+      const d = (e as CustomEvent).detail || {};
+      const { cmd, title } = cmdFor(d.provider || "claude");
+      addTab(title, cmd, d.query || undefined);
     };
+    window.addEventListener("poof-new-chat", onNew as EventListener);
+    return () => window.removeEventListener("poof-new-chat", onNew as EventListener);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -92,7 +81,9 @@ export function TerminalBar() {
         </button>
       </div>
       <div className="term-stage">
-        {tabs.length === 0 && <div className="term-empty">新建一个对话标签开始…</div>}
+        {tabs.length === 0 && (
+          <div className="term-empty">点「新对话」或上面的 + 开一个对话 / 终端</div>
+        )}
         {tabs.map((t) => (
           <div
             key={t.id}

@@ -68,6 +68,8 @@ export function TerminalView({
     };
     const ro = new ResizeObserver(doFit);
     if (ref.current) ro.observe(ref.current);
+    // the side panel may size up after mount → refit a few times so xterm isn't 0×0
+    [60, 250, 600, 1200].forEach((ms) => timers.push(window.setTimeout(doFit, ms)));
 
     return () => {
       alive = false;
