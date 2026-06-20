@@ -686,13 +686,21 @@ body,
 }
 .pf-panel {
   pointer-events: auto;
-  display: flex !important;
-  flex-direction: column;
   background: rgba(16, 17, 22, 0.985);
   border: 1px solid rgba(255, 255, 255, 0.13);
   border-radius: 14px;
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.62);
+  box-sizing: border-box;
+}
+/* inner wrapper holds the flex column + clipping, so react-rnd keeps its own
+   absolute box model and its resize handles aren't clipped (panel-regression fix) */
+.pf-panel-inner {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
+  border-radius: 14px;
 }
 .pf-panel-head {
   display: flex;
@@ -743,10 +751,175 @@ body,
 }
 
 /* ===== 笔记空间 (BlockSuite edgeless) ===== */
-.notespace-host {
-  position: absolute;
+/* ===== 笔记空间 workspace (fullscreen, persistent BlockSuite library) ===== */
+.notes-ws {
+  position: fixed;
   inset: 0;
-  background: #0e0f14;
+  z-index: 9; /* below the bars (10) so search/actions stay reachable */
+  display: flex;
+}
+.notes-ws.full {
+  z-index: 20; /* 无边全屏: cover the bars too */
+}
+
+/* left rail = the note library (opaque) */
+.notes-rail {
+  flex: 0 0 258px;
+  width: 258px;
+  display: flex;
+  flex-direction: column;
+  background: rgba(14, 15, 20, 0.98);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 74px; /* clear the top search pill */
+}
+.notes-ws.full .notes-rail {
+  padding-top: 12px;
+}
+.notes-rail-top {
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.notes-new {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 9px;
+  border-radius: 9px;
+  background: #2d6cf6;
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+}
+.notes-new:hover {
+  background: #3b78ff;
+}
+.notes-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 6px 9px;
+  color: #8a90a0;
+}
+.notes-search input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #e6e8ee;
+  font-size: 13px;
+  width: 100%;
+}
+.notes-list {
+  flex: 1;
+  overflow: auto;
+  padding: 4px 8px 12px;
+}
+.notes-empty {
+  color: #80838d;
+  font-size: 12px;
+  padding: 14px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.notes-item {
+  position: relative;
+  padding: 9px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: #c7cad3;
+}
+.notes-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.notes-item.on {
+  background: rgba(45, 108, 246, 0.18);
+  color: #fff;
+}
+.notes-item-title {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding-right: 40px;
+}
+.notes-item-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.notes-tag {
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #aeb4c2;
+  padding: 1px 6px;
+  border-radius: 6px;
+}
+.notes-item-acts {
+  position: absolute;
+  right: 6px;
+  top: 7px;
+  display: none;
+  gap: 2px;
+}
+.notes-item:hover .notes-item-acts {
+  display: flex;
+}
+.notes-item-acts button {
+  background: transparent;
+  border: none;
+  color: #8a90a0;
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 5px;
+}
+.notes-item-acts button:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+/* right = the editor area (transparent canvas, dots kept) */
+.notes-main {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+}
+.notes-main-bar {
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.notes-main-title {
+  display: none;
+}
+.notes-main-acts {
+  display: flex;
+  gap: 4px;
+}
+.notes-main-acts button {
+  background: rgba(20, 21, 28, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #c3c6cf;
+  cursor: pointer;
+  padding: 5px;
+  border-radius: 7px;
+  display: inline-flex;
+}
+.notes-main-acts button:hover {
+  background: rgba(40, 42, 52, 0.95);
+  color: #fff;
 }
 .notespace {
   position: absolute;
@@ -757,17 +930,10 @@ body,
   display: block;
   height: 100%;
 }
-.notespace-msg {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  color: #aab2c8;
-  font-size: 13px;
-  background: #0e0f14;
-}
-.notespace-msg.error {
-  color: #f7768e;
+/* #3 transparent canvas fill — keep the dot grid, let the desktop/overlay show through */
+.notespace affine-edgeless-viewport,
+.notespace .edgeless-editor-container,
+.notespace edgeless-editor {
+  background: transparent !important;
+  --affine-background-primary-color: transparent !important;
 }

@@ -13,6 +13,8 @@
     "@blocksuite/blocks": "^0.19.5",
     "@blocksuite/presets": "^0.19.5",
     "@blocksuite/store": "^0.19.5",
+    "@blocksuite/sync": "^0.19.5",
+    "@toeverything/theme": "^1.1.23",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "@tldraw/tldraw": "^5.1.1",

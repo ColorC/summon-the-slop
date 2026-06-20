@@ -13,7 +13,8 @@ import {
 import { SearchBar } from "./regions/SearchBar";
 import { Notifications } from "./regions/Notifications";
 import { TerminalBar } from "./regions/TerminalBar";
-import { NoteSurface, ProjectSurface, ReviewSurface } from "./surfaces";
+import { ProjectSurface, ReviewSurface } from "./surfaces";
+import { NotesWorkspace } from "./regions/NotesWorkspace";
 import { PanelFrame, type PanelKind } from "./panels";
 import { pushChatIntent } from "./chatIntents";
 import "./App.css";
@@ -90,7 +91,6 @@ export default function App() {
 
   function panelContent(k: PanelKind) {
     if (k === "chat") return <TerminalBar />;
-    if (k === "notes") return <NoteSurface />;
     return (
       <div className="pf-scroll">{k === "project" ? <ProjectSurface /> : <ReviewSurface />}</div>
     );
@@ -98,20 +98,27 @@ export default function App() {
 
   return (
     <div className="pf-root" onMouseDown={onBackdrop}>
-      {/* middle stage — draggable panels live here, between the two bars */}
+      {/* middle stage — draggable panels live here, between the two bars.
+          Notes is NOT a draggable panel (a CSS transform would break BlockSuite's
+          pointer math); it renders as its own fixed fullscreen workspace below. */}
       <div className="pf-stage" onMouseDown={(e) => e.stopPropagation()}>
-        {open.map((k) => (
-          <PanelFrame
-            key={k}
-            kind={k}
-            pinned={pinned.includes(k)}
-            onPin={() => togglePin(k)}
-            onClose={() => closePanel(k)}
-          >
-            {panelContent(k)}
-          </PanelFrame>
-        ))}
+        {open
+          .filter((k) => k !== "notes")
+          .map((k) => (
+            <PanelFrame
+              key={k}
+              kind={k}
+              pinned={pinned.includes(k)}
+              onPin={() => togglePin(k)}
+              onClose={() => closePanel(k)}
+            >
+              {panelContent(k)}
+            </PanelFrame>
+          ))}
       </div>
+
+      {/* 笔记空间 — fixed fullscreen (no transform), persistent BlockSuite library */}
+      {open.includes("notes") && <NotesWorkspace onClose={() => closePanel("notes")} />}
 
       {/* top search */}
       <div className="pf-top" onMouseDown={(e) => e.stopPropagation()}>

@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Rnd } from "react-rnd";
-import { Pin, PinOff, X, AlignRight } from "lucide-react";
+import { Pin, PinOff, X, PanelRight } from "lucide-react";
 
 export type PanelKind = "chat" | "project" | "review" | "notes";
 
@@ -74,26 +74,29 @@ export function PanelFrame({
       minWidth={320}
       minHeight={200}
       dragHandleClassName="pf-panel-head"
+      cancel=".pf-panel-acts"
       onDragStop={(_, d) => setGeom((g) => ({ ...g, x: d.x, y: d.y }))}
       onResizeStop={(_, __, ref, ___, pos) =>
         setGeom({ x: pos.x, y: pos.y, width: ref.offsetWidth, height: ref.offsetHeight })
       }
     >
-      <div className="pf-panel-head">
-        <span className="pf-panel-title">{PANEL_TITLES[kind]}</span>
-        <div className="pf-panel-acts">
-          <button onClick={() => setGeom(defaultGeom(kind))} title="归位到侧栏">
-            <AlignRight size={15} />
-          </button>
-          <button onClick={onPin} title={pinned ? "取消钉住" : "钉住（召出时保持）"}>
-            {pinned ? <Pin size={15} /> : <PinOff size={15} />}
-          </button>
-          <button onClick={onClose} title="关闭">
-            <X size={15} />
-          </button>
+      <div className="pf-panel-inner">
+        <div className="pf-panel-head">
+          <span className="pf-panel-title">{PANEL_TITLES[kind]}</span>
+          <div className="pf-panel-acts">
+            <button onClick={() => setGeom(defaultGeom(kind))} title="归位到侧栏">
+              <PanelRight size={15} />
+            </button>
+            <button onClick={onPin} title={pinned ? "取消钉住" : "钉住（召出时保持）"}>
+              {pinned ? <Pin size={15} /> : <PinOff size={15} />}
+            </button>
+            <button onClick={onClose} title="关闭">
+              <X size={15} />
+            </button>
+          </div>
         </div>
+        <div className="pf-panel-body">{children}</div>
       </div>
-      <div className="pf-panel-body">{children}</div>
     </Rnd>
   );
 }
