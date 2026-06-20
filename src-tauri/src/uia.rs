@@ -93,6 +93,31 @@ pub fn element_at_with(auto: &UIAutomation, x: i32, y: i32) -> Result<ElementInf
     Ok(info(&el))
 }
 
+/// The UIA ancestry of the element under (x,y): (control_type, name) from the outermost
+/// window down to the element — the native analogue of a web inspector's DOM/selector
+/// path. Capped at 10 levels.
+pub fn ancestry(auto: &UIAutomation, x: i32, y: i32) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let walker = match auto.get_control_view_walker() {
+        Ok(w) => w,
+        Err(_) => return out,
+    };
+    let mut cur = auto.element_from_point(Point::new(x, y)).ok();
+    let mut depth = 0;
+    while let Some(el) = cur {
+        let ct = el.get_control_type().map(|c| format!("{:?}", c)).unwrap_or_default();
+        let nm = el.get_name().unwrap_or_default();
+        out.push((ct, nm));
+        depth += 1;
+        if depth >= 10 {
+            break;
+        }
+        cur = walker.get_parent(&el).ok();
+    }
+    out.reverse(); // outermost (window) first → element last
+    out
+}
+
 pub fn elements_in_rect(
     l: i32,
     t: i32,

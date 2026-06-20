@@ -220,63 +220,199 @@ fn key_down(vk: i32) -> bool {
     unsafe { (GetAsyncKeyState(vk) as u16 & 0x8000) != 0 }
 }
 
-/// Capture the element's region, build structured text, copy both to the clipboard, save
-/// the region PNG, and OCR the region when the element exposes no name/value.
-fn grab(e: &crate::uia::ElementInfo) -> Result<(), String> {
+fn now_nanos() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
+}
+
+fn encode_png(img: &image::RgbaImage) -> Result<Vec<u8>, String> {
     use image::codecs::png::{CompressionType, FilterType, PngEncoder};
     use image::ImageEncoder;
-
-    let (rgba, w, h, mx, my, _scale) = crate::capture::capture_primary_raw()?;
-    let img = image::RgbaImage::from_raw(w, h, rgba).ok_or("frame build failed")?;
-    let l = (e.rect[0] - mx).clamp(0, w as i32);
-    let t = (e.rect[1] - my).clamp(0, h as i32);
-    let r = (e.rect[2] - mx).clamp(0, w as i32);
-    let b = (e.rect[3] - my).clamp(0, h as i32);
-    let (cw, ch) = ((r - l).max(1) as u32, (b - t).max(1) as u32);
-    let sub = image::imageops::crop_imm(&img, l as u32, t as u32, cw, ch).to_image();
-
     let mut png = Vec::new();
     PngEncoder::new_with_quality(&mut png, CompressionType::Fast, FilterType::NoFilter)
-        .write_image(sub.as_raw(), cw, ch, image::ExtendedColorType::Rgba8)
+        .write_image(img.as_raw(), img.width(), img.height(), image::ExtendedColorType::Rgba8)
         .map_err(|e| e.to_string())?;
+    Ok(png)
+}
 
-    let name = if e.name.is_empty() { "(无名)" } else { &e.name };
-    let mut text = format!("{}: {}\n", e.control_type, name);
-    if !e.value.is_empty() {
-        text.push_str(&format!("值: {}\n", e.value));
+/// Draw a `thick`-px rectangle border on the image (used to box the selected element).
+fn draw_rect(img: &mut image::RgbaImage, x0: i32, y0: i32, x1: i32, y1: i32, color: [u8; 4], thick: i32) {
+    let (w, h) = (img.width() as i32, img.height() as i32);
+    let col = image::Rgba(color);
+    for d in 0..thick {
+        let mut xa = x0.max(0);
+        while xa <= (x1.min(w - 1)) {
+            for yy in [y0 + d, y1 - d] {
+                if yy >= 0 && yy < h {
+                    img.put_pixel(xa as u32, yy as u32, col);
+                }
+            }
+            xa += 1;
+        }
+        let mut ya = y0.max(0);
+        while ya <= (y1.min(h - 1)) {
+            for xx in [x0 + d, x1 - d] {
+                if xx >= 0 && xx < w {
+                    img.put_pixel(xx as u32, ya as u32, col);
+                }
+            }
+            ya += 1;
+        }
     }
-    if !e.automation_id.is_empty() {
-        text.push_str(&format!("AutomationId: {}\n", e.automation_id));
+}
+
+/// (process name, full exe path) for a pid.
+fn process_info(pid: i32) -> (String, String) {
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    if pid <= 0 {
+        return (String::new(), String::new());
     }
-    if !e.class_name.is_empty() {
-        text.push_str(&format!("类名: {}\n", e.class_name));
+    unsafe {
+        let h = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid as u32) {
+            Ok(h) => h,
+            Err(_) => return (String::new(), String::new()),
+        };
+        let mut buf = [0u16; 520];
+        let mut size = buf.len() as u32;
+        let path = if QueryFullProcessImageNameW(h, PROCESS_NAME_FORMAT(0), PWSTR(buf.as_mut_ptr()), &mut size).is_ok() {
+            String::from_utf16_lossy(&buf[..size as usize])
+        } else {
+            String::new()
+        };
+        let _ = CloseHandle(h);
+        let name = path.rsplit(['\\', '/']).next().unwrap_or("").to_string();
+        (name, path)
     }
-    text.push_str(&format!(
-        "范围: {},{} {}x{}\npid: {}\n",
-        e.rect[0], e.rect[1], e.rect[2] - e.rect[0], e.rect[3] - e.rect[1], e.pid
-    ));
-    if e.name.is_empty() && e.value.is_empty() {
-        if let Ok(t) = crate::ocr::ocr_png(&png) {
-            let t = t.trim();
-            if !t.is_empty() {
-                text.push_str(&format!("OCR:\n{}\n", t));
+}
+
+/// (top-level window title, class) under a screen point.
+fn window_info(x: i32, y: i32) -> (String, String) {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetAncestor, GetClassNameW, GetWindowTextW, WindowFromPoint, GA_ROOT,
+    };
+    unsafe {
+        let h0 = WindowFromPoint(POINT { x, y });
+        if h0.0.is_null() {
+            return (String::new(), String::new());
+        }
+        let h = GetAncestor(h0, GA_ROOT);
+        let mut t = [0u16; 512];
+        let n = GetWindowTextW(h, &mut t);
+        let title = String::from_utf16_lossy(&t[..n.max(0) as usize]);
+        let mut c = [0u16; 256];
+        let cn = GetClassNameW(h, &mut c);
+        let class = String::from_utf16_lossy(&c[..cn.max(0) as usize]);
+        (title, class)
+    }
+}
+
+/// On grab: take a higher-level context screenshot with the selected element boxed in
+/// blue, gather element + process + window + UIA-ancestry info, write a self-contained
+/// markdown doc (text + screenshot) to a per-grab folder, and copy a titled link to that
+/// doc — paste it to an AI and it reads the doc. Returns a short title for the HUD.
+fn grab(auto: &uiautomation::UIAutomation, x: i32, y: i32, e: &crate::uia::ElementInfo) -> Result<String, String> {
+    let (rgba, sw, sh, mx, my, _scale) = crate::capture::capture_primary_raw()?;
+    let full = image::RgbaImage::from_raw(sw, sh, rgba).ok_or("frame build failed")?;
+
+    let (el, et, er, eb) = (e.rect[0], e.rect[1], e.rect[2], e.rect[3]);
+    let (ew, eh) = (er - el, eb - et);
+    // context margin around the element, clamped to the monitor
+    let mxn = (ew / 2).clamp(60, 360);
+    let myn = (eh / 2).clamp(60, 280);
+    let rl = (el - mxn - mx).clamp(0, sw as i32);
+    let rt = (et - myn - my).clamp(0, sh as i32);
+    let rr = (er + mxn - mx).clamp(0, sw as i32);
+    let rb = (eb + myn - my).clamp(0, sh as i32);
+    let (cw, ch) = ((rr - rl).max(1) as u32, (rb - rt).max(1) as u32);
+    let mut crop = image::imageops::crop_imm(&full, rl as u32, rt as u32, cw, ch).to_image();
+    // blue box around the exact element within the context crop
+    draw_rect(&mut crop, el - mx - rl, et - my - rt, er - mx - rl, eb - my - rt, [74, 163, 255, 255], 3);
+
+    let dir = std::path::Path::new(&std::env::var("USERPROFILE").unwrap_or_default())
+        .join("Pictures")
+        .join("waiela")
+        .join(format!("grab-{}", now_nanos()));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::write(dir.join("shot.png"), encode_png(&crop)?).map_err(|e| e.to_string())?;
+
+    let (proc_name, proc_path) = process_info(e.pid);
+    let (win_title, win_class) = window_info(x, y);
+    let chain = crate::uia::ancestry(auto, x, y);
+
+    // OCR the exact element region when it exposes no readable name/value
+    let mut ocr_text = String::new();
+    if e.name.trim().is_empty() && e.value.trim().is_empty() {
+        let cl = (el - mx).clamp(0, sw as i32);
+        let ct = (et - my).clamp(0, sh as i32);
+        let ecw = (er - el).clamp(1, sw as i32 - cl) as u32;
+        let ech = (eb - et).clamp(1, sh as i32 - ct) as u32;
+        let esub = image::imageops::crop_imm(&full, cl as u32, ct as u32, ecw, ech).to_image();
+        if let Ok(epng) = encode_png(&esub) {
+            if let Ok(t) = crate::ocr::ocr_png(&epng) {
+                ocr_text = t.trim().to_string();
             }
         }
     }
 
-    if let Ok(mut cb) = arboard::Clipboard::new() {
-        let _ = cb.set_text(text);
+    let label = if e.name.trim().is_empty() {
+        e.control_type.clone()
+    } else {
+        format!("{}「{}」", e.control_type, e.name.trim())
+    };
+    let title = format!("{label} · {}", if proc_name.is_empty() { "?" } else { &proc_name });
+
+    let mut md = String::new();
+    md.push_str(&format!("# 选中：{title}\n\n"));
+    md.push_str("> 蓝框内即用户选中的元素；下面是它的结构化信息。\n\n");
+    md.push_str("![选区截图](shot.png)\n\n");
+    md.push_str("## 元素\n");
+    md.push_str(&format!("- 类型：{}\n", e.control_type));
+    md.push_str(&format!("- 名称：{}\n", if e.name.trim().is_empty() { "（无）" } else { e.name.trim() }));
+    if !e.value.trim().is_empty() {
+        md.push_str(&format!("- 值：{}\n", e.value.trim()));
     }
-    let dir = std::path::Path::new(&std::env::var("USERPROFILE").unwrap_or_default())
-        .join("Pictures")
-        .join("waiela");
-    let _ = std::fs::create_dir_all(&dir);
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let _ = std::fs::write(dir.join(format!("grab-el-{ts}.png")), &png);
-    Ok(())
+    if !e.automation_id.trim().is_empty() {
+        md.push_str(&format!("- AutomationId：{}\n", e.automation_id.trim()));
+    }
+    if !e.class_name.trim().is_empty() {
+        md.push_str(&format!("- 类名：{}\n", e.class_name.trim()));
+    }
+    md.push_str(&format!("- 屏幕范围：x={el} y={et} {ew}×{eh}\n"));
+    md.push_str("\n## 进程\n");
+    md.push_str(&format!("- pid：{}\n", e.pid));
+    md.push_str(&format!("- 名称：{}\n", if proc_name.is_empty() { "（未知）" } else { &proc_name }));
+    if !proc_path.is_empty() {
+        md.push_str(&format!("- 路径：{}\n", proc_path));
+    }
+    md.push_str("\n## 窗口\n");
+    md.push_str(&format!("- 标题：{}\n", if win_title.is_empty() { "（无）" } else { &win_title }));
+    md.push_str(&format!("- 类名：{}\n", win_class));
+    if !chain.is_empty() {
+        md.push_str("\n## UIA 路径（外层窗口 → 选中元素）\n");
+        for (i, (ct, nm)) in chain.iter().enumerate() {
+            let indent = "  ".repeat(i);
+            let nms = if nm.trim().is_empty() { String::new() } else { format!("「{}」", nm.trim()) };
+            md.push_str(&format!("{indent}- {ct}{nms}\n"));
+        }
+    }
+    if !ocr_text.is_empty() {
+        md.push_str(&format!("\n## OCR（元素区域文字）\n```\n{ocr_text}\n```\n"));
+    }
+    let md_path = dir.join("grab.md");
+    std::fs::write(&md_path, md).map_err(|e| e.to_string())?;
+
+    let clip = format!("选中「{title}」——详情文档（含选区截图，AI 可直接读）：\n{}", md_path.display());
+    if let Ok(mut cb) = arboard::Clipboard::new() {
+        let _ = cb.set_text(clip);
+    }
+    Ok(title)
 }
 
 /// Enter live-inspect: highlight + HUD follow the cursor, click grabs, Esc exits.
@@ -321,11 +457,10 @@ pub fn run_inspect(own_pid: i32) {
                     let _ = tx.send(Cmd::Highlight { l: e.rect[0], t: e.rect[1], r: e.rect[2], b: e.rect[3] });
                 }
                 if lbtn && !prev_lbtn {
-                    let label = e.control_type.clone();
-                    match grab(&e) {
-                        Ok(()) => {
+                    match grab(&auto, pt.x, pt.y, &e) {
+                        Ok(title) => {
                             let _ = tx.send(Cmd::Hud {
-                                text: format!("✓ 已抓取 {label}：图 + 结构化信息已复制到剪贴板（粘贴给 AI）", ),
+                                text: format!("✓ 已抓取「{title}」：文档+截图已生成，链接已复制到剪贴板（粘贴给 AI）"),
                                 x: pt.x + 16,
                                 y: pt.y + 22,
                             });
