@@ -10,6 +10,8 @@ mod inspect;
 #[cfg(windows)]
 mod ocr;
 #[cfg(windows)]
+mod snap_cmd;
+#[cfg(windows)]
 mod uia;
 
 use std::io::Write;
@@ -278,6 +280,44 @@ fn start_inspect() -> Result<(), String> {
     Err("windows only".into())
 }
 
+/// Enter 截图 (screenshot/annotate): hide poof's overlay, then position + summon the
+/// transparent "snap" window, which captures the clean frame and shows itself via present_snap.
+#[cfg(windows)]
+#[tauri::command]
+fn show_snap(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize};
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.hide();
+    }
+    if let Some(snap) = app.get_webview_window("snap") {
+        if let Ok(Some(m)) = snap.primary_monitor() {
+            let p = m.position();
+            let s = m.size();
+            let _ = snap.set_position(PhysicalPosition::new(p.x, p.y));
+            let _ = snap.set_size(PhysicalSize::new(s.width, s.height));
+        }
+        let _ = snap.emit("snap-summon", ());
+    }
+    Ok(())
+}
+#[cfg(windows)]
+#[tauri::command]
+fn present_snap(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.show().map_err(|e| e.to_string())?;
+    let _ = window.set_focus();
+    Ok(())
+}
+#[cfg(windows)]
+#[tauri::command]
+fn close_snap(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.hide().map_err(|e| e.to_string())
+}
+#[cfg(not(windows))]
+#[tauri::command]
+fn show_snap() -> Result<(), String> {
+    Err("windows only".into())
+}
+
 // pending AI chats (provider, optional query) handed to the terminal window
 static CHAT_INTENTS: std::sync::Mutex<Vec<(String, Option<String>)>> =
     std::sync::Mutex::new(Vec::new());
@@ -374,7 +414,15 @@ pub fn run() {
             search::search_reindex,
             search::open_path,
             search::reveal_path,
-            snapshot::snapshot_region
+            snapshot::snapshot_region,
+            show_snap,
+            present_snap,
+            close_snap,
+            snap_cmd::capture_screen,
+            snap_cmd::copy_image,
+            snap_cmd::save_image,
+            snap_cmd::pin_image,
+            snap_cmd::ocr_region
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

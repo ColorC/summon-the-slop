@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>poof · 截图</title>
+    <link rel="stylesheet" href="/src/snap/snap.css" />
+  </head>
+  <body>
+    <canvas id="screen"></canvas>
+    <canvas id="anno"></canvas>
+    <div id="sel" class="sel hidden"></div>
+    <div id="panel" class="panel hidden"></div>
+    <div id="toolbar" class="toolbar hidden">
+      <button data-tool="rect" class="on" title="矩形">▭</button>
+      <button data-tool="ellipse" title="椭圆">◯</button>
+      <button data-tool="arrow" title="箭头">↗</button>
+      <button data-tool="line" title="直线">╱</button>
+      <button data-tool="pen" title="画笔">✎</button>
+      <button data-tool="text" title="文字">A</button>
+      <button data-tool="highlight" title="高亮">▆</button>
+      <button data-tool="mosaic" title="马赛克">▦</button>
+      <span class="tsep"></span>
+      <button data-color="#ff3b30" class="swatch on" style="background:#ff3b30"></button>
+      <button data-color="#ffcc00" class="swatch" style="background:#ffcc00"></button>
+      <button data-color="#34c759" class="swatch" style="background:#34c759"></button>
+      <button data-color="#0a84ff" class="swatch" style="background:#0a84ff"></button>
+      <button data-color="#1c1c1e" class="swatch" style="background:#1c1c1e"></button>
+      <span class="tsep"></span>
+      <button data-act="undo" title="撤销 Ctrl+Z">↶</button>
+      <button data-act="copy">复制</button>
+      <button data-act="save">保存</button>
+      <button data-act="pin">钉屏</button>
+      <button data-act="ocr">OCR</button>
+      <button data-act="redo2">重选</button>
+    </div>
+    <div id="hint" class="hint hidden">拖拽框选 → 标注 → 复制 / 保存 / 钉屏 / OCR · Esc 退出</div>
+    <script type="module" src="/src/snap/snap.ts"></script>
+  </body>
+</html>
