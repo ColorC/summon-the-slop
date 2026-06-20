@@ -52,7 +52,7 @@ export default function App() {
             {pinned ? "📌 钉住" : "📍 取消钉"}
           </button>
           <span className="hint">
-            double-tap Ctrl 召出/收起 · Esc 隐藏 · 召出×{summons}
+按住 Ctrl 双击 Alt 召出/收起 · Esc 隐藏 · 召出×{summons}
           </span>
         </header>
         <div className="layout">

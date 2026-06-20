@@ -68,31 +68,48 @@ mod hook {
     use std::sync::mpsc::Sender;
     use std::sync::OnceLock;
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CallNextHookEx, GetMessageW, SetWindowsHookExW, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL,
     };
 
-    static LAST_CTRL_UP: AtomicU64 = AtomicU64::new(0);
+    // Summon gesture = HOLD Ctrl + double-tap Alt. "Ctrl held" is read from the real-time
+    // physical key state (GetAsyncKeyState) so a missed key-up can never wedge it.
+    static LAST_ALT_UP: AtomicU64 = AtomicU64::new(0);
     pub static TX: OnceLock<Sender<()>> = OnceLock::new();
 
     const WM_KEYUP: usize = 0x0101;
     const WM_SYSKEYUP: usize = 0x0105;
-    const VK_LCONTROL: u32 = 0xA2;
-    const VK_RCONTROL: u32 = 0xA3;
-    const DOUBLE_MS: u64 = 400;
+    const VK_CONTROL: i32 = 0x11; // generic Ctrl (L or R)
+    const VK_LMENU: u32 = 0xA4; // left Alt
+    const VK_RMENU: u32 = 0xA5; // right Alt
+    const VK_MENU: u32 = 0x12; // generic Alt (injected)
+    const DOUBLE_MS: u64 = 450;
+
+    #[inline]
+    fn is_alt(vk: u32) -> bool {
+        vk == VK_LMENU || vk == VK_RMENU || vk == VK_MENU
+    }
+    #[inline]
+    unsafe fn ctrl_held() -> bool {
+        (GetAsyncKeyState(VK_CONTROL) as u16 & 0x8000) != 0
+    }
 
     unsafe extern "system" fn keyboard_proc(code: i32, wparam: usize, lparam: isize) -> isize {
         if code >= 0 && (wparam == WM_KEYUP || wparam == WM_SYSKEYUP) {
             let kb = &*(lparam as *const KBDLLHOOKSTRUCT);
-            let vk = kb.vkCode;
-            if vk == VK_LCONTROL || vk == VK_RCONTROL {
-                let now = now_ms();
-                let last = LAST_CTRL_UP.swap(now, Ordering::SeqCst);
-                if last != 0 && now.saturating_sub(last) < DOUBLE_MS {
-                    LAST_CTRL_UP.store(0, Ordering::SeqCst);
-                    if let Some(tx) = TX.get() {
-                        let _ = tx.send(());
+            if is_alt(kb.vkCode) {
+                if ctrl_held() {
+                    let now = now_ms();
+                    let last = LAST_ALT_UP.swap(now, Ordering::SeqCst);
+                    if last != 0 && now.saturating_sub(last) < DOUBLE_MS {
+                        LAST_ALT_UP.store(0, Ordering::SeqCst);
+                        if let Some(tx) = TX.get() {
+                            let _ = tx.send(());
+                        }
                     }
+                } else {
+                    LAST_ALT_UP.store(0, Ordering::SeqCst);
                 }
             }
         }
@@ -107,7 +124,7 @@ mod hook {
                 log_line("ERROR SetWindowsHookExW failed (EDR may block low-level keyboard hook)");
                 return;
             }
-            log_line("hook installed ok (double-tap Ctrl armed)");
+            log_line("hook installed ok (hold Ctrl + double-tap Alt armed)");
             let mut msg: MSG = std::mem::zeroed();
             while GetMessageW(&mut msg, 0, 0, 0) != 0 {}
         });
