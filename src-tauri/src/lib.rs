@@ -1,4 +1,7 @@
-// Poof — summoned overlay shell. Double-tap Ctrl summons a transparent always-on-top panel.
+// Poof — summoned overlay shell. Hold Ctrl + double-tap Alt summons a transparent panel.
+mod pty;
+mod search;
+
 use std::io::Write;
 #[cfg(windows)]
 use std::sync::mpsc::channel;
@@ -192,39 +195,125 @@ async fn copy_text(text: String) -> Result<(), String> {
     }
 }
 
+/// Open a heavy surface (canvas / terminal / project / review / talk) as its OWN
+/// normal window — the overlay shade stays lightweight; heavy stuff lives in
+/// separate windows ("拖出来当普通窗口"). Built from an async command (not add_child)
+/// to avoid the Windows main-thread deadlock.
+#[tauri::command]
+async fn open_view(app: tauri::AppHandle, view: String) -> Result<(), String> {
+    use tauri::Manager;
+    let safe: String = view.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+    let label = format!("view-{safe}");
+    if let Some(w) = app.get_webview_window(&label) {
+        let _ = w.show();
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    let url = tauri::WebviewUrl::App(format!("index.html#/{safe}").into());
+    tauri::WebviewWindowBuilder::new(&app, &label, url)
+        .title(format!("poof · {safe}"))
+        .inner_size(1120.0, 780.0)
+        .always_on_top(true)
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// pending AI chats (provider, optional query) handed to the terminal window
+static CHAT_INTENTS: std::sync::Mutex<Vec<(String, Option<String>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Start a new AI chat: ensure the terminal window is open/focused and queue an
+/// intent (which CLI + optional query) that the terminal window drains.
+#[tauri::command]
+async fn new_chat(app: tauri::AppHandle, provider: String, query: Option<String>) -> Result<(), String> {
+    use tauri::{Emitter, Manager};
+    CHAT_INTENTS.lock().unwrap().push((provider, query));
+    let label = "view-terminal";
+    if app.get_webview_window(label).is_none() {
+        let url = tauri::WebviewUrl::App("index.html#/terminal".into());
+        tauri::WebviewWindowBuilder::new(&app, label, url)
+            .title("poof · 终端")
+            .inner_size(1120.0, 780.0)
+            .always_on_top(true)
+            .build()
+            .map_err(|e| e.to_string())?;
+    }
+    if let Some(w) = app.get_webview_window(label) {
+        let _ = w.show();
+        let _ = w.set_focus();
+        let _ = w.emit("poof:new-chat", ());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn take_chat_intents() -> Vec<(String, Option<String>)> {
+    std::mem::take(&mut *CHAT_INTENTS.lock().unwrap())
+}
+
 #[allow(unused_variables)]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .manage(pty::PtyState::default())
         .setup(|app| {
             let handle = app.handle().clone();
             #[cfg(windows)]
             {
+                // Fullscreen overlay: cover the whole monitor (taskbar included).
+                if let Some(w) = app.get_webview_window("main") {
+                    if let Ok(Some(mon)) = w.current_monitor() {
+                        let sz = mon.size();
+                        let _ = w.set_size(tauri::PhysicalSize::new(sz.width, sz.height));
+                        let _ = w.set_position(tauri::PhysicalPosition::new(0, 0));
+                    }
+                }
                 let (tx, rx) = channel::<()>();
                 let _ = hook::TX.set(tx);
                 hook::install();
                 std::thread::spawn(move || {
                     for _ in rx {
-                        if let Some(w) = handle.get_webview_window("main") {
-                            let visible = w.is_visible().unwrap_or(false);
-                            if visible {
-                                let _ = w.hide();
-                                log_line("toggle hide");
-                            } else {
-                                let _ = w.show();
-                                let _ = w.set_focus();
-                                let _ = handle.emit("summon", ());
-                                log_line("toggle show");
+                        let h = handle.clone();
+                        let _ = handle.run_on_main_thread(move || {
+                            if let Some(w) = h.get_webview_window("main") {
+                                let visible = w.is_visible().unwrap_or(false);
+                                if visible {
+                                    let _ = w.hide();
+                                    log_line("toggle hide");
+                                } else {
+                                    let _ = w.unminimize();
+                                    let _ = w.show();
+                                    let _ = w.set_always_on_top(true);
+                                    let _ = w.set_focus();
+                                    let _ = h.emit("summon", ());
+                                    log_line("toggle show");
+                                }
                             }
-                        }
+                        });
                     }
                 });
             }
             log_line("app started");
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![run_shell, ask_ai, copy_text])
+        .invoke_handler(tauri::generate_handler![
+            run_shell,
+            ask_ai,
+            copy_text,
+            open_view,
+            new_chat,
+            take_chat_intents,
+            pty::pty_spawn,
+            pty::pty_write,
+            pty::pty_resize,
+            pty::pty_kill,
+            search::search,
+            search::search_reindex,
+            search::open_path,
+            search::reveal_path
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

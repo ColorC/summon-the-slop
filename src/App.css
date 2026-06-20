@@ -1,13 +1,11 @@
 * {
   box-sizing: border-box;
 }
-
 :root {
-  font-family: "Segoe UI", Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  font-family: "Segoe UI", Inter, system-ui, Arial, sans-serif;
   font-size: 14px;
   color: #e7e7ea;
 }
-
 html,
 body,
 #root {
@@ -15,104 +13,6 @@ body,
   height: 100%;
   background: transparent;
 }
-
-.overlay {
-  height: 100vh;
-  width: 100vw;
-  display: flex;
-  padding: 10px;
-}
-
-.panel {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  background: rgba(18, 19, 24, 0.94);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 16px;
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
-  backdrop-filter: blur(18px);
-  overflow: hidden;
-}
-
-/* topbar */
-.topbar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 9px 14px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  user-select: none;
-}
-.brand {
-  font-weight: 800;
-  letter-spacing: 0.4px;
-}
-.cmd-trigger {
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  color: #cfd2da;
-  border-radius: 8px;
-  padding: 4px 10px;
-  font-size: 12px;
-  cursor: pointer;
-}
-.cmd-trigger kbd {
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 4px;
-  padding: 1px 5px;
-  font-size: 11px;
-}
-.hint {
-  margin-left: auto;
-  font-size: 12px;
-  color: #7f828d;
-}
-
-/* layout */
-.layout {
-  flex: 1;
-  display: flex;
-  min-height: 0;
-}
-.sidebar {
-  width: 132px;
-  border-right: 1px solid rgba(255, 255, 255, 0.06);
-  padding: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.nav-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  background: transparent;
-  border: none;
-  color: #b9bcc6;
-  text-align: left;
-  padding: 8px 10px;
-  border-radius: 8px;
-  cursor: pointer;
-  font-size: 13px;
-}
-.nav-item:hover {
-  background: rgba(255, 255, 255, 0.05);
-}
-.nav-item.on {
-  background: rgba(99, 102, 241, 0.22);
-  color: #fff;
-}
-.nav-icon {
-  font-size: 15px;
-}
-.stage {
-  flex: 1;
-  padding: 16px;
-  overflow: auto;
-  min-width: 0;
-}
-
 .muted {
   color: #80838d;
 }
@@ -121,10 +21,270 @@ body,
   white-space: pre-wrap;
 }
 
-/* project cards */
+/* ================= summoned overlay: small floating widgets, NO dim ================= */
+.pf-root {
+  position: fixed !important;
+  inset: 0 !important;
+  background: transparent !important; /* never dim the screen behind */
+}
+.pf-top {
+  position: fixed !important;
+  top: 4.5vh !important;
+  left: 50% !important;
+  transform: translateX(-50%) !important;
+  width: 640px;
+  max-width: 92vw;
+  z-index: 10;
+}
+.pf-bottom {
+  position: fixed !important;
+  bottom: 5vh !important;
+  left: 50% !important;
+  transform: translateX(-50%) !important;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+/* search pill */
+.pf-top .searchbar {
+  position: relative;
+  width: 100%;
+}
+.pf-top .search-input {
+  width: 100%;
+  background: rgba(22, 23, 29, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #fff;
+  border-radius: 14px;
+  padding: 13px 17px;
+  font-size: 14px;
+  outline: none;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.62);
+}
+.pf-top .search-results {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  background: rgba(24, 25, 31, 0.99);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  max-height: 60vh;
+  overflow: auto;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.65);
+  padding: 6px;
+}
+
+/* bottom action bar */
+.pf-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(22, 23, 29, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 14px;
+  padding: 7px 10px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.62);
+}
+.pf-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  color: #e3e5ea;
+  border-radius: 9px;
+  padding: 8px 11px;
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.pf-btn:hover {
+  background: rgba(255, 255, 255, 0.11);
+}
+.pf-btn.accent {
+  color: #c7c9ff;
+  border-color: rgba(99, 102, 241, 0.55);
+}
+.pf-btn.on {
+  background: rgba(99, 102, 241, 0.32);
+}
+.pf-sep {
+  width: 1px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.14);
+  margin: 0 2px;
+}
+.pf-notif {
+  width: 360px;
+  max-width: 92vw;
+  max-height: 44vh;
+  overflow: auto;
+  background: rgba(22, 23, 29, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 13px;
+  padding: 10px 13px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.62);
+}
+
+/* ================= search results rows ================= */
+.sr {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.sr.on {
+  background: rgba(99, 102, 241, 0.28);
+}
+.sr-kind {
+  width: 16px;
+  text-align: center;
+}
+.sr-name {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.sr-path {
+  color: #7d818c;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+/* ================= notifications ================= */
+.region-h {
+  font-size: 12px;
+  color: #8a8d98;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.tbd {
+  color: #5f636e;
+  font-weight: 400;
+}
+.notif-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.notif-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 2px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 12.5px;
+}
+.notif-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #6366f1;
+  flex: none;
+}
+.notif-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.notif-when {
+  color: #6f727c;
+  font-size: 11px;
+}
+
+/* ================= terminal (TerminalWindow) ================= */
+.termbar {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.term-tabs {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  flex-wrap: wrap;
+}
+.termbar-label {
+  font-size: 12px;
+  color: #8a8d98;
+  margin-right: 6px;
+}
+.term-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid transparent;
+  color: #c3c6cf;
+  border-radius: 7px 7px 0 0;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.term-tab.on {
+  background: #0c0d11;
+  border-color: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+.term-tab .x {
+  opacity: 0.5;
+}
+.term-tab .x:hover {
+  opacity: 1;
+}
+.term-new {
+  background: transparent;
+  border: 1px dashed rgba(255, 255, 255, 0.18);
+  color: #9aa0ad;
+  border-radius: 7px;
+  padding: 4px 9px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.term-new.claude {
+  border-color: rgba(217, 119, 87, 0.5);
+  color: #e0a387;
+}
+.term-new.codex {
+  border-color: rgba(99, 179, 237, 0.5);
+  color: #93c5ec;
+}
+.term-stage {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  background: #0c0d11;
+}
+.term-pane {
+  position: absolute;
+  inset: 0;
+}
+.term {
+  height: 100%;
+  width: 100%;
+  padding: 4px 6px;
+}
+.term-empty {
+  padding: 24px;
+  color: #80838d;
+  font-size: 13px;
+}
+
+/* ================= surfaces (project/review/talk in SurfaceWindow) ================= */
 .cards {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   gap: 10px;
 }
 .card {
@@ -156,8 +316,6 @@ body,
   color: #9aa0ad;
   line-height: 1.5;
 }
-
-/* find */
 .find-input,
 .talk-input textarea {
   width: 100%;
@@ -195,8 +353,6 @@ body,
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
-/* talk */
 .talk-input {
   display: flex;
   gap: 8px;
@@ -225,7 +381,7 @@ body,
 .answer-body {
   white-space: pre-wrap;
   line-height: 1.55;
-  max-height: 280px;
+  max-height: 60vh;
   overflow: auto;
 }
 .dispatch {
@@ -237,8 +393,6 @@ body,
   padding: 5px 12px;
   font-size: 12px;
 }
-
-/* review */
 .review-h {
   font-weight: 700;
   margin: 4px 0 8px;
@@ -251,89 +405,113 @@ body,
   line-height: 1.5;
 }
 
-/* note */
-.note-placeholder {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  gap: 10px;
-}
-.big2 {
-  font-size: 22px;
-  font-weight: 700;
-}
-
-/* tldraw canvas */
+/* canvas (tldraw) */
 .canvas-wrap {
-  position: relative;
-  height: 470px;
-  width: 100%;
-  border-radius: 10px;
-  overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  position: absolute;
+  inset: 0;
 }
 
-/* command palette */
-.palette-backdrop {
+/* ================= heavy surfaces as their own normal windows ================= */
+.win {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
+}
+.win-canvas {
+  background: #0d0e12;
+}
+.win-term {
+  background: #0c0d11;
+}
+.win-surface {
+  overflow: auto;
+  padding: 18px;
+  background: #13141a;
+}
+
+/* dim the overlay when a heavy window is open (window floats on top) */
+.pf-root.dim {
+  background: rgba(0, 0, 0, 0.45) !important;
+}
+
+/* notes canvas on the overlay */
+.pf-canvas {
+  position: fixed;
+  inset: 0;
+  background: #0d0e12;
+}
+.pf-canvas-back {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(22, 23, 29, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #e3e5ea;
+  border-radius: 9px;
+  padding: 6px 11px;
+  font-size: 13px;
+  cursor: pointer;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
+}
+
+/* search result icons + AI row */
+.sr-kind {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: center;
-  padding-top: 14vh;
+  width: 18px;
+  color: #aab0bd;
 }
-.palette {
-  width: 540px;
-  max-width: 86vw;
-  background: rgba(26, 27, 33, 0.99);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 14px;
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6);
-  overflow: hidden;
+.sr.ai .sr-kind {
+  color: #c7c9ff;
 }
-.palette [cmdk-input] {
+.sr.ai .sr-name {
+  color: #c7c9ff;
+}
+
+/* right-click context menu on a search result */
+.ctx-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+}
+.ctx-menu {
+  position: fixed;
+  z-index: 91;
+  min-width: 184px;
+  background: rgba(28, 29, 36, 0.99);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+  padding: 5px;
+}
+.ctx-menu button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
   width: 100%;
   background: transparent;
   border: none;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  color: #fff;
-  padding: 14px 16px;
-  font-size: 15px;
-  outline: none;
-}
-.palette [cmdk-list] {
-  max-height: 320px;
-  overflow: auto;
-  padding: 6px;
-}
-.palette [cmdk-group-heading] {
-  font-size: 11px;
-  color: #777b85;
-  padding: 8px 8px 4px;
-}
-.palette [cmdk-item] {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 9px 10px;
-  border-radius: 8px;
+  color: #dfe1e6;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 7px;
   cursor: pointer;
   font-size: 13px;
 }
-.palette [cmdk-item][data-selected="true"] {
+.ctx-menu button:hover {
   background: rgba(99, 102, 241, 0.28);
 }
-.palette [cmdk-empty] {
-  padding: 16px;
-  color: #80838d;
-  font-size: 13px;
+
+/* terminal tab close + new-tab icon alignment */
+.term-tab .x {
+  cursor: pointer;
 }
-.palette code {
-  background: rgba(255, 255, 255, 0.1);
-  padding: 1px 6px;
-  border-radius: 4px;
+.term-new {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
