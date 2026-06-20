@@ -355,6 +355,16 @@ fn take_chat_intents() -> Vec<(String, Option<String>)> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // single-instance MUST be first: a second launch never starts a 2nd poof — it
+        // just summons the existing one. Enforces the "never two poofs" rule at the process level.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            use tauri::Manager;
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.set_focus();
+                let _ = tauri::Emitter::emit(app, "summon", ());
+            }
+        }))
         .plugin(tauri_plugin_opener::init())
         .manage(pty::PtyState::default())
         .setup(|app| {
@@ -426,4 +436,55 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+// Headless backend tests — runtime-verify the 抓取/截图/洞察 backend without any UI
+// (no summon gesture, no second poof). Run: cargo test --lib.
+#[cfg(all(test, windows))]
+mod tests {
+    #[test]
+    fn capture_returns_a_full_frame() {
+        let (rgba, w, h, _x, _y, _s) = crate::capture::capture_primary_raw().expect("capture");
+        assert!(w > 0 && h > 0, "bad dims {w}x{h}");
+        assert_eq!(rgba.len(), (w as usize) * (h as usize) * 4, "rgba size mismatch");
+    }
+
+    #[test]
+    fn save_image_writes_a_png() {
+        // 1x1 PNG
+        let b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        let path = crate::snap_cmd::save_image(b64.to_string()).expect("save_image");
+        let p = std::path::Path::new(&path);
+        assert!(p.exists(), "file not written: {path}");
+        assert_eq!(p.extension().and_then(|e| e.to_str()), Some("png"));
+        let bytes = std::fs::read(p).unwrap();
+        assert_eq!(&bytes[1..4], b"PNG", "not a PNG");
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn ocr_reads_rendered_text() {
+        use ab_glyph::{FontVec, PxScale};
+        use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+        use image::ImageEncoder;
+        use imageproc::drawing::draw_text_mut;
+        let data = std::fs::read("C:\\Windows\\Fonts\\msyh.ttc").expect("font");
+        let font = FontVec::try_from_vec_and_index(data, 0).expect("parse font");
+        let mut img = image::RgbaImage::from_pixel(420, 90, image::Rgba([255, 255, 255, 255]));
+        draw_text_mut(&mut img, image::Rgba([0, 0, 0, 255]), 10, 22, PxScale::from(40.0), &font, "Hello OCR 12345");
+        let mut png = Vec::new();
+        PngEncoder::new_with_quality(&mut png, CompressionType::Fast, FilterType::NoFilter)
+            .write_image(img.as_raw(), 420, 90, image::ExtendedColorType::Rgba8)
+            .unwrap();
+        let text = crate::ocr::ocr_png(&png).expect("ocr_png");
+        let low = text.to_lowercase();
+        assert!(low.contains("hello") || text.contains("12345"), "ocr returned: {text:?}");
+    }
+
+    #[test]
+    fn elements_in_rect_runs() {
+        // UIA over a screen region — content varies, but it must not error/panic.
+        let r = crate::uia::elements_in_rect(0, 0, 600, 400, 30);
+        assert!(r.is_ok(), "elements_in_rect errored: {:?}", r.err());
+    }
 }

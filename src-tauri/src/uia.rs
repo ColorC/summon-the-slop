@@ -118,6 +118,40 @@ pub fn ancestry(auto: &UIAutomation, x: i32, y: i32) -> Vec<(String, String)> {
     out
 }
 
+/// Reuse an existing UIAutomation (for the live inspector's box-select, which already
+/// holds one) to list named/valued elements intersecting a rect.
+pub fn elements_in_rect_with(auto: &UIAutomation, l: i32, t: i32, r: i32, b: i32, max: usize) -> Vec<ElementInfo> {
+    let (cx, cy) = ((l + r) / 2, (t + b) / 2);
+    let container = match auto.element_from_point(Point::new(cx, cy)) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let cond = match auto.create_true_condition() {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let all = match container.find_all(TreeScope::Subtree, &cond) {
+        Ok(a) => a,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for e in all.iter() {
+        if let Ok(rc) = e.get_bounding_rectangle() {
+            let (el, et, er, eb) = (rc.get_left(), rc.get_top(), rc.get_right(), rc.get_bottom());
+            if er > l && el < r && eb > t && et < b {
+                let inf = info(e);
+                if !inf.name.is_empty() || !inf.value.is_empty() {
+                    out.push(inf);
+                    if out.len() >= max {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 pub fn elements_in_rect(
     l: i32,
     t: i32,

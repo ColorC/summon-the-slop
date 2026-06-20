@@ -457,7 +457,55 @@ fn grab(auto: &uiautomation::UIAutomation, x: i32, y: i32, e: &crate::uia::Eleme
     Ok(label)
 }
 
-/// Enter live-inspect: highlight + HUD follow the cursor, click grabs, Esc exits.
+/// Box-select grab: capture the dragged region (with the box drawn), list the UIA
+/// elements inside it, write ONE captioned PNG + clipboard. Returns a HUD label.
+fn grab_region(auto: &uiautomation::UIAutomation, l: i32, t: i32, r: i32, b: i32) -> Result<String, String> {
+    let (rgba, sw, sh, mx, my, _scale) = crate::capture::capture_primary_raw()?;
+    let full = image::RgbaImage::from_raw(sw, sh, rgba).ok_or("frame build failed")?;
+    let m = 36;
+    let rl = (l - m - mx).clamp(0, sw as i32);
+    let rt = (t - m - my).clamp(0, sh as i32);
+    let rr = (r + m - mx).clamp(0, sw as i32);
+    let rb = (b + m - my).clamp(0, sh as i32);
+    let (cw, ch) = ((rr - rl).max(1) as u32, (rb - rt).max(1) as u32);
+    let mut crop = image::imageops::crop_imm(&full, rl as u32, rt as u32, cw, ch).to_image();
+    draw_rect(&mut crop, l - mx - rl, t - my - rt, r - mx - rl, b - my - rt, [74, 163, 255, 255], 3);
+
+    let els = crate::uia::elements_in_rect_with(auto, l, t, r, b, 80);
+    let (win_title, _) = window_info((l + r) / 2, (t + b) / 2);
+
+    let mut lines: Vec<String> = Vec::new();
+    lines.push(format!("[区域] {}×{} · {} 个元素", r - l, b - t, els.len()));
+    if !win_title.is_empty() {
+        lines.push(format!("窗口: {}", short(&win_title, 46)));
+    }
+    for e in els.iter().take(10) {
+        let nm = if e.name.trim().is_empty() { e.value.trim() } else { e.name.trim() };
+        lines.push(format!("· {} {}", e.control_type, short(nm, 40)));
+    }
+    if els.len() > 10 {
+        lines.push(format!("… 还有 {} 个", els.len() - 10));
+    }
+
+    let out = compose_caption(&crop, &lines);
+    let fname = format!("Region-{}x{}-{:06}.png", r - l, b - t, (now_nanos() % 1_000_000) as u32);
+    let dir = std::path::Path::new(&std::env::var("USERPROFILE").unwrap_or_default())
+        .join("Pictures")
+        .join("waiela");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(&fname);
+    std::fs::write(&path, encode_png(&out)?).map_err(|e| e.to_string())?;
+
+    let label = format!("区域 {}×{} · {} 个元素", r - l, b - t, els.len());
+    let clip = format!("框选 {label}（图含区域内元素列表，AI 可直接读）：\n{}", path.display());
+    if let Ok(mut cb) = arboard::Clipboard::new() {
+        let _ = cb.set_text(clip);
+    }
+    Ok(label)
+}
+
+/// Enter live-inspect: hover highlights the element under the cursor; a plain click grabs
+/// that element; a drag box-selects a region and lists the elements inside. Esc exits.
 /// Runs its own loop on the calling thread; guarded so only one session runs at a time.
 pub fn run_inspect(own_pid: i32) {
     if INSPECT_ON.swap(true, Ordering::SeqCst) {
@@ -473,15 +521,18 @@ pub fn run_inspect(own_pid: i32) {
         }
     };
     let _ = tx.send(Cmd::Hud {
-        text: "活体洞察：移动鼠标看元素 · 单击抓取(图+结构化信息→剪贴板) · Esc 退出".into(),
+        text: "活体洞察：移动看元素 · 单击抓元素 · 拖拽框选区域(列出内部元素) · Esc 退出".into(),
         x: 40,
         y: 40,
     });
     std::thread::sleep(Duration::from_millis(700));
 
+    const DRAG_THRESHOLD: i32 = 6;
     let mut last_rect = [i32::MIN; 4];
     let mut prev_lbtn = key_down(VK_LBUTTON.0 as i32); // don't fire on the click that may have summoned
     let mut flash_until = Instant::now();
+    let mut down_pos: Option<(i32, i32)> = None;
+    let mut dragging = false;
     loop {
         if key_down(VK_ESCAPE.0 as i32) {
             break;
@@ -492,37 +543,74 @@ pub fn run_inspect(own_pid: i32) {
         }
         let lbtn = key_down(VK_LBUTTON.0 as i32);
 
-        if let Ok(e) = crate::uia::element_at_with(&auto, pt.x, pt.y) {
-            if e.pid != own_pid {
-                if e.rect != last_rect {
-                    last_rect = e.rect;
-                    let _ = tx.send(Cmd::Highlight { l: e.rect[0], t: e.rect[1], r: e.rect[2], b: e.rect[3] });
+        // rising edge: begin a potential drag
+        if lbtn && !prev_lbtn {
+            down_pos = Some((pt.x, pt.y));
+            dragging = false;
+        }
+        // held: detect drag past the threshold, draw the selection box live
+        if lbtn {
+            if let Some((dx, dy)) = down_pos {
+                if (pt.x - dx).abs() + (pt.y - dy).abs() > DRAG_THRESHOLD {
+                    dragging = true;
                 }
-                if lbtn && !prev_lbtn {
-                    match grab(&auto, pt.x, pt.y, &e) {
-                        Ok(title) => {
-                            let _ = tx.send(Cmd::Hud {
-                                text: format!("✓ 已抓取「{title}」：文档+截图已生成，链接已复制到剪贴板（粘贴给 AI）"),
-                                x: pt.x + 16,
-                                y: pt.y + 22,
-                            });
-                        }
-                        Err(err) => {
-                            let _ = tx.send(Cmd::Hud { text: format!("抓取失败：{err}"), x: pt.x + 16, y: pt.y + 22 });
-                        }
+                if dragging {
+                    let (l, t, r, b) = (dx.min(pt.x), dy.min(pt.y), dx.max(pt.x), dy.max(pt.y));
+                    let _ = tx.send(Cmd::Highlight { l, t, r, b });
+                    let _ = tx.send(Cmd::Hud { text: format!("框选中… {}×{}（松开 = 列出区域内元素）", r - l, b - t), x: pt.x + 16, y: pt.y + 22 });
+                    last_rect = [i32::MIN; 4]; // re-highlight the element after the drag ends
+                    prev_lbtn = lbtn;
+                    std::thread::sleep(Duration::from_millis(20));
+                    continue;
+                }
+            }
+        }
+        // falling edge: a release ends either a drag (box-select) or a plain click (element)
+        if !lbtn && prev_lbtn {
+            if dragging {
+                if let Some((dx, dy)) = down_pos {
+                    let (l, t, r, b) = (dx.min(pt.x), dy.min(pt.y), dx.max(pt.x), dy.max(pt.y));
+                    if (r - l) > 4 && (b - t) > 4 {
+                        let msg = match grab_region(&auto, l, t, r, b) {
+                            Ok(label) => format!("✓ 已框选「{label}」：图 + 元素列表已复制到剪贴板（粘贴给 AI）"),
+                            Err(err) => format!("框选失败：{err}"),
+                        };
+                        let _ = tx.send(Cmd::Hud { text: msg, x: pt.x + 16, y: pt.y + 22 });
+                        flash_until = Instant::now() + Duration::from_millis(1600);
                     }
-                    flash_until = Instant::now() + Duration::from_millis(1400);
-                } else if Instant::now() >= flash_until {
-                    let nm = if e.name.is_empty() { "(无名)" } else { &e.name };
-                    let info = format!(
-                        "{}  {}\n范围 {}x{}    pid {}",
-                        e.control_type,
-                        nm,
-                        e.rect[2] - e.rect[0],
-                        e.rect[3] - e.rect[1],
-                        e.pid
-                    );
-                    let _ = tx.send(Cmd::Hud { text: info, x: pt.x + 16, y: pt.y + 22 });
+                }
+            } else if let Ok(e) = crate::uia::element_at_with(&auto, pt.x, pt.y) {
+                if e.pid != own_pid {
+                    let msg = match grab(&auto, pt.x, pt.y, &e) {
+                        Ok(title) => format!("✓ 已抓取「{title}」：图 + 信息已复制到剪贴板（粘贴给 AI）"),
+                        Err(err) => format!("抓取失败：{err}"),
+                    };
+                    let _ = tx.send(Cmd::Hud { text: msg, x: pt.x + 16, y: pt.y + 22 });
+                    flash_until = Instant::now() + Duration::from_millis(1500);
+                }
+            }
+            dragging = false;
+            down_pos = None;
+            prev_lbtn = lbtn;
+            std::thread::sleep(Duration::from_millis(25));
+            continue;
+        }
+        // idle (not pressed): hover-highlight the element under the cursor
+        if !lbtn {
+            if let Ok(e) = crate::uia::element_at_with(&auto, pt.x, pt.y) {
+                if e.pid != own_pid {
+                    if e.rect != last_rect {
+                        last_rect = e.rect;
+                        let _ = tx.send(Cmd::Highlight { l: e.rect[0], t: e.rect[1], r: e.rect[2], b: e.rect[3] });
+                    }
+                    if Instant::now() >= flash_until {
+                        let nm = if e.name.is_empty() { "(无名)" } else { &e.name };
+                        let info = format!(
+                            "{}  {}\n{}x{}  pid {} · 单击抓元素 / 拖拽框选区域",
+                            e.control_type, nm, e.rect[2] - e.rect[0], e.rect[3] - e.rect[1], e.pid
+                        );
+                        let _ = tx.send(Cmd::Hud { text: info, x: pt.x + 16, y: pt.y + 22 });
+                    }
                 }
             }
         }

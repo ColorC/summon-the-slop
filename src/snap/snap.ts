@@ -11,7 +11,10 @@ const $ = (id: string) => document.getElementById(id)!;
 const screen = $("screen") as HTMLCanvasElement;
 const anno = $("anno") as HTMLCanvasElement;
 const sel = $("sel"), toolbar = $("toolbar"), hint = $("hint"), panel = $("panel");
+const loupe = $("loupe"), loupeInfo = $("loupeInfo");
+const loupeCanvas = $("loupeCanvas") as HTMLCanvasElement;
 const sctx = screen.getContext("2d", { willReadFrequently: true })!;
+const lctx = loupeCanvas.getContext("2d")!;
 const annot = new Annotator(anno, screen);
 
 let cap: Capture | null = null;
@@ -42,9 +45,32 @@ function reset() {
   selected = dragging = false;
   dragStart = null;
   annot.enabled = false;
-  for (const el of [sel, toolbar, panel]) el.classList.add("hidden");
+  for (const el of [sel, toolbar, panel, loupe]) el.classList.add("hidden");
   anno.getContext("2d")!.clearRect(0, 0, anno.width, anno.height);
   hint.classList.remove("hidden");
+}
+
+// magnifier + color picker (snipaste loupe) — zoomed pixels under the cursor + hex.
+function updateLoupe(cx: number, cy: number) {
+  const SIZE = 160, SRC = 24;
+  const px = Math.round(cx * dpr), py = Math.round(cy * dpr);
+  lctx.imageSmoothingEnabled = false;
+  lctx.clearRect(0, 0, SIZE, SIZE);
+  lctx.drawImage(screen, px - SRC / 2, py - SRC / 2, SRC, SRC, 0, 0, SIZE, SIZE);
+  const cell = SIZE / SRC;
+  lctx.strokeStyle = "rgba(74,163,255,.9)"; lctx.lineWidth = 1;
+  lctx.strokeRect(SIZE / 2 - cell / 2, SIZE / 2 - cell / 2, cell, cell);
+  let hex = "";
+  try {
+    const d = sctx.getImageData(px, py, 1, 1).data;
+    hex = "#" + [d[0], d[1], d[2]].map((v) => v.toString(16).padStart(2, "0")).join("").toUpperCase();
+  } catch {}
+  loupeInfo.textContent = `${px}, ${py}　${hex}`;
+  let lx = cx + 18, ly = cy + 18;
+  if (lx + SIZE > window.innerWidth) lx = cx - SIZE - 18;
+  if (ly + SIZE + 22 > window.innerHeight) ly = cy - SIZE - 40;
+  Object.assign(loupe.style, { left: lx + "px", top: ly + "px" });
+  loupe.classList.remove("hidden");
 }
 
 function updateSel(a: { x: number; y: number }, b: { x: number; y: number }) {
@@ -65,8 +91,9 @@ function onMove(e: MouseEvent) {
   if (selected) { if (annot.enabled) annot.onMove(e.clientX, e.clientY); return; }
   if (dragStart) {
     if (Math.abs(e.clientX - dragStart.x) + Math.abs(e.clientY - dragStart.y) > 4) dragging = true;
-    if (dragging) updateSel(dragStart, { x: e.clientX, y: e.clientY });
+    if (dragging) { updateSel(dragStart, { x: e.clientX, y: e.clientY }); loupe.classList.add("hidden"); return; }
   }
+  updateLoupe(e.clientX, e.clientY); // magnifier + color until a region is selected
 }
 
 function onUp(e: MouseEvent) {
@@ -86,6 +113,7 @@ function selectBox(l: number, t: number, r: number, b: number) {
   selected = true;
   annot.enabled = true;
   hint.classList.add("hidden");
+  loupe.classList.add("hidden");
   Object.assign(sel.style, { left: l + "px", top: t + "px", width: r - l + "px", height: b - t + "px" });
   sel.classList.remove("hidden");
   showToolbar(l, t, b);
