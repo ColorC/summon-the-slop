@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import { Tldraw } from "@tldraw/tldraw";
-import "@tldraw/tldraw/tldraw.css";
+import { NoteSpace } from "./regions/NoteSpace";
 import { runShell, askAi, copyText } from "./lib";
 
 // ---------- shared helpers ----------
@@ -191,22 +190,8 @@ export function ReviewSurface() {
 // ---------- 速记 / 画布 Note (P4: BlockSuite/Excalidraw) ----------
 
 export function NoteSurface() {
-  // 透明深色无限画布：暗色主题 + 背景透明（CSS），让浮层/桌面透出,只剩元素。
-  // 生产替换 = BlockSuite EdgelessEditor（rich-text-on-canvas）。
-  return (
-    <div className="canvas-wrap">
-      <Tldraw
-        persistenceKey="poof-note"
-        onMount={(editor: any) => {
-          try {
-            editor.user.updateUserPreferences({ isDarkMode: true, colorScheme: "dark" });
-          } catch {
-            /* version差异 */
-          }
-        }}
-      />
-    </div>
-  );
+  // 笔记空间 = BlockSuite 无限画布 + 主体长 Markdown 文档（obsidian 能力，无 license 提示）。
+  return <NoteSpace />;
 }
 
 // ---------- registry ----------

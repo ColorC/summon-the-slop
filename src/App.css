@@ -741,3 +741,33 @@ body,
   overflow: auto;
   padding: 14px;
 }
+
+/* ===== 笔记空间 (BlockSuite edgeless) ===== */
+.notespace-host {
+  position: absolute;
+  inset: 0;
+  background: #0e0f14;
+}
+.notespace {
+  position: absolute;
+  inset: 0;
+}
+.notespace affine-editor-container,
+.notespace edgeless-editor {
+  display: block;
+  height: 100%;
+}
+.notespace-msg {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #aab2c8;
+  font-size: 13px;
+  background: #0e0f14;
+}
+.notespace-msg.error {
+  color: #f7768e;
+}
