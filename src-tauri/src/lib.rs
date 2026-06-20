@@ -482,9 +482,12 @@ mod tests {
     }
 
     #[test]
-    fn elements_in_rect_runs() {
-        // UIA over a screen region — content varies, but it must not error/panic.
-        let r = crate::uia::elements_in_rect(0, 0, 600, 400, 30);
-        assert!(r.is_ok(), "elements_in_rect errored: {:?}", r.err());
+    fn elements_in_rect_finds_real_elements() {
+        // Over the FULL primary monitor a real desktop always has UI (taskbar, window
+        // controls, etc.), so this asserts elements_in_rect actually RETURNS named
+        // elements — a behavior check, not just a no-panic smoke test.
+        let (_rgba, w, h, _x, _y, _s) = crate::capture::capture_primary_raw().expect("capture");
+        let els = crate::uia::elements_in_rect(0, 0, w as i32, h as i32, 50).expect("elements_in_rect");
+        assert!(!els.is_empty(), "expected >=1 named element over the full screen, got 0");
     }
 }
