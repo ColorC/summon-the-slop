@@ -1,6 +1,7 @@
 // Poof — summoned overlay shell. Hold Ctrl + double-tap Alt summons a transparent panel.
 mod pty;
 mod search;
+mod snapshot;
 
 use std::io::Write;
 #[cfg(windows)]
@@ -344,7 +345,8 @@ pub fn run() {
             search::search,
             search::search_reindex,
             search::open_path,
-            search::reveal_path
+            search::reveal_path,
+            snapshot::snapshot_region
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

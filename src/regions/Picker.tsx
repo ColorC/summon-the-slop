@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { X, MessageSquarePlus, Copy, RotateCcw } from "lucide-react";
-import { copyText } from "../lib";
+import { X, MessageSquarePlus, Copy, RotateCcw, Camera } from "lucide-react";
+import { copyText, snapshotRegion, openPath } from "../lib";
 
 interface Picked {
   rect: { left: number; top: number; width: number; height: number };
@@ -80,6 +80,25 @@ export function Picker({
     };
   }, [picked, onExit]);
 
+  async function snap() {
+    if (!picked) return;
+    const r = picked.rect;
+    setPicked(null); // hide the highlight/actions so they aren't in the shot
+    await new Promise((res) => requestAnimationFrame(() => setTimeout(res, 70)));
+    try {
+      const path = await snapshotRegion(
+        Math.round(r.left),
+        Math.round(r.top),
+        Math.round(r.width),
+        Math.round(r.height)
+      );
+      await openPath(path); // open the PNG in the default viewer
+    } catch {
+      /* ignore */
+    }
+    onExit();
+  }
+
   const show = picked || hover;
 
   return (
@@ -121,6 +140,9 @@ export function Picker({
             }}
           >
             <MessageSquarePlus size={14} /> 问 AI
+          </button>
+          <button onClick={snap}>
+            <Camera size={14} /> 快照
           </button>
           <button onClick={() => copyText(picked.text || picked.label)}>
             <Copy size={14} /> 复制

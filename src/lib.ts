@@ -27,6 +27,9 @@ export const search = (query: string, limit = 30) =>
 export const openPath = (path: string) => invoke<void>("open_path", { path });
 
 export const revealPath = (path: string) => invoke<void>("reveal_path", { path });
+/** Capture a screen rect (client coords == screen coords; window is fullscreen) to a PNG, returns its path. */
+export const snapshotRegion = (x: number, y: number, w: number, h: number) =>
+  invoke<string>("snapshot_region", { x, y, w, h });
 /** Native Windows Properties dialog (v1 of the standard shell menu). */
 export const shellMenu = (path: string, _x?: number, _y?: number) =>
   invoke<void>("shell_props", { path });
