@@ -18,6 +18,8 @@ src-tauri/gen
 
 # Vendored external tools (pulled down for reference / integration, not uploaded)
 vendor/
+# ...but DO track vendored runtime libs under public/ (rrweb for 录像/回放, served at app://)
+!public/vendor/
 
 # Editor directories and files
 .vscode/*
