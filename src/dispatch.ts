@@ -70,9 +70,22 @@ export async function dispatchMessage(message: string, deps: DispatchDeps): Prom
     }
     case "send_active_window": {
       await copyText(text).catch(() => {});
+      const loc = d.target_location || "";
+      let jumped = false;
+      if (loc) {
+        try {
+          const out = await runShell(`omni dispatch activate --location "${loc}" --json`);
+          const last = (out.stdout || "").trim().split("\n").pop() || "";
+          jumped = JSON.parse(last)?.ok === true;
+        } catch {
+          /* activate best-effort; clipboard is the guarantee */
+        }
+      }
+      const who = d.target_identity || d.target_key;
       toast(
-        `这条更像是发给已有对话：「${d.target_identity || d.target_key}」` +
-          `（${d.target_location || "外部窗口"}）。\n已复制到剪贴板，切过去粘贴即可。`
+        jumped
+          ? `已把「${who}」所在窗口（${loc}）切到最前，消息已复制 —— 粘贴即可。`
+          : `这条更像是发给「${who}」（${loc || "外部窗口"}）。已复制到剪贴板，切过去粘贴。`
       );
       break;
     }
