@@ -57,7 +57,9 @@ function seedDoc(c: DocCollection): Doc {
   doc.load(() => {
     const rootId = doc.addBlock("affine:page", {});
     doc.addBlock("affine:surface", {}, rootId);
-    const noteId = doc.addBlock("affine:note", {}, rootId);
+    // a real document block (sized note with a heading + body), not an empty rectangle
+    const noteId = doc.addBlock("affine:note", { xywh: "[0,0,540,360]" }, rootId);
+    doc.addBlock("affine:paragraph", { type: "h1" as any }, noteId);
     doc.addBlock("affine:paragraph", {}, noteId);
   });
   return doc;
