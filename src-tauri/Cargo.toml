@@ -25,6 +25,7 @@ nucleo-matcher = "0.3"
 ignore = "0.4"
 rayon = "1"
 notify = "6"
+pinyin = "0.10"
 # screenshot (GDI 快照) + live-inspector 洞察 (capture/uia/ocr/inspect, ported from waiela)
 xcap = "0.9.6"
 uiautomation = "0.25.0"

@@ -19,8 +19,10 @@ pub struct SearchHit {
     pub score: u32,
 }
 
-// (kind, name, path)
-static INDEX: Mutex<Option<Vec<(String, String, String)>>> = Mutex::new(None);
+// (kind, name, path, pinyin) — pinyin is non-empty only for CJK names (full + initials),
+// so typing "ceshi" or "cs" finds 测试…
+type Entry = (String, String, String, String);
+static INDEX: Mutex<Option<Vec<Entry>>> = Mutex::new(None);
 static BUILDING: AtomicBool = AtomicBool::new(false);
 static WATCHING: AtomicBool = AtomicBool::new(false);
 
@@ -88,6 +90,35 @@ fn app_roots() -> Vec<PathBuf> {
         v.push(PathBuf::from(p).join("Microsoft/Windows/Start Menu/Programs"));
     }
     v.into_iter().filter(|p| p.exists()).collect()
+}
+
+// pinyin of a name: full (测试→ceshi) + initials (测试→cs), space-joined, so a latin
+// query matches CJK files. Empty for names with no CJK (the name match already covers them).
+fn pinyin_of(name: &str) -> String {
+    use pinyin::ToPinyin;
+    let mut full = String::new();
+    let mut initials = String::new();
+    let mut has_cjk = false;
+    for (ch, py) in name.chars().zip(name.to_pinyin()) {
+        match py {
+            Some(p) => {
+                has_cjk = true;
+                full.push_str(p.plain());
+                initials.push_str(p.first_letter());
+            }
+            None => {
+                for c in ch.to_lowercase() {
+                    full.push(c);
+                    initials.push(c);
+                }
+            }
+        }
+    }
+    if has_cjk {
+        format!("{} {}", full, initials)
+    } else {
+        String::new()
+    }
 }
 
 // dirs we never descend into — pruning these keeps the index small + COMPLETE.
@@ -181,7 +212,7 @@ fn collect(roots: &[PathBuf], max_depth: usize, per_root_cap: usize) -> Vec<(Str
     out.into_inner().unwrap()
 }
 
-fn build_index() -> Vec<(String, String, String)> {
+fn build_index() -> Vec<Entry> {
     let mut idx = Vec::new();
     // apps = Start Menu .lnk shortcuts
     for (name, path, is_dir) in collect(&app_roots(), 5, 8000) {
@@ -190,7 +221,8 @@ fn build_index() -> Vec<(String, String, String)> {
             continue;
         }
         let display = name[..name.len() - 4].to_string();
-        idx.push(("app".to_string(), display, path));
+        let py = pinyin_of(&display);
+        idx.push(("app".to_string(), display, path, py));
     }
     // user roots: deep + generous PER-ROOT cap (noise pruned, so this is plenty) so
     // every root is fully indexed instead of one big root starving the others.
@@ -208,7 +240,8 @@ fn build_index() -> Vec<(String, String, String)> {
         } else {
             "file"
         };
-        idx.push((kind.to_string(), name, path));
+        let py = pinyin_of(&name);
+        idx.push((kind.to_string(), name, path, py));
     }
     idx
 }
@@ -224,13 +257,14 @@ fn index_dir() -> PathBuf {
 fn index_file() -> PathBuf {
     index_dir().join("index.tsv")
 }
-fn load_persisted() -> Option<Vec<(String, String, String)>> {
+fn load_persisted() -> Option<Vec<Entry>> {
     let s = std::fs::read_to_string(index_file()).ok()?;
     let mut v = Vec::new();
     for line in s.lines() {
-        let mut it = line.splitn(3, '\t');
+        let mut it = line.splitn(4, '\t');
         if let (Some(k), Some(n), Some(p)) = (it.next(), it.next(), it.next()) {
-            v.push((k.to_string(), n.to_string(), p.to_string()));
+            let py = it.next().unwrap_or(""); // 4th field optional (old 3-field files)
+            v.push((k.to_string(), n.to_string(), p.to_string(), py.to_string()));
         }
     }
     if v.is_empty() {
@@ -239,16 +273,18 @@ fn load_persisted() -> Option<Vec<(String, String, String)>> {
         Some(v)
     }
 }
-fn persist(idx: &[(String, String, String)]) {
+fn persist(idx: &[Entry]) {
     let dir = index_dir();
     let _ = std::fs::create_dir_all(&dir);
-    let mut out = String::with_capacity(idx.len() * 64);
-    for (k, n, p) in idx {
+    let mut out = String::with_capacity(idx.len() * 72);
+    for (k, n, p, py) in idx {
         out.push_str(k);
         out.push('\t');
         out.push_str(n);
         out.push('\t');
         out.push_str(p);
+        out.push('\t');
+        out.push_str(py);
         out.push('\n');
     }
     let tmp = dir.join("index.tsv.tmp");
@@ -314,12 +350,17 @@ fn apply_events(batch: Vec<Result<notify::Event, notify::Error>>) -> bool {
                 continue;
             }
             let ps = path.to_string_lossy().to_string();
-            let pos = idx.iter().position(|(_, _, p)| p == &ps);
+            let pos = idx.iter().position(|(_, _, p, _)| p == &ps);
             let exists = path.exists();
             if exists && pos.is_none() {
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                     let is_dir = path.is_dir();
-                    idx.push((kind_for(name, is_dir).to_string(), name.to_string(), ps));
+                    idx.push((
+                        kind_for(name, is_dir).to_string(),
+                        name.to_string(),
+                        ps,
+                        pinyin_of(name),
+                    ));
                     changed = true;
                 }
             } else if !exists {
@@ -417,17 +458,30 @@ pub fn search(query: String, limit: usize) -> Vec<SearchHit> {
                     Vec::<SearchHit>::new(),
                 )
             },
-            |(mut matcher, mut buf, mut acc), (kind, name, path)| {
+            |(mut matcher, mut buf, mut acc), (kind, name, path, py)| {
                 buf.clear();
                 let sn = pat.score(Utf32Str::new(name, &mut buf), &mut matcher);
+                // pinyin match (typing "ceshi"/"cs" finds 测试…) counts as a name match
+                let spy = if !py.is_empty() {
+                    buf.clear();
+                    pat.score(Utf32Str::new(py, &mut buf), &mut matcher)
+                } else {
+                    None
+                };
+                let name_score = match (sn, spy) {
+                    (Some(a), Some(b)) => Some(a.max(b)),
+                    (Some(a), None) => Some(a),
+                    (None, Some(b)) => Some(b),
+                    (None, None) => None,
+                };
                 let sp = if score_path {
                     buf.clear();
                     pat.score(Utf32Str::new(path, &mut buf), &mut matcher)
                 } else {
                     None
                 };
-                // prefer a name match; fall back to a lower-weighted full-path match
-                let base = match (sn, sp) {
+                // prefer a name/pinyin match; fall back to a lower-weighted full-path match
+                let base = match (name_score, sp) {
                     (Some(n), Some(p)) => n.max(p / 2),
                     (Some(n), None) => n,
                     (None, Some(p)) => p / 3,
