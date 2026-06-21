@@ -28,6 +28,7 @@ pub fn pty_spawn(
     id: String,
     cols: u16,
     rows: u16,
+    cwd: Option<String>,
 ) -> Result<(), String> {
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -36,8 +37,13 @@ pub fn pty_spawn(
 
     let mut cmd = CommandBuilder::new("powershell.exe");
     cmd.args(["-NoLogo"]);
-    if let Some(home) = std::env::var_os("USERPROFILE") {
-        cmd.cwd(home);
+    // cwd: 优先用调用方给的工作目录(工作 agent 进对应项目主文件夹, 别把脏文件落在用户 home);
+    // 给的目录不存在或没给 → 退回 USERPROFILE。
+    let dir = cwd
+        .filter(|d| !d.is_empty() && std::path::Path::new(d).is_dir())
+        .or_else(|| std::env::var("USERPROFILE").ok());
+    if let Some(d) = dir {
+        cmd.cwd(d);
     }
 
     let child = pair

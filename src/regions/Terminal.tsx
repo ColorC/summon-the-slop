@@ -39,10 +39,12 @@ export function TerminalView({
   id,
   startCommand,
   initialInput,
+  cwd,
 }: {
   id: string;
   startCommand?: string;
   initialInput?: string;
+  cwd?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(true);
@@ -88,7 +90,7 @@ export function TerminalView({
       if (alive) term.write("\r\n\x1b[90m[进程已退出]\x1b[0m\r\n");
     });
 
-    ptySpawn(id, term.cols || 80, term.rows || 24)
+    ptySpawn(id, term.cols || 80, term.rows || 24, cwd)
       .then(() => {
         if (!alive) return;
         if (startCommand) {

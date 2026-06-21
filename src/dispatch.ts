@@ -11,6 +11,7 @@ import { runShell, copyText, ptyWrite } from "./lib";
 import { listPanes, focusPane } from "./poofPanes";
 
 export type RouteKind =
+  | "self_handle"
   | "send_active_window"
   | "send_poof_pane"
   | "new_with_project"
@@ -27,7 +28,9 @@ export interface RouteDecision {
   target_provider?: string;
   project?: string;
   provider?: "claude" | "codex";
+  target_cwd?: string; // case3: 项目主文件夹, 新对话进这里(#4)
   text?: string;
+  answer?: string;
   candidates?: string[];
   candidate_details?: CandidateDetail[];
   reason?: string;
@@ -61,7 +64,7 @@ export async function routeMessage(message: string): Promise<RouteDecision> {
 }
 
 export interface DispatchDeps {
-  newChat: (provider: string, query?: string) => void;
+  newChat: (provider: string, query?: string, cwd?: string) => void;
   openChat?: () => void; // 只打开"对话/终端"面板(不新建 tab) —— send_poof_pane 用
 }
 
@@ -72,13 +75,18 @@ export async function dispatchMessage(message: string, deps: DispatchDeps): Prom
   const text = d.text || message;
 
   switch (d.kind) {
+    case "self_handle": {
+      showAnswer(d.answer || "(总控没给出答案)", message, deps);
+      break;
+    }
     case "new_with_project": {
       const prov = d.provider === "codex" ? "codex" : "claude";
       // 轻量"带项目上下文": 给首条消息加项目标注, 让新对话知道归属。
       // (完整版"受 omni 控制的会话 + cd 进项目载 CLAUDE.md"是更深的活, 见下一增量。)
       const seed = d.project ? `【项目上下文：${d.project}】\n${text}` : text;
-      deps.newChat(prov, seed);
-      toast(`新起 ${prov} 对话（${d.project || "?"}）· ${d.reason || ""}`);
+      deps.newChat(prov, seed, d.target_cwd); // 进项目主文件夹(#4)
+      const where = d.target_cwd ? ` @${d.target_cwd}` : "";
+      toast(`新起 ${prov} 对话（${d.project || "?"}）${where} · ${d.reason || ""}`);
       break;
     }
     case "new_strongest": {
@@ -207,6 +215,58 @@ function showPicker(cands: CandidateDetail[], text: string, deps: DispatchDeps):
   cancel.onclick = close;
   box.appendChild(cancel);
 
+  back.onclick = (e) => { if (e.target === back) close(); };
+  back.appendChild(box);
+  document.body.appendChild(back);
+}
+
+// ---- self_handle: 总控直接答, 显示在一个可见浮层(#1 不藏细节) ----
+function showAnswer(answer: string, original: string, deps: DispatchDeps): void {
+  const back = document.createElement("div");
+  Object.assign(back.style, {
+    position: "fixed", inset: "0", zIndex: "10000", background: "rgba(0,0,0,0.35)",
+    display: "flex", alignItems: "center", justifyContent: "center",
+  } as CSSStyleDeclaration);
+  const box = document.createElement("div");
+  Object.assign(box.style, {
+    width: "560px", maxWidth: "92vw", maxHeight: "72vh", display: "flex", flexDirection: "column",
+    background: "rgba(22,23,29,0.99)", color: "#e7e7ea", border: "1px solid rgba(255,255,255,0.16)",
+    borderRadius: "14px", padding: "16px 18px", boxShadow: "0 28px 80px rgba(0,0,0,0.6)",
+    font: "13px/1.6 'Segoe UI', sans-serif",
+  } as CSSStyleDeclaration);
+  const title = document.createElement("div");
+  title.textContent = "总控直接答";
+  Object.assign(title.style, { fontWeight: "600", fontSize: "14px", marginBottom: "10px", color: "#c7c9ff" } as CSSStyleDeclaration);
+  const body = document.createElement("div");
+  body.textContent = answer;
+  Object.assign(body.style, {
+    whiteSpace: "pre-wrap", overflow: "auto", flex: "1", minHeight: "0",
+    background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.07)",
+    borderRadius: "9px", padding: "12px 14px", fontFamily: "Consolas, monospace", fontSize: "13px",
+  } as CSSStyleDeclaration);
+  const bar = document.createElement("div");
+  Object.assign(bar.style, { display: "flex", gap: "8px", marginTop: "12px", alignItems: "center" } as CSSStyleDeclaration);
+  const close = () => back.remove();
+  const mkBtn = (label: string, accent: boolean, onClick: () => void) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    Object.assign(b.style, {
+      cursor: "pointer", borderRadius: "8px", padding: "7px 13px", fontSize: "13px",
+      border: accent ? "1px solid rgba(99,102,241,0.55)" : "1px solid rgba(255,255,255,0.12)",
+      background: accent ? "rgba(99,102,241,0.28)" : "rgba(255,255,255,0.05)", color: "#e7e7ea",
+    } as CSSStyleDeclaration);
+    b.onclick = onClick;
+    return b;
+  };
+  bar.appendChild(mkBtn("复制", false, () => { void copyText(answer); }));
+  bar.appendChild(mkBtn("不够 —— 展开成完整对话", true, () => { close(); deps.newChat("claude", original); }));
+  const spacer = document.createElement("div");
+  spacer.style.flex = "1";
+  bar.appendChild(spacer);
+  bar.appendChild(mkBtn("关闭", false, close));
+  box.appendChild(title);
+  box.appendChild(body);
+  box.appendChild(bar);
   back.onclick = (e) => { if (e.target === back) close(); };
   back.appendChild(box);
   document.body.appendChild(back);

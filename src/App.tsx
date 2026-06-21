@@ -23,6 +23,7 @@ import { NotesWorkspace } from "./regions/NotesWorkspace";
 import { DockStage, type PanelKind } from "./panels";
 import { pushChatIntent } from "./chatIntents";
 import { dispatchMessage } from "./dispatch";
+import { listPanes } from "./poofPanes";
 import "./App.css";
 
 const PIN_KEY = "poof-panels-pinned";
@@ -61,7 +62,13 @@ export default function App() {
   const hide = useCallback(() => {
     getCurrentWindow().hide();
     setNotifOpen(false);
-    setOpen(loadPinned()); // keep only pinned panels across summons
+    // 召出间保留钉住的面板; 另外: 只要还有在跑的终端窗格, 就保留 chat 面板 ——
+    // 否则一关浮层 TerminalBar 就卸载, 你的 cmd/CLI 窗格(pty 还活着)在 UI 上就不见了(#5)。
+    setOpen((o) => {
+      const keep = new Set<PanelKind>(loadPinned());
+      if (o.includes("chat") && listPanes().length > 0) keep.add("chat");
+      return [...keep];
+    });
   }, []);
 
   const toggleOnTop = useCallback(async () => {
@@ -106,9 +113,9 @@ export default function App() {
     hide();
   }, [hide]);
 
-  function newChat(provider: string, query?: string) {
+  function newChat(provider: string, query?: string, cwd?: string) {
     openPanel("chat");
-    pushChatIntent(provider, query);
+    pushChatIntent(provider, query, cwd);
   }
   // 新对话: 空 → 直接开一个 claude 终端; 有内容 → 先过 omni 总控路由(本机 sonnet 中思考),
   // 再按 5 类执行(新起/发给已有/问)。路由是异步的, 不挡 UI。

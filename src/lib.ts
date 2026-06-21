@@ -35,8 +35,8 @@ export const shellMenu = (path: string, _x?: number, _y?: number) =>
   invoke<void>("shell_props", { path });
 
 // ---- pty (terminal) ----
-export const ptySpawn = (id: string, cols: number, rows: number) =>
-  invoke<void>("pty_spawn", { id, cols, rows });
+export const ptySpawn = (id: string, cols: number, rows: number, cwd?: string) =>
+  invoke<void>("pty_spawn", { id, cols, rows, cwd: cwd ?? null });
 export const ptyWrite = (id: string, data: string) => invoke<void>("pty_write", { id, data });
 export const ptyResize = (id: string, cols: number, rows: number) =>
   invoke<void>("pty_resize", { id, cols, rows });

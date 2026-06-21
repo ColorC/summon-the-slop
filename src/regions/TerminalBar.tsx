@@ -10,6 +10,7 @@ interface Tab {
   title: string;
   cmd?: string;
   initialInput?: string;
+  cwd?: string;
 }
 let counter = 0;
 
@@ -31,9 +32,9 @@ export function TerminalBar() {
   const [active, setActive] = useState("");
   const handled = useRef<Set<number>>(new Set());
 
-  function addTab(title: string, cmd?: string, initialInput?: string) {
+  function addTab(title: string, cmd?: string, initialInput?: string, cwd?: string) {
     const id = "term-" + ++counter;
-    setTabs((t) => [...t, { id, title, cmd, initialInput }]);
+    setTabs((t) => [...t, { id, title, cmd, initialInput, cwd }]);
     setActive(id);
     // 登记进 poof 窗格表, 让总控路由能把消息派给它(case2)。label 用首条输入, 没有就用标题。
     registerPane({ id, provider: providerOf(cmd), label: initialInput || title });
@@ -50,7 +51,7 @@ export function TerminalBar() {
         if (handled.current.has(i.id)) continue;
         handled.current.add(i.id);
         const { cmd, title } = cmdFor(i.provider || "claude");
-        addTab(title, cmd, i.query || undefined);
+        addTab(title, cmd, i.query || undefined, i.cwd);
       }
     };
     consume(); // drain anything queued before this bar mounted
@@ -113,7 +114,7 @@ export function TerminalBar() {
             className="term-pane"
             style={{ display: t.id === active ? "block" : "none" }}
           >
-            <TerminalView id={t.id} startCommand={t.cmd} initialInput={t.initialInput} />
+            <TerminalView id={t.id} startCommand={t.cmd} initialInput={t.initialInput} cwd={t.cwd} />
           </div>
         ))}
       </div>

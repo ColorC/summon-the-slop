@@ -5,13 +5,14 @@ export interface ChatIntent {
   id: number;
   provider: string;
   query?: string;
+  cwd?: string; // 工作目录(新对话进对应项目主文件夹, 见 #4)
 }
 let seq = 0;
 const pending: ChatIntent[] = [];
 export const CHAT_EVENT = "poof-new-chat";
 
-export function pushChatIntent(provider: string, query?: string) {
-  pending.push({ id: ++seq, provider, query });
+export function pushChatIntent(provider: string, query?: string, cwd?: string) {
+  pending.push({ id: ++seq, provider, query, cwd });
   window.dispatchEvent(new CustomEvent(CHAT_EVENT));
 }
 export function drainChatIntents(): ChatIntent[] {
