@@ -80,7 +80,10 @@ async function start() {
       buffer.push({ sid, seq: seq++, ts: Date.now(), surface: "poof", src: location.href, kind: "rrweb", p: { ev } });
       if (buffer.length >= 50) flush(); else scheduleFlush();
     },
-    maskAllInputs: false,
+    // maskAllInputs:true makes rrweb run maskInputFn on EVERY input (it only calls it for
+    // inputs it has flagged for masking) — so our function fully controls every field:
+    // password → stars, secret-pattern → count-only, normal → returned plaintext.
+    maskAllInputs: true,
     maskInputOptions: { password: true },
     maskTextClass: "rr-mask",
     blockClass: "rr-block",
