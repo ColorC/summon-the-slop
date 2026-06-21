@@ -4,6 +4,7 @@ import { TerminalView } from "./Terminal";
 import { runShell } from "../lib";
 import { drainChatIntents, CHAT_EVENT } from "../chatIntents";
 import { registerPane, unregisterPane, FOCUS_PANE_EVENT } from "../poofPanes";
+import { setControllerPane, getControllerPane } from "../controller";
 
 interface Tab {
   id: string;
@@ -14,14 +15,21 @@ interface Tab {
 }
 let counter = 0;
 
+// #3 所有对话 skip-permissions 起。
+const CLAUDE_CMD = "claude --dangerously-skip-permissions";
+const CODEX_CMD = "codex --dangerously-bypass-approvals-and-sandbox";
+
 function cmdFor(provider: string): { cmd?: string; title: string } {
-  if (provider === "codex") return { cmd: "codex", title: "Codex" };
+  if (provider === "codex") return { cmd: CODEX_CMD, title: "Codex" };
   if (provider === "ps") return { cmd: undefined, title: "PowerShell" };
-  return { cmd: "claude", title: "Claude" };
+  return { cmd: CLAUDE_CMD, title: "Claude" };
 }
 
 function providerOf(cmd?: string): string {
-  return cmd === "codex" ? "codex" : cmd === "claude" ? "claude" : "ps";
+  if (!cmd) return "ps";
+  if (cmd.startsWith("codex")) return "codex";
+  if (cmd.startsWith("claude")) return "claude";
+  return "ps";
 }
 
 /** AI terminal living inside the overlay's right side panel. New chats arrive as a
@@ -32,17 +40,19 @@ export function TerminalBar() {
   const [active, setActive] = useState("");
   const handled = useRef<Set<number>>(new Set());
 
-  function addTab(title: string, cmd?: string, initialInput?: string, cwd?: string) {
+  function addTab(title: string, cmd?: string, initialInput?: string, cwd?: string): string {
     const id = "term-" + ++counter;
     setTabs((t) => [...t, { id, title, cmd, initialInput, cwd }]);
     setActive(id);
-    // 登记进 poof 窗格表, 让总控路由能把消息派给它(case2)。label 用首条输入, 没有就用标题。
+    // 登记进 poof 窗格表(注册列表/路由用)。label 用首条输入, 没有就用标题。
     registerPane({ id, provider: providerOf(cmd), label: initialInput || title });
+    return id;
   }
   function close(id: string) {
     setTabs((t) => t.filter((x) => x.id !== id));
     setActive((a) => (a === id ? "" : a));
     unregisterPane(id);
+    if (getControllerPane() === id) setControllerPane(null); // 总控窗格被关 → 下次重起
   }
 
   useEffect(() => {
@@ -51,7 +61,8 @@ export function TerminalBar() {
         if (handled.current.has(i.id)) continue;
         handled.current.add(i.id);
         const { cmd, title } = cmdFor(i.provider || "claude");
-        addTab(title, cmd, i.query || undefined, i.cwd);
+        const id = addTab(i.role === "controller" ? "总控" : title, cmd, i.query || undefined, i.cwd);
+        if (i.role === "controller") setControllerPane(id);
       }
     };
     consume(); // drain anything queued before this bar mounted
@@ -94,10 +105,10 @@ export function TerminalBar() {
             />
           </button>
         ))}
-        <button className="term-new claude" onClick={() => addTab("Claude", "claude")}>
+        <button className="term-new claude" onClick={() => addTab("Claude", CLAUDE_CMD)}>
           <Plus size={13} /> Claude
         </button>
-        <button className="term-new codex" onClick={() => addTab("Codex", "codex")}>
+        <button className="term-new codex" onClick={() => addTab("Codex", CODEX_CMD)}>
           <Plus size={13} /> Codex
         </button>
         <button className="term-new" onClick={() => addTab("PowerShell")}>

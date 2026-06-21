@@ -1418,3 +1418,245 @@ body,
 .picker-actions button:hover {
   background: rgba(40, 42, 52, 0.98);
 }
+
+/* ===== 底部栏: 总控选型 + 活跃对话注册列表 (ConvBar) ===== */
+.conv-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.conv-kind {
+  position: relative;
+}
+.conv-kind-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(99, 102, 241, 0.18);
+  border: 1px solid rgba(99, 102, 241, 0.5);
+  color: #c7c9ff;
+  border-radius: 9px;
+  padding: 8px 11px;
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.conv-kind-btn:hover {
+  background: rgba(99, 102, 241, 0.3);
+}
+.conv-kind-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 30;
+  min-width: 160px;
+  background: rgba(26, 27, 34, 0.99);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+  padding: 5px;
+}
+.conv-kind-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: #dfe1e6;
+  cursor: pointer;
+  padding: 8px 10px;
+  border-radius: 7px;
+  font-size: 13px;
+}
+.conv-kind-menu button:hover {
+  background: rgba(99, 102, 241, 0.28);
+}
+.conv-kind-menu button.on {
+  color: #c7c9ff;
+}
+.conv-list-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  color: #e3e5ea;
+  border-radius: 9px;
+  padding: 8px 11px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.conv-list-btn:hover {
+  background: rgba(255, 255, 255, 0.11);
+}
+.conv-list-btn.on {
+  background: rgba(99, 102, 241, 0.32);
+}
+.conv-count {
+  font-size: 11px;
+  color: #9aa0ad;
+  min-width: 14px;
+  text-align: center;
+}
+.conv-pop {
+  position: absolute;
+  bottom: calc(100% + 12px);
+  left: 0;
+  z-index: 30;
+  width: 380px;
+  max-width: 92vw;
+  max-height: 52vh;
+  display: flex;
+  flex-direction: column;
+  background: rgba(24, 25, 31, 0.99);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 13px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.65);
+  overflow: hidden;
+}
+.conv-pop-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  font-size: 12px;
+  color: #8a8d98;
+  font-weight: 600;
+}
+.conv-refresh {
+  background: transparent;
+  border: none;
+  color: #9aa0ad;
+  cursor: pointer;
+  padding: 3px;
+  border-radius: 6px;
+  display: inline-flex;
+}
+.conv-refresh:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+.conv-new-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.conv-new-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12.5px;
+  color: #aeb4c2;
+  margin-right: auto;
+}
+.conv-new-row button {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #d6d9e0;
+  border-radius: 7px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.conv-new-row button:hover {
+  background: rgba(99, 102, 241, 0.28);
+  color: #fff;
+}
+.conv-rows {
+  flex: 1;
+  overflow: auto;
+  padding: 4px;
+}
+.conv-empty {
+  color: #80838d;
+  font-size: 12.5px;
+  padding: 16px 12px;
+}
+.conv-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: #dfe1e6;
+  cursor: pointer;
+  padding: 8px 9px;
+  border-radius: 8px;
+}
+.conv-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.conv-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+.conv-dot.poof {
+  background: #6366f1;
+}
+.conv-dot.ext {
+  background: #4ade80;
+}
+.conv-row-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.conv-row-id {
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.conv-row-task {
+  font-size: 11.5px;
+  color: #8a90a0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ===== omni-web 总控嵌入 ===== */
+.omni-web {
+  position: fixed;
+  top: 56px;
+  bottom: 56px;
+  left: 56px;
+  right: 56px;
+  z-index: 22;
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 36px 110px rgba(0, 0, 0, 0.62);
+  background: #0e0f14;
+}
+.omni-web-frame {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+.omni-web-x {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: 2;
+  background: rgba(22, 23, 29, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #e3e5ea;
+  border-radius: 8px;
+  padding: 5px 8px;
+  cursor: pointer;
+  display: inline-flex;
+}
+.omni-web-x:hover {
+  background: rgba(40, 42, 52, 0.98);
+}

@@ -6,13 +6,19 @@ export interface ChatIntent {
   provider: string;
   query?: string;
   cwd?: string; // 工作目录(新对话进对应项目主文件夹, 见 #4)
+  role?: "controller"; // 总控窗格: 创建后登记成持续总控对话
 }
 let seq = 0;
 const pending: ChatIntent[] = [];
 export const CHAT_EVENT = "poof-new-chat";
 
-export function pushChatIntent(provider: string, query?: string, cwd?: string) {
-  pending.push({ id: ++seq, provider, query, cwd });
+export function pushChatIntent(
+  provider: string,
+  query?: string,
+  cwd?: string,
+  role?: "controller"
+) {
+  pending.push({ id: ++seq, provider, query, cwd, role });
   window.dispatchEvent(new CustomEvent(CHAT_EVENT));
 }
 export function drainChatIntents(): ChatIntent[] {

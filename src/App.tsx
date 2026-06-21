@@ -2,11 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  MessageSquarePlus,
   PenLine,
   FolderKanban,
   CheckSquare,
-  SquareTerminal,
   Camera,
   ScanEye,
   Video,
@@ -14,16 +12,17 @@ import {
   Bell,
   Pin,
   PinOff,
+  X,
 } from "lucide-react";
 import { SearchBar } from "./regions/SearchBar";
 import { Notifications } from "./regions/Notifications";
 import { TerminalBar } from "./regions/TerminalBar";
+import { ConvBar } from "./regions/ConvBar";
 import { ProjectSurface, ReviewSurface } from "./surfaces";
 import { NotesWorkspace } from "./regions/NotesWorkspace";
 import { DockStage, type PanelKind } from "./panels";
 import { pushChatIntent } from "./chatIntents";
-import { dispatchMessage } from "./dispatch";
-import { listPanes } from "./poofPanes";
+import { sendToController, OMNI_WEB_URL } from "./controller";
 import "./App.css";
 
 const PIN_KEY = "poof-panels-pinned";
@@ -62,14 +61,11 @@ export default function App() {
   const hide = useCallback(() => {
     getCurrentWindow().hide();
     setNotifOpen(false);
-    // 召出间保留钉住的面板; 另外: 只要还有在跑的终端窗格, 就保留 chat 面板 ——
-    // 否则一关浮层 TerminalBar 就卸载, 你的 cmd/CLI 窗格(pty 还活着)在 UI 上就不见了(#5)。
-    setOpen((o) => {
-      const keep = new Set<PanelKind>(loadPinned());
-      if (o.includes("chat") && listPanes().length > 0) keep.add("chat");
-      return [...keep];
-    });
+    // #4 隐藏 ≠ 关闭: 不动任何面板/对话(你可能只是想藏一下待会儿还用)。
+    // 只有显式关页签(面板 X / 终端 tab X)才真关。
   }, []);
+
+  const [omniWeb, setOmniWeb] = useState(false);
 
   const toggleOnTop = useCallback(async () => {
     const v = !onTop;
@@ -81,12 +77,11 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       if (notifOpen) setNotifOpen(false);
-      else if (open.some((k) => !pinned.includes(k))) setOpen(pinned); // close non-pinned first
-      else hide();
+      else hide(); // #4 不再关面板/对话, 只收通知或隐藏窗口
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [notifOpen, open, pinned, hide]);
+  }, [notifOpen, hide]);
 
   // 活体洞察：hide poof (Rust side) so the real desktop is exposed, then the native
   // highlight + element_from_point loop takes over until Esc.
@@ -117,24 +112,24 @@ export default function App() {
     openPanel("chat");
     pushChatIntent(provider, query, cwd);
   }
-  // 新对话: 空 → 直接开一个 claude 终端; 有内容 → 先过 omni 总控路由(本机 sonnet 中思考),
-  // 再按 5 类执行(新起/发给已有/问)。路由是异步的, 不挡 UI。
+  // 顶部输入框发消息 → 送给总控(可见、持续的 codex/claude 对话, 或 omni-web)。不后台。
   const askAI = (query: string) => {
     const q = (query || "").trim();
     if (!q) {
-      newChat("claude");
+      openPanel("chat");
       return;
     }
-    openPanel("chat");
-    void dispatchMessage(q, { newChat, openChat: () => openPanel("chat") });
+    sendToController(q, {
+      openChat: () => openPanel("chat"),
+      openOmniWeb: () => setOmniWeb(true),
+    });
   };
   const onLaunched = () => hide();
 
   function onBackdrop(e: React.MouseEvent) {
     if (e.target !== e.currentTarget) return;
     if (notifOpen) setNotifOpen(false);
-    else if (open.some((k) => !pinned.includes(k))) setOpen(pinned);
-    else hide();
+    else hide(); // #4 点空白也只隐藏, 不关对话
   }
 
   function panelContent(k: PanelKind) {
@@ -161,6 +156,16 @@ export default function App() {
       {/* 笔记空间 — fixed fullscreen (no transform), persistent BlockSuite library */}
       {open.includes("notes") && <NotesWorkspace onClose={() => closePanel("notes")} />}
 
+      {/* 总控选 omni-web 时: 嵌 omnidashboard 现成的 BOSS SIGHT 总控对话界面 */}
+      {omniWeb && (
+        <div className="omni-web" onMouseDown={(e) => e.stopPropagation()}>
+          <button className="omni-web-x" onClick={() => setOmniWeb(false)} title="关闭">
+            <X size={16} />
+          </button>
+          <iframe className="omni-web-frame" src={OMNI_WEB_URL} title="Omni 总控" />
+        </div>
+      )}
+
       {/* top search */}
       <div className="pf-top" onMouseDown={(e) => e.stopPropagation()}>
         <SearchBar onAskAI={askAI} onLaunched={onLaunched} />
@@ -174,9 +179,13 @@ export default function App() {
           </div>
         )}
         <div className="pf-bar">
-          <button className="pf-btn accent" onClick={() => askAI("")} title="新对话 (Claude/Codex CLI)">
-            <MessageSquarePlus size={17} /> 新对话
-          </button>
+          <ConvBar
+            onNewChat={(provider) => newChat(provider)}
+            onOpenChat={() => openPanel("chat")}
+            onPickKind={(k) => {
+              if (k === "omni-web") setOmniWeb(true);
+            }}
+          />
           <span className="pf-sep" />
           <button
             className={"pf-btn" + (isOpen("notes") ? " on" : "")}
@@ -198,13 +207,6 @@ export default function App() {
             title="审阅台"
           >
             <CheckSquare size={17} />
-          </button>
-          <button
-            className={"pf-btn" + (isOpen("chat") ? " on" : "")}
-            onClick={() => togglePanel("chat")}
-            title="终端 / 对话"
-          >
-            <SquareTerminal size={17} />
           </button>
           <span className="pf-sep" />
           <button className="pf-btn" onClick={startSnap} title="截图 / 标注（框选 → 标注 → 复制 / 保存 / 钉屏 / OCR · Esc 退出）">
