@@ -1,21 +1,23 @@
-// 底部栏: 总控 AI 选型 + 活跃对话注册列表(新对话也在列表里, 不再是独立按钮)。
-import { useEffect, useState } from "react";
-import { MessagesSquare, Plus, RefreshCw, ChevronDown } from "lucide-react";
+// 底部栏: 总控 AI 选型 + 活跃对话注册列表(新对话在列表里)。
+// #2 运行位置用 icon 不写文字; #3 名字前置加框; #4 悬浮某对话 → 侧边不挡的浮窗显示最近内容。
+import { useEffect, useRef, useState } from "react";
+import {
+  MessagesSquare, Plus, RefreshCw, ChevronDown,
+  Code2, Globe, SquareTerminal, Bot, Circle,
+} from "lucide-react";
 import { runShell } from "../lib";
 import { listPanes, focusPane, type PoofPane } from "../poofPanes";
-import {
-  getControllerKind,
-  setControllerKind,
-  type ControllerKind,
-} from "../controller";
+import { getControllerKind, setControllerKind, type ControllerKind } from "../controller";
 
 interface AgentRec {
   key?: string;
   identity?: string;
+  name?: string;
+  project?: string;
+  role?: string;
   location?: string;
   current_task?: string;
   pty_id?: string;
-  running?: boolean;
 }
 
 const KIND_LABEL: Record<ControllerKind, string> = {
@@ -23,6 +25,16 @@ const KIND_LABEL: Record<ControllerKind, string> = {
   claude: "Claude CLI",
   "omni-web": "Omni 总控(web)",
 };
+
+// #2 位置 → icon
+function LocIcon({ loc }: { loc?: string }) {
+  const l = loc || "";
+  if (l.includes("vscode")) return <Code2 size={14} />;
+  if (l.includes("codex")) return <Bot size={14} />;
+  if (l.includes("chrome") || l.includes("web")) return <Globe size={14} />;
+  if (l.includes("poof") || l.includes("powershell")) return <SquareTerminal size={14} />;
+  return <Circle size={11} />;
+}
 
 export function ConvBar({
   onNewChat,
@@ -39,22 +51,25 @@ export function ConvBar({
   const [agents, setAgents] = useState<AgentRec[]>([]);
   const [panes, setPanes] = useState<PoofPane[]>([]);
   const [loading, setLoading] = useState(false);
+  const [hover, setHover] = useState<{ key: string; top: number } | null>(null);
+  const [preview, setPreview] = useState<string>("");
+  const tailCache = useRef<Map<string, string>>(new Map());
+  const hoverTimer = useRef<number | undefined>(undefined);
 
   async function refresh() {
     setPanes(listPanes());
     setLoading(true);
     try {
       const out = await runShell("omni agents list --running --json");
-      const last = (out.stdout || "").trim();
-      setAgents(JSON.parse(last || "[]"));
+      setAgents(JSON.parse((out.stdout || "").trim() || "[]"));
     } catch {
-      /* dashboard/omni may be down — still show poof panes */
+      /* omni/dashboard down — still show poof panes */
     }
     setLoading(false);
   }
-
   useEffect(() => {
     if (open) void refresh();
+    else { setHover(null); setPreview(""); }
   }, [open]);
 
   function pickKind(k: ControllerKind) {
@@ -64,24 +79,39 @@ export function ConvBar({
     setKindMenu(false);
   }
 
-  // poof 本地窗格(含总控)用 pty_id 去重 omni 注册表里的同一条
+  // #4 悬浮 → 取该对话最近内容(防抖 + 缓存), 显示在右侧不挡列表的浮窗
+  function onRowHover(e: React.MouseEvent, key?: string) {
+    if (!key) return;
+    const top = (e.currentTarget as HTMLElement).offsetTop;
+    setHover({ key, top });
+    if (hoverTimer.current) window.clearTimeout(hoverTimer.current);
+    const cached = tailCache.current.get(key);
+    if (cached !== undefined) { setPreview(cached); return; }
+    setPreview("加载中…");
+    hoverTimer.current = window.setTimeout(async () => {
+      let txt = "(暂无内容)";
+      try {
+        const out = await runShell(`omni agents tail --key "${key}" --n 6`);
+        txt = (out.stdout || "").trim() || "(暂无内容)";
+      } catch { /* ignore */ }
+      tailCache.current.set(key, txt);
+      setPreview(txt);
+    }, 250);
+  }
+
   const panePtyIds = new Set(panes.map((p) => p.id));
   const externals = agents.filter((a) => !a.pty_id || !panePtyIds.has(a.pty_id));
 
   async function jumpExternal(a: AgentRec) {
-    if (a.location) {
-      await runShell(`omni dispatch activate --location "${a.location}" --json`).catch(() => {});
-    }
+    if (a.location) await runShell(`omni dispatch activate --location "${a.location}" --json`).catch(() => {});
     setOpen(false);
   }
 
   return (
     <div className="conv-wrap">
-      {/* 总控 AI 选型 */}
       <div className="conv-kind">
         <button className="conv-kind-btn" onClick={() => setKindMenu((v) => !v)} title="总控用哪个 AI">
-          总控 · {KIND_LABEL[kind]}
-          <ChevronDown size={13} />
+          总控 · {KIND_LABEL[kind]} <ChevronDown size={13} />
         </button>
         {kindMenu && (
           <div className="conv-kind-menu">
@@ -94,7 +124,6 @@ export function ConvBar({
         )}
       </div>
 
-      {/* 活跃对话注册列表 */}
       <button className={"conv-list-btn" + (open ? " on" : "")} onClick={() => setOpen((v) => !v)} title="活跃对话">
         <MessagesSquare size={16} /> 对话
         <span className="conv-count">{panes.length + externals.length || ""}</span>
@@ -109,7 +138,6 @@ export function ConvBar({
             </button>
           </div>
 
-          {/* 新对话(在列表里, 不在底部栏按钮) */}
           <div className="conv-new-row">
             <span className="conv-new-label"><Plus size={13} /> 新对话</span>
             <button onClick={() => { onNewChat("claude"); setOpen(false); }}>Claude</button>
@@ -117,35 +145,41 @@ export function ConvBar({
             <button onClick={() => { onNewChat("ps"); setOpen(false); }}>PS</button>
           </div>
 
-          <div className="conv-rows">
+          <div className="conv-rows" onMouseLeave={() => setHover(null)}>
             {panes.length === 0 && externals.length === 0 && (
               <div className="conv-empty">还没有在跑的对话。</div>
             )}
-            {/* poof 里的对话(含总控) */}
             {panes.map((p) => (
               <button
                 key={p.id}
                 className="conv-row"
                 onClick={() => { focusPane(p.id); onOpenChat(); setOpen(false); }}
               >
-                <span className="conv-dot poof" />
-                <span className="conv-row-main">
-                  <span className="conv-row-id">{p.id === "" ? p.provider : `${p.provider}`} · poof</span>
-                  <span className="conv-row-task">{p.label}</span>
-                </span>
+                <span className="conv-name poof">{p.provider}</span>
+                <span className="conv-loc"><SquareTerminal size={14} /></span>
+                <span className="conv-row-task">{p.label}</span>
               </button>
             ))}
-            {/* 本机其它在跑对话(注册表) */}
             {externals.map((a) => (
-              <button key={a.key} className="conv-row" onClick={() => void jumpExternal(a)}>
-                <span className="conv-dot ext" />
-                <span className="conv-row-main">
-                  <span className="conv-row-id">{a.identity || a.key} · {a.location}</span>
-                  <span className="conv-row-task">{a.current_task}</span>
-                </span>
+              <button
+                key={a.key}
+                className="conv-row"
+                onClick={() => void jumpExternal(a)}
+                onMouseEnter={(e) => onRowHover(e, a.key)}
+              >
+                <span className="conv-name">{a.name || a.identity}</span>
+                <span className="conv-loc" title={a.location}><LocIcon loc={a.location} /></span>
+                <span className="conv-row-task">{a.project ? `${a.project}·${a.role} — ` : ""}{a.current_task}</span>
               </button>
             ))}
           </div>
+
+          {/* #4 不挡列表的右侧浮窗: 该对话最近内容 */}
+          {hover && (
+            <div className="conv-preview" style={{ top: Math.max(8, hover.top - 4) }}>
+              {preview}
+            </div>
+          )}
         </div>
       )}
     </div>

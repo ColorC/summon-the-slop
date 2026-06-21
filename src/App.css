@@ -1660,3 +1660,56 @@ body,
 .omni-web-x:hover {
   background: rgba(40, 42, 52, 0.98);
 }
+
+/* ConvBar 行: [名字框] [位置icon] [在做] + 右侧不挡的最近内容浮窗 */
+.conv-name {
+  flex: none;
+  max-width: 116px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid rgba(99, 102, 241, 0.45);
+  background: rgba(99, 102, 241, 0.16);
+  color: #c7c9ff;
+  border-radius: 6px;
+  padding: 2px 7px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.conv-name.poof {
+  border-color: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+  color: #c3c6cf;
+}
+.conv-loc {
+  display: inline-flex;
+  align-items: center;
+  color: #9aa0ad;
+  flex: none;
+}
+.conv-row-task {
+  flex: 1;
+  min-width: 0;
+  font-size: 11.5px;
+  color: #9aa0ad;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.conv-preview {
+  position: absolute;
+  left: calc(100% + 10px);
+  width: 340px;
+  max-height: 300px;
+  overflow: auto;
+  background: rgba(20, 21, 28, 0.99);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 11px;
+  padding: 11px 13px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+  font: 12px/1.55 Consolas, monospace;
+  color: #cdd2dd;
+  white-space: pre-wrap;
+  z-index: 31;
+  pointer-events: none;
+}
