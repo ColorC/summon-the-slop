@@ -18,7 +18,7 @@ import { Notifications } from "./regions/Notifications";
 import { TerminalBar } from "./regions/TerminalBar";
 import { ProjectSurface, ReviewSurface } from "./surfaces";
 import { NotesWorkspace } from "./regions/NotesWorkspace";
-import { PanelFrame, type PanelKind } from "./panels";
+import { DockStage, type PanelKind } from "./panels";
 import { pushChatIntent } from "./chatIntents";
 import "./App.css";
 
@@ -114,24 +114,17 @@ export default function App() {
 
   return (
     <div className="pf-root" onMouseDown={onBackdrop}>
-      {/* middle stage — draggable panels live here, between the two bars.
-          Notes is NOT a draggable panel (a CSS transform would break BlockSuite's
+      {/* middle band — real dock: panels are flush-to-edge, full-height sidebars
+          (left / right) with a drag-sash on the inner seam, or floating cards.
+          Notes is NOT a panel here (a CSS transform would break BlockSuite's
           pointer math); it renders as its own fixed fullscreen workspace below. */}
-      <div className="pf-stage" onMouseDown={(e) => e.stopPropagation()}>
-        {open
-          .filter((k) => k !== "notes")
-          .map((k) => (
-            <PanelFrame
-              key={k}
-              kind={k}
-              pinned={pinned.includes(k)}
-              onPin={() => togglePin(k)}
-              onClose={() => closePanel(k)}
-            >
-              {panelContent(k)}
-            </PanelFrame>
-          ))}
-      </div>
+      <DockStage
+        open={open.filter((k) => k !== "notes")}
+        pinned={pinned}
+        onPin={togglePin}
+        onClose={closePanel}
+        renderContent={panelContent}
+      />
 
       {/* 笔记空间 — fixed fullscreen (no transform), persistent BlockSuite library */}
       {open.includes("notes") && <NotesWorkspace onClose={() => closePanel("notes")} />}

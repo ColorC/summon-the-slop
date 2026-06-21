@@ -684,6 +684,95 @@ body,
   z-index: 8; /* under the two bars (z-index 10) */
   pointer-events: none; /* empty band clicks fall through to the backdrop */
 }
+
+/* ===== docked sidebar — flush to the edge, full working height, square
+        against the edge, with a sash on the inner seam (a real dock, not a
+        card parked near the edge) ===== */
+.pf-dock {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  background: rgba(15, 16, 21, 0.985);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+.pf-dock-left {
+  left: 0;
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0 14px 14px 0; /* flat against the edge, rounded into the workspace */
+}
+.pf-dock-right {
+  right: 0;
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px 0 0 14px;
+}
+/* a stacked view within a dock */
+.pf-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.pf-view:first-of-type .pf-panel-head {
+  border-top-right-radius: 14px;
+}
+.pf-dock-right .pf-view:first-of-type .pf-panel-head {
+  border-top-left-radius: 14px;
+  border-top-right-radius: 0;
+}
+
+/* sashes — the draggable seams */
+.pf-sash {
+  position: relative;
+  z-index: 6;
+  flex: 0 0 auto;
+}
+.pf-sash::after {
+  content: "";
+  position: absolute;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+.pf-sash:hover::after,
+.pf-sash:active::after {
+  background: #2d6cf6;
+}
+/* vertical seam on a dock's inner edge → resize width */
+.pf-sash-v {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 9px;
+  cursor: ew-resize;
+}
+.pf-dock-left .pf-sash-v {
+  right: -4px;
+}
+.pf-dock-right .pf-sash-v {
+  left: -4px;
+}
+.pf-sash-v::after {
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  transform: translateX(-50%);
+}
+/* horizontal seam between stacked views → resize height */
+.pf-sash-h {
+  height: 9px;
+  margin: -4px 0 -5px;
+  cursor: ns-resize;
+}
+.pf-sash-h::after {
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 2px;
+  transform: translateY(-50%);
+}
 .pf-panel {
   position: absolute;
   pointer-events: auto;
@@ -769,9 +858,12 @@ body,
   padding: 7px 8px 7px 14px;
   background: rgba(255, 255, 255, 0.03);
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-  cursor: move;
+  cursor: default;
   user-select: none;
   flex: 0 0 auto;
+}
+.pf-panel-head.drag {
+  cursor: move;
 }
 .pf-panel-title {
   font-size: 13px;
