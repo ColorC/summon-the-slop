@@ -3,6 +3,7 @@ import { Plus, X } from "lucide-react";
 import { TerminalView } from "./Terminal";
 import { runShell } from "../lib";
 import { drainChatIntents, CHAT_EVENT } from "../chatIntents";
+import { registerPane, unregisterPane, FOCUS_PANE_EVENT } from "../poofPanes";
 
 interface Tab {
   id: string;
@@ -18,6 +19,10 @@ function cmdFor(provider: string): { cmd?: string; title: string } {
   return { cmd: "claude", title: "Claude" };
 }
 
+function providerOf(cmd?: string): string {
+  return cmd === "codex" ? "codex" : cmd === "claude" ? "claude" : "ps";
+}
+
 /** AI terminal living inside the overlay's right side panel. New chats arrive as a
  *  window "poof-new-chat" CustomEvent from the shade. Tabs stay mounted so PTY
  *  sessions keep streaming in the background. */
@@ -30,10 +35,13 @@ export function TerminalBar() {
     const id = "term-" + ++counter;
     setTabs((t) => [...t, { id, title, cmd, initialInput }]);
     setActive(id);
+    // 登记进 poof 窗格表, 让总控路由能把消息派给它(case2)。label 用首条输入, 没有就用标题。
+    registerPane({ id, provider: providerOf(cmd), label: initialInput || title });
   }
   function close(id: string) {
     setTabs((t) => t.filter((x) => x.id !== id));
     setActive((a) => (a === id ? "" : a));
+    unregisterPane(id);
   }
 
   useEffect(() => {
@@ -47,7 +55,16 @@ export function TerminalBar() {
     };
     consume(); // drain anything queued before this bar mounted
     window.addEventListener(CHAT_EVENT, consume);
-    return () => window.removeEventListener(CHAT_EVENT, consume);
+    // 总控派发命中 send_poof_pane → 切到那个窗格 tab(消息由 dispatch 直接 ptyWrite)
+    const onFocus = (e: Event) => {
+      const id = (e as CustomEvent).detail as string;
+      if (id) setActive(id);
+    };
+    window.addEventListener(FOCUS_PANE_EVENT, onFocus);
+    return () => {
+      window.removeEventListener(CHAT_EVENT, consume);
+      window.removeEventListener(FOCUS_PANE_EVENT, onFocus);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

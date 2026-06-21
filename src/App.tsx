@@ -119,7 +119,7 @@ export default function App() {
       return;
     }
     openPanel("chat");
-    void dispatchMessage(q, { newChat });
+    void dispatchMessage(q, { newChat, openChat: () => openPanel("chat") });
   };
   const onLaunched = () => hide();
 

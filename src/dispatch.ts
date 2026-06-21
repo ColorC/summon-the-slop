@@ -7,7 +7,8 @@
 //   ask_user                         : 不确定发给谁 → 复制 + 新起 + 提示候选
 //
 // UI 反馈用一个自管的 vanilla toast(贴 body), 不动 App/CSS, 把对共享文件的改动压到最小。
-import { runShell, copyText } from "./lib";
+import { runShell, copyText, ptyWrite } from "./lib";
+import { listPanes, focusPane } from "./poofPanes";
 
 export type RouteKind =
   | "send_active_window"
@@ -32,15 +33,16 @@ export interface RouteDecision {
   error?: string;
 }
 
-// 转义进 `cmd /C omni dispatch route -m "<msg>"` 的单参数: 双引号→单引号, 折行→空格。
-// (典型路由消息是一两句, 没有嵌套双引号; 真要严谨得加 Rust argv 命令, 那会动共享 lib.rs。)
-function escArg(s: string): string {
-  return s.replace(/"/g, "'").replace(/\s+/g, " ").trim();
+// 走 --input-b64 把 {message, poof_panes} 传给 omni —— base64 是纯 [A-Za-z0-9+/=], 在
+// cmd 里不用引号、零转义问题(消息含引号/换行/中文都安全)。poof_panes 让路由器能判 send_poof_pane。
+function b64utf8(s: string): string {
+  return btoa(unescape(encodeURIComponent(s)));
 }
 
 export async function routeMessage(message: string): Promise<RouteDecision> {
   try {
-    const out = await runShell(`omni dispatch route -m "${escArg(message)}" --json`);
+    const payload = JSON.stringify({ message, poof_panes: listPanes() });
+    const out = await runShell(`omni dispatch route --input-b64 ${b64utf8(payload)} --json`);
     const lines = (out.stdout || "").split("\n").map((l) => l.trim()).filter(Boolean);
     const last = lines[lines.length - 1] || "";
     return JSON.parse(last) as RouteDecision;
@@ -51,6 +53,7 @@ export async function routeMessage(message: string): Promise<RouteDecision> {
 
 export interface DispatchDeps {
   newChat: (provider: string, query?: string) => void;
+  openChat?: () => void; // 只打开"对话/终端"面板(不新建 tab) —— send_poof_pane 用
 }
 
 /** 路由一条消息并执行。返回后 toast 已把结果告诉用户。 */
@@ -90,9 +93,18 @@ export async function dispatchMessage(message: string, deps: DispatchDeps): Prom
       break;
     }
     case "send_poof_pane": {
-      // poof 窗格还没注册进 omni 注册表 → 暂回退新起(注册做完后改成 ptyWrite 直送)
-      deps.newChat("claude", text);
-      toast(`目标是 poof 窗格「${d.target_identity || ""}」，暂回退为新对话。`);
+      const pane =
+        d.target_pane ||
+        (d.target_key && d.target_key.startsWith("poof:") ? d.target_key.slice(5) : "");
+      if (pane) {
+        deps.openChat?.(); // 确保对话面板开着, TerminalBar 挂载
+        await ptyWrite(pane, text + "\r").catch(() => {});
+        setTimeout(() => focusPane(pane), 180); // 切到那个窗格 tab
+        toast(`已直接发给 poof 窗格「${d.target_identity || pane}」。`);
+      } else {
+        deps.newChat("claude", text);
+        toast(`想发给 poof 窗格但没拿到窗格号，已回退新起。`);
+      }
       break;
     }
     case "ask_user": {
