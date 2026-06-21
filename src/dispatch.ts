@@ -29,8 +29,17 @@ export interface RouteDecision {
   provider?: "claude" | "codex";
   text?: string;
   candidates?: string[];
+  candidate_details?: CandidateDetail[];
   reason?: string;
   error?: string;
+}
+
+export interface CandidateDetail {
+  key: string;
+  identity?: string;
+  location?: string;
+  pane?: string;
+  current_task?: string;
 }
 
 // 走 --input-b64 把 {message, poof_panes} 传给 omni —— base64 是纯 [A-Za-z0-9+/=], 在
@@ -63,55 +72,43 @@ export async function dispatchMessage(message: string, deps: DispatchDeps): Prom
   const text = d.text || message;
 
   switch (d.kind) {
-    case "new_strongest":
     case "new_with_project": {
       const prov = d.provider === "codex" ? "codex" : "claude";
+      // 轻量"带项目上下文": 给首条消息加项目标注, 让新对话知道归属。
+      // (完整版"受 omni 控制的会话 + cd 进项目载 CLAUDE.md"是更深的活, 见下一增量。)
+      const seed = d.project ? `【项目上下文：${d.project}】\n${text}` : text;
+      deps.newChat(prov, seed);
+      toast(`新起 ${prov} 对话（${d.project || "?"}）· ${d.reason || ""}`);
+      break;
+    }
+    case "new_strongest": {
+      const prov = d.provider === "codex" ? "codex" : "claude";
       deps.newChat(prov, text);
-      const proj = d.kind === "new_with_project" && d.project ? `（${d.project}）` : "";
-      toast(`新起 ${prov} 对话${proj} · ${d.reason || ""}`);
+      toast(`新起 ${prov} 对话 · ${d.reason || ""}`);
       break;
     }
     case "send_active_window": {
-      await copyText(text).catch(() => {});
-      const loc = d.target_location || "";
-      let jumped = false;
-      if (loc) {
-        try {
-          const out = await runShell(`omni dispatch activate --location "${loc}" --json`);
-          const last = (out.stdout || "").trim().split("\n").pop() || "";
-          jumped = JSON.parse(last)?.ok === true;
-        } catch {
-          /* activate best-effort; clipboard is the guarantee */
-        }
-      }
-      const who = d.target_identity || d.target_key;
-      toast(
-        jumped
-          ? `已把「${who}」所在窗口（${loc}）切到最前，消息已复制 —— 粘贴即可。`
-          : `这条更像是发给「${who}」（${loc || "外部窗口"}）。已复制到剪贴板，切过去粘贴。`
-      );
+      await execActiveWindow(d.target_location, d.target_identity || d.target_key, text);
       break;
     }
     case "send_poof_pane": {
       const pane =
         d.target_pane ||
         (d.target_key && d.target_key.startsWith("poof:") ? d.target_key.slice(5) : "");
-      if (pane) {
-        deps.openChat?.(); // 确保对话面板开着, TerminalBar 挂载
-        await ptyWrite(pane, text + "\r").catch(() => {});
-        setTimeout(() => focusPane(pane), 180); // 切到那个窗格 tab
-        toast(`已直接发给 poof 窗格「${d.target_identity || pane}」。`);
-      } else {
+      if (pane) await execPoofPane(pane, d.target_identity || pane, text, deps.openChat);
+      else {
         deps.newChat("claude", text);
         toast(`想发给 poof 窗格但没拿到窗格号，已回退新起。`);
       }
       break;
     }
     case "ask_user": {
-      await copyText(text).catch(() => {});
-      deps.newChat("claude", text);
-      const n = (d.candidates || []).length;
-      toast(`不确定该接到哪条已有对话（候选 ${n} 个）。已新起并把内容复制到剪贴板。`);
+      const cands = d.candidate_details || [];
+      if (cands.length) showPicker(cands, text, deps);
+      else {
+        deps.newChat("claude", text);
+        toast(`不确定该接到哪条已有对话，已新起处理。`);
+      }
       break;
     }
     default: {
@@ -120,6 +117,94 @@ export async function dispatchMessage(message: string, deps: DispatchDeps): Prom
     }
   }
   return d;
+}
+
+// ---- 执行端(switch 与 picker 共用) ----
+async function execActiveWindow(loc: string | undefined, who: string | undefined, text: string): Promise<void> {
+  await copyText(text).catch(() => {});
+  let jumped = false;
+  if (loc) {
+    try {
+      const out = await runShell(`omni dispatch activate --location "${loc}" --json`);
+      const last = (out.stdout || "").trim().split("\n").pop() || "{}";
+      jumped = JSON.parse(last)?.ok === true;
+    } catch {
+      /* activate best-effort; clipboard is the guarantee */
+    }
+  }
+  toast(
+    jumped
+      ? `已把「${who}」所在窗口（${loc}）切到最前，消息已复制 —— 粘贴即可。`
+      : `这条更像是发给「${who}」（${loc || "外部窗口"}）。已复制到剪贴板，切过去粘贴。`
+  );
+}
+
+async function execPoofPane(pane: string, who: string, text: string, openChat?: () => void): Promise<void> {
+  openChat?.();
+  await ptyWrite(pane, text + "\r").catch(() => {});
+  setTimeout(() => focusPane(pane), 180);
+  toast(`已直接发给 poof 窗格「${who}」。`);
+}
+
+// ---- ask_user 选择器(vanilla overlay, 不动 React) ----
+function showPicker(cands: CandidateDetail[], text: string, deps: DispatchDeps): void {
+  const back = document.createElement("div");
+  Object.assign(back.style, {
+    position: "fixed", inset: "0", zIndex: "10000",
+    background: "rgba(0,0,0,0.35)", display: "flex",
+    alignItems: "center", justifyContent: "center",
+  } as CSSStyleDeclaration);
+  const box = document.createElement("div");
+  Object.assign(box.style, {
+    width: "520px", maxWidth: "92vw", maxHeight: "70vh", overflow: "auto",
+    background: "rgba(22,23,29,0.99)", color: "#e7e7ea",
+    border: "1px solid rgba(255,255,255,0.16)", borderRadius: "14px",
+    padding: "16px 18px", boxShadow: "0 28px 80px rgba(0,0,0,0.6)",
+    font: "13px/1.5 'Segoe UI', sans-serif",
+  } as CSSStyleDeclaration);
+  const title = document.createElement("div");
+  title.textContent = "这条该接到哪个对话？";
+  Object.assign(title.style, { fontWeight: "600", fontSize: "14px", marginBottom: "10px" } as CSSStyleDeclaration);
+  box.appendChild(title);
+
+  const close = () => back.remove();
+  const row = (label: string, sub: string, onClick: () => void) => {
+    const b = document.createElement("button");
+    Object.assign(b.style, {
+      display: "block", width: "100%", textAlign: "left", cursor: "pointer",
+      background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.09)",
+      color: "#e7e7ea", borderRadius: "9px", padding: "9px 12px", marginBottom: "7px",
+      font: "13px/1.4 'Segoe UI', sans-serif",
+    } as CSSStyleDeclaration);
+    b.onmouseenter = () => (b.style.background = "rgba(99,102,241,0.28)");
+    b.onmouseleave = () => (b.style.background = "rgba(255,255,255,0.05)");
+    b.innerHTML = `<div style="font-weight:600">${label}</div>` +
+      (sub ? `<div style="color:#9aa0ad;font-size:12px;margin-top:2px">${sub}</div>` : "");
+    b.onclick = () => { close(); onClick(); };
+    box.appendChild(b);
+  };
+
+  for (const c of cands) {
+    const loc = c.location || "";
+    row(c.identity || c.key, `${loc}${c.current_task ? " · " + c.current_task : ""}`, () => {
+      if (loc.includes("poof") && c.pane) void execPoofPane(c.pane, c.identity || c.pane, text, deps.openChat);
+      else void execActiveWindow(loc, c.identity || c.key, text);
+    });
+  }
+  row("都不是 —— 新起一个对话", "用最强模型新建并发送", () => deps.newChat("claude", text));
+
+  const cancel = document.createElement("button");
+  cancel.textContent = "取消";
+  Object.assign(cancel.style, {
+    marginTop: "4px", background: "transparent", border: "none", color: "#9aa0ad",
+    cursor: "pointer", font: "12px 'Segoe UI', sans-serif",
+  } as CSSStyleDeclaration);
+  cancel.onclick = close;
+  box.appendChild(cancel);
+
+  back.onclick = (e) => { if (e.target === back) close(); };
+  back.appendChild(box);
+  document.body.appendChild(back);
 }
 
 // ---- 自管 toast ----
