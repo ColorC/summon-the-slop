@@ -121,21 +121,26 @@ export async function dispatchMessage(message: string, deps: DispatchDeps): Prom
 
 // ---- 执行端(switch 与 picker 共用) ----
 async function execActiveWindow(loc: string | undefined, who: string | undefined, text: string): Promise<void> {
-  await copyText(text).catch(() => {});
+  await copyText(text).catch(() => {}); // 先 arboard 写剪贴板(Unicode 正确), 再激活+粘贴
   let jumped = false;
+  let pasted = false;
   if (loc) {
     try {
-      const out = await runShell(`omni dispatch activate --location "${loc}" --json`);
+      const out = await runShell(`omni dispatch activate --location "${loc}" --paste --json`);
       const last = (out.stdout || "").trim().split("\n").pop() || "{}";
-      jumped = JSON.parse(last)?.ok === true;
+      const r = JSON.parse(last);
+      jumped = r?.ok === true;
+      pasted = r?.pasted === true;
     } catch {
-      /* activate best-effort; clipboard is the guarantee */
+      /* activate/paste best-effort; clipboard is the guarantee */
     }
   }
   toast(
-    jumped
-      ? `已把「${who}」所在窗口（${loc}）切到最前，消息已复制 —— 粘贴即可。`
-      : `这条更像是发给「${who}」（${loc || "外部窗口"}）。已复制到剪贴板，切过去粘贴。`
+    pasted
+      ? `已跳到「${who}」（${loc}）并把消息粘进输入框。`
+      : jumped
+        ? `已把「${who}」窗口（${loc}）切到最前，消息已复制 —— 粘贴即可。`
+        : `这条更像是发给「${who}」（${loc || "外部窗口"}）。已复制到剪贴板，切过去粘贴。`
   );
 }
 
