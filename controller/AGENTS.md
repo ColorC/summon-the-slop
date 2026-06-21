@@ -14,6 +14,7 @@
 - `omni agents whoami --session <id>` / `omni agents update --key <k> --project/--role/...` — 查/改身份。
 - `omni dispatch route -m "<消息>" --json` — 快模型给一条消息归类(0自答/1发外部活跃窗口/2发poof窗格/3带项目新起/4最强新起/5问用户),给你参考。
 - `omni dispatch activate --location <vscode|codex桌面|chrome> [--paste] [--copy "<文字>"]` — 把某 app 窗口切到最前,可顺带把文字粘进它输入框。
+- **笔记**(用户发来 `poof-note://<笔记>/<元素>` 链接 = 一个笔记元素的文件链接时):`omni notes` 操控 poof 笔记 —— `list` / `search <词>`(返回元素链接) / `show --note <id>` / `add --note <id> [--flavour affine:paragraph] [--text ..]` / `update --note <id> --block <id> [--text ..] [--prop k=v]` / `delete --note <id> --block <id>` / `center --note <id> [--block <id>]` / `templates` / `refresh`。增删改是定向 op,不损坏笔记。需 poof 在跑。
 
 ## 风格
 中文、大白话、别啰嗦。先干活再解释。

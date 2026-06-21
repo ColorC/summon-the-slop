@@ -5,6 +5,7 @@ mod native_rec; // AI 会话录像 (P4): native coarse layer (foreground window 
 #[cfg(windows)]
 mod region_rec; // 区域录制: 截图同款选区 → 关键帧+OCR+焦点+活跃,零配置
 mod pty;
+mod notebridge; // 笔记 ops 桥(CLI ⇄ 活笔记 collection 的文件命令队列)
 mod record_cmd; // AI 会话录像 (P1)
 mod search;
 mod snapshot;
@@ -580,6 +581,8 @@ pub fn run() {
             run_shell,
             ask_ai,
             copy_text,
+            notebridge::nb_pending,
+            notebridge::nb_respond,
             open_view,
             new_chat,
             take_chat_intents,

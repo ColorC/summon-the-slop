@@ -23,6 +23,7 @@ import { NotesWorkspace } from "./regions/NotesWorkspace";
 import { DockStage, type PanelKind } from "./panels";
 import { pushChatIntent } from "./chatIntents";
 import { sendToController, OMNI_WEB_URL } from "./controller";
+import { startNoteBridge } from "./noteOps";
 import "./App.css";
 
 const PIN_KEY = "poof-panels-pinned";
@@ -47,6 +48,11 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(PIN_KEY, JSON.stringify(pinned));
   }, [pinned]);
+
+  // #7 笔记 ops 桥: 后台轮询文件命令(omni notes), 在活笔记 collection 上执行。常驻(笔记面板不开也能改)。
+  useEffect(() => {
+    startNoteBridge();
+  }, []);
 
   const isOpen = (k: PanelKind) => open.includes(k);
   const openPanel = useCallback(

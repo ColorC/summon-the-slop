@@ -19,8 +19,10 @@ import {
   History,
   Save,
   SquareTerminal,
+  Link2,
 } from "lucide-react";
 import { TerminalView } from "./Terminal";
+import { copyText } from "../lib";
 import * as Y from "yjs";
 import "@toeverything/theme/style.css";
 import { Schema, DocCollection, Job, type Doc } from "@blocksuite/store";
@@ -50,7 +52,7 @@ function registerEffects() {
 
 // ONE persistent, IndexedDB-backed collection for all notes (survives summons/restarts).
 let collection: DocCollection | null = null;
-function getCollection(): DocCollection {
+export function getCollection(): DocCollection {
   if (collection) return collection;
   registerEffects();
   const schema = new Schema().register(AffineSchemas);
@@ -422,6 +424,14 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
           disabled={!activeId}
         >
           <History size={15} />
+        </button>
+        <button
+          className="notes-bar-btn"
+          title="复制当前笔记链接(发给 AI：poof-note://… · AI 可 omni notes show/search/编辑)"
+          disabled={!activeId}
+          onClick={() => { if (activeId) void copyText(`poof-note://${activeId}`); }}
+        >
+          <Link2 size={15} />
         </button>
         <button
           className={"notes-bar-btn" + (termOpen ? " on" : "")}
