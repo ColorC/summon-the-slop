@@ -437,11 +437,12 @@ fn grab(auto: &uiautomation::UIAutomation, x: i32, y: i32, e: &crate::uia::Eleme
         lines.push(format!("OCR: {}", short(&ocr_text.replace('\n', " "), 72)));
     }
 
-    // one captioned PNG, descriptively + concisely named
+    // one captioned PNG. Filename uses only STABLE fields (control type + process) — the
+    // element name is arbitrary text with unpredictable characters, so it never goes in
+    // the path; the full name lives in the image caption instead.
     let out = compose_caption(&crop, &lines);
-    let name_tag = if nm.is_empty() { String::new() } else { format!("-{}", sanitize(&short(nm, 10))) };
     let proc_tag = if proc_name.is_empty() { String::new() } else { format!("-{}", sanitize(proc_name.trim_end_matches(".exe"))) };
-    let fname = format!("{}{}{}-{:06}.png", sanitize(&e.control_type), name_tag, proc_tag, (now_nanos() % 1_000_000) as u32);
+    let fname = format!("{}{}-{:06}.png", sanitize(&e.control_type), proc_tag, (now_nanos() % 1_000_000) as u32);
     let dir = std::path::Path::new(&std::env::var("USERPROFILE").unwrap_or_default())
         .join("Pictures")
         .join("waiela");
@@ -449,12 +450,11 @@ fn grab(auto: &uiautomation::UIAutomation, x: i32, y: i32, e: &crate::uia::Eleme
     let path = dir.join(&fname);
     std::fs::write(&path, encode_png(&out)?).map_err(|e| e.to_string())?;
 
-    let label = format!("{} {}", e.control_type, if nm.is_empty() { "(无名)".to_string() } else { short(nm, 16) });
-    let clip = format!("选中 {label}（图含全部信息，AI 可直接读）：\n{}", path.display());
+    // clipboard = just a wiki-link to the image; the filename + caption say what it is
     if let Ok(mut cb) = arboard::Clipboard::new() {
-        let _ = cb.set_text(clip);
+        let _ = cb.set_text(format!("[[{}]]", path.display()));
     }
-    Ok(label)
+    Ok(e.control_type.clone())
 }
 
 /// Box-select grab: capture the dragged region (with the box drawn), list the UIA
@@ -497,9 +497,8 @@ fn grab_region(auto: &uiautomation::UIAutomation, l: i32, t: i32, r: i32, b: i32
     std::fs::write(&path, encode_png(&out)?).map_err(|e| e.to_string())?;
 
     let label = format!("区域 {}×{} · {} 个元素", r - l, b - t, els.len());
-    let clip = format!("框选 {label}（图含区域内元素列表，AI 可直接读）：\n{}", path.display());
     if let Ok(mut cb) = arboard::Clipboard::new() {
-        let _ = cb.set_text(clip);
+        let _ = cb.set_text(format!("[[{}]]", path.display()));
     }
     Ok(label)
 }
