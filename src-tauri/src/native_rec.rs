@@ -81,7 +81,7 @@ fn emit(kind: &str, p: serde_json::Value) {
 }
 
 /// (hwnd, title, process-exe-name) of the current foreground window, if any.
-fn foreground() -> Option<(isize, String, String)> {
+pub(crate) fn foreground() -> Option<(isize, String, String)> {
     unsafe {
         let hwnd = GetForegroundWindow();
         if hwnd == 0 {
@@ -115,7 +115,7 @@ fn process_name(pid: u32) -> String {
 }
 
 /// Milliseconds since the last system-wide input (mouse/keyboard) — activity, NOT content.
-fn idle_ms() -> u64 {
+pub(crate) fn idle_ms() -> u64 {
     unsafe {
         let mut lii = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
         if GetLastInputInfo(&mut lii) != 0 {

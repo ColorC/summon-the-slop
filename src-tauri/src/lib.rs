@@ -2,6 +2,8 @@
 mod http_rec; // AI 会话录像 (P2): localhost HTTP collector for extensions
 #[cfg(windows)]
 mod native_rec; // AI 会话录像 (P4): native coarse layer (foreground window + activity)
+#[cfg(windows)]
+mod region_rec; // 区域录制: 截图同款选区 → 关键帧+OCR+焦点+活跃,零配置
 mod pty;
 mod record_cmd; // AI 会话录像 (P1)
 mod search;
@@ -102,6 +104,29 @@ fn native_stop() -> Result<(), String> {
     Ok(())
 }
 
+/// 区域录制 — start recording a selected physical-pixel rect (截图选区交给这里).
+#[tauri::command]
+fn region_record_start(l: i32, t: i32, r: i32, b: i32) -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        region_rec::start(l, t, r, b)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (l, t, r, b);
+        Err("windows only".into())
+    }
+}
+
+#[tauri::command]
+fn region_record_stop() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        region_rec::stop();
+    }
+    Ok(())
+}
+
 #[cfg(windows)]
 mod hook {
     use super::{log_line, now_ms};
@@ -116,14 +141,16 @@ mod hook {
 
     /// What the hook asks the UI thread to do.
     pub enum Sig {
-        Summon, // hold Ctrl + double-tap Alt → toggle the overlay
-        Snap,   // Ctrl+Alt+A → jump straight into 截图
+        Summon,       // hold Ctrl + double-tap Alt → toggle the overlay
+        Snap,         // Ctrl+Alt+A → jump straight into 截图
+        RecordToggle, // Ctrl+Alt+R → 区域录制: not recording → snap in record-mode; recording → stop
     }
 
     // Summon gesture = HOLD Ctrl + double-tap Alt. "held" is read from the real-time
     // physical key state (GetAsyncKeyState) so a missed key-up can never wedge it.
     static LAST_ALT_UP: AtomicU64 = AtomicU64::new(0);
     static SNAP_DOWN: AtomicBool = AtomicBool::new(false); // de-dupe Ctrl+Alt+A auto-repeat
+    static REC_DOWN: AtomicBool = AtomicBool::new(false); // de-dupe Ctrl+Alt+R auto-repeat
     pub static TX: OnceLock<Sender<Sig>> = OnceLock::new();
 
     const WM_KEYDOWN: usize = 0x0100;
@@ -136,6 +163,7 @@ mod hook {
     const VK_RMENU: u32 = 0xA5; // right Alt
     const VK_MENU: u32 = 0x12; // generic Alt (injected)
     const VK_A: u32 = 0x41;
+    const VK_R: u32 = 0x52;
     const DOUBLE_MS: u64 = 450;
 
     #[inline]
@@ -163,6 +191,20 @@ mod hook {
             }
             if (wparam == WM_KEYUP || wparam == WM_SYSKEYUP) && kb.vkCode == VK_A {
                 SNAP_DOWN.store(false, Ordering::SeqCst);
+            }
+            // Ctrl+Alt+R → 区域录制 toggle. Swallow the 'R' (return 1) so it isn't typed.
+            if (wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN) && kb.vkCode == VK_R {
+                if held(VK_CONTROL) && held(VK_MENU_STATE) {
+                    if !REC_DOWN.swap(true, Ordering::SeqCst) {
+                        if let Some(tx) = TX.get() {
+                            let _ = tx.send(Sig::RecordToggle);
+                        }
+                    }
+                    return 1;
+                }
+            }
+            if (wparam == WM_KEYUP || wparam == WM_SYSKEYUP) && kb.vkCode == VK_R {
+                REC_DOWN.store(false, Ordering::SeqCst);
             }
             // hold Ctrl + double-tap Alt → toggle the overlay
             if (wparam == WM_KEYUP || wparam == WM_SYSKEYUP) && is_alt(kb.vkCode) {
@@ -322,7 +364,7 @@ fn start_inspect() -> Result<(), String> {
 /// user would be trapped (only Alt+F4 closes an unfocused window). The snap content is
 /// transparent at this point, so the capture (kicked by snap-summon) stays clean.
 #[cfg(windows)]
-fn summon_snap(app: &tauri::AppHandle) {
+fn summon_snap(app: &tauri::AppHandle, record: bool) {
     use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize};
     let Some(snap) = app.get_webview_window("snap") else { return };
     if let Ok(Some(m)) = snap.primary_monitor() {
@@ -336,12 +378,13 @@ fn summon_snap(app: &tauri::AppHandle) {
     if let Some(main) = app.get_webview_window("main") {
         let _ = main.hide();
     }
-    let _ = snap.emit("snap-summon", ());
+    // record=true → snap.ts enters 录制模式 (selection starts a recording instead of a copy)
+    let _ = snap.emit("snap-summon", record);
 }
 #[cfg(windows)]
 #[tauri::command]
 fn show_snap(app: tauri::AppHandle) -> Result<(), String> {
-    summon_snap(&app);
+    summon_snap(&app, false);
     Ok(())
 }
 #[cfg(windows)]
@@ -502,7 +545,14 @@ pub fn run() {
                     for sig in rx {
                         let h = handle.clone();
                         let _ = handle.run_on_main_thread(move || match sig {
-                            hook::Sig::Snap => summon_snap(&h),
+                            hook::Sig::Snap => summon_snap(&h, false),
+                            hook::Sig::RecordToggle => {
+                                if region_rec::is_recording() {
+                                    region_rec::stop();
+                                } else {
+                                    summon_snap(&h, true); // select a region, then 录
+                                }
+                            }
                             hook::Sig::Summon => {
                                 if let Some(w) = h.get_webview_window("main") {
                                     let visible = w.is_visible().unwrap_or(false);
@@ -565,7 +615,9 @@ pub fn run() {
             record_cmd::list_sessions,
             record_cmd::read_session,
             native_start,
-            native_stop
+            native_stop,
+            region_record_start,
+            region_record_stop
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

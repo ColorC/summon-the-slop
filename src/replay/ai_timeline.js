@@ -122,6 +122,11 @@ export function sessionToTimeline(events, meta) {
       if (e.kind === "native.focus") lines.push(`- [${t}] 切换到窗口 「${trunc(p.title || "?", 60)}」${p.process ? ` (${p.process})` : ""}`);
       else if (e.kind === "native.activity") lines.push(`- [${t}] ${p.active ? "用户活跃" : `空闲 (${Math.round((p.idleMs || 0) / 1000)}s 无操作)`}`);
       else lines.push(`- [${t}] ${e.kind}`);
+    } else if (e.kind === "keyframe") {
+      // 区域录制 keyframe: the OCR'd text IS the AI-readable "what was on screen" (image lives at p.frame)
+      const p = e.p || {};
+      const txt = trunc((p.text || "").replace(/\s+/g, " "), 220);
+      lines.push(`- [${t}] 画面 ${p.w || "?"}×${p.h || "?"} · 文字: ${txt || "(无文字)"}`);
     }
   }
 

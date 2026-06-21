@@ -29,6 +29,11 @@ fn recordings_dir() -> PathBuf {
         .join("poof-recordings")
 }
 
+/// One session's directory (used by region_rec to write its frames/ subdir alongside the jsonl).
+pub fn session_dir(sid: &str) -> PathBuf {
+    recordings_dir().join(sid)
+}
+
 /// Reject any path that isn't under the recordings root (no traversal).
 fn ensure_in_recordings(path: &str) -> Result<PathBuf, String> {
     let cp = std::fs::canonicalize(Path::new(path)).map_err(|e| e.to_string())?;

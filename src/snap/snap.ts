@@ -35,6 +35,8 @@ let down: { x: number; y: number } | null = null;
 let origSel: Rect = { l: 0, t: 0, r: 0, b: 0 };
 let sel: Rect = { l: 0, t: 0, r: 0, b: 0 };
 let textAt: { x: number; y: number } | null = null;
+let recordMode = false; // summoned via Ctrl+Alt+R: a selection starts 区域录制 instead of a copy
+const HINT_DEFAULT = hint.textContent || "";
 
 const esc = (s: string) => (s || "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]!));
 const clampX = (x: number) => Math.max(0, Math.min(x, window.innerWidth));
@@ -85,6 +87,7 @@ function enterIdle() {
   handlesEl.innerHTML = "";
   annot.enabled = false;
   mask.classList.remove("hidden");
+  hint.textContent = recordMode ? "框选要录的窗口 / 区域 → 回车开始录屏 · Esc 取消" : HINT_DEFAULT;
   hint.classList.remove("hidden");
 }
 
@@ -329,6 +332,19 @@ async function doAction(act: string) {
   }
 }
 
+// 区域录制: hand the selected PHYSICAL rect to region_rec, then close the frozen overlay so the
+// recorder captures the LIVE desktop (a short delay lets the hidden overlay clear before frame 0).
+async function startRegionRecord() {
+  if (!cap || mode !== "selected") return;
+  const [pl, pt, pr, pb] = cropPhys();
+  // confirmation cue in the snap panel itself (no extra window) before closing + recording
+  showPanel("● 开始录屏", `<div class="pv">正在录制选中区域。<br>再按 <b>Ctrl + Alt + R</b> 即可停止保存。</div>`);
+  await new Promise((r) => setTimeout(r, 1100));
+  await closeSnap();
+  await new Promise((r) => setTimeout(r, 220)); // let the hidden overlay clear before frame 0
+  try { await invoke("region_record_start", { l: pl, t: pt, r: pr, b: pb }); } catch {}
+}
+
 // ---- history panel --------------------------------------------------------
 
 function showPanel(title: string, bodyHtml: string) {
@@ -402,7 +418,7 @@ window.addEventListener("keydown", (e) => {
   const k = e.key;
   if (k === "Escape") { e.preventDefault(); onEscape(); return; }
   if (mode === "selected") {
-    if (k === "Enter") { e.preventDefault(); doAction("copy"); return; }
+    if (k === "Enter") { e.preventDefault(); if (recordMode) startRegionRecord(); else doAction("copy"); return; }
     if ((e.ctrlKey || e.metaKey) && (k === "c" || k === "C")) { e.preventDefault(); doAction("copy"); return; }
     if ((e.ctrlKey || e.metaKey) && (k === "s" || k === "S")) { e.preventDefault(); doAction("save"); return; }
     if ((e.ctrlKey || e.metaKey) && (k === "z" || k === "Z")) { e.preventDefault(); annot.undo(); return; }
@@ -414,7 +430,7 @@ window.addEventListener("keydown", (e) => {
       if (nt) { e.preventDefault(); setTool(nt); return; }
     }
   } else {
-    if (k === "Enter") { e.preventDefault(); selectFull(); doAction("copy"); return; }
+    if (k === "Enter") { e.preventDefault(); selectFull(); if (recordMode) startRegionRecord(); else doAction("copy"); return; }
     if (k === "F3") { e.preventDefault(); selectFull(); doAction("pin"); return; }
   }
 });
@@ -423,7 +439,7 @@ window.addEventListener("keydown", (e) => {
 document.addEventListener("dblclick", (e) => {
   if (mode !== "selected") return;
   const inside = e.clientX >= sel.l && e.clientX <= sel.r && e.clientY >= sel.t && e.clientY <= sel.b;
-  if (inside) doAction("copy");
+  if (inside) { if (recordMode) startRegionRecord(); else doAction("copy"); }
 });
 
 // right-click anywhere cancels (selection first, then the whole snip)
@@ -433,4 +449,4 @@ document.addEventListener("mousedown", onDown);
 document.addEventListener("mousemove", onMove);
 document.addEventListener("mouseup", onUp);
 
-listen("snap-summon", () => doCapture());
+listen<boolean>("snap-summon", (e) => { recordMode = e.payload === true; doCapture(); });

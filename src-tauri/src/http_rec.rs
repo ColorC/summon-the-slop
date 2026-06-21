@@ -116,6 +116,27 @@ fn handle(method: &Method, url: &str, body: &str) -> (u16, String) {
             crate::native_rec::stop();
             (200, "{}".into())
         }
+        // 区域录制控制面 — start/stop recording a physical-pixel rect {l,t,r,b}.
+        "/region/start" => {
+            #[cfg(windows)]
+            {
+                let v = serde_json::from_str::<serde_json::Value>(body).ok();
+                let g = |k: &str| v.as_ref().and_then(|v| v.get(k).and_then(|n| n.as_i64())).unwrap_or(0) as i32;
+                match crate::region_rec::start(g("l"), g("t"), g("r"), g("b")) {
+                    Ok(sid) => (200, format!("{{\"sid\":\"{sid}\"}}")),
+                    Err(e) => (500, format!("{{\"error\":{}}}", serde_json::to_string(&e).unwrap_or_default())),
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                (500, "{\"error\":\"windows only\"}".into())
+            }
+        }
+        "/region/stop" => {
+            #[cfg(windows)]
+            crate::region_rec::stop();
+            (200, "{}".into())
+        }
         _ => (404, "{}".into()),
     }
 }
