@@ -120,7 +120,7 @@ export function sessionToTimeline(events, meta) {
     } else if (e.kind && e.kind.startsWith("native.")) {
       const p = e.p || {};
       if (e.kind === "native.focus") lines.push(`- [${t}] 切换到窗口 「${trunc(p.title || "?", 60)}」${p.process ? ` (${p.process})` : ""}`);
-      else if (e.kind === "native.activity") lines.push(`- [${t}] 活动 · 点击${p.clicks || 0}次 按键${p.keys || 0}次 @ 「${trunc(p.title || "?", 40)}」`);
+      else if (e.kind === "native.activity") lines.push(`- [${t}] ${p.active ? "用户活跃" : `空闲 (${Math.round((p.idleMs || 0) / 1000)}s 无操作)`}`);
       else lines.push(`- [${t}] ${e.kind}`);
     }
   }

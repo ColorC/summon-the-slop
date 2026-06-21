@@ -1,5 +1,7 @@
 // Poof — summoned overlay shell. Hold Ctrl + double-tap Alt summons a transparent panel.
 mod http_rec; // AI 会话录像 (P2): localhost HTTP collector for extensions
+#[cfg(windows)]
+mod native_rec; // AI 会话录像 (P4): native coarse layer (foreground window + activity)
 mod pty;
 mod record_cmd; // AI 会话录像 (P1)
 mod search;
@@ -76,6 +78,28 @@ async fn run_shell(cmd: String) -> Result<CmdOut, String> {
         let _ = cmd;
         Err("windows only".into())
     }
+}
+
+/// P4 — start/stop recording the native desktop coarse layer (foreground app + activity).
+#[tauri::command]
+fn native_start() -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        native_rec::start("桌面活动录制")
+    }
+    #[cfg(not(windows))]
+    {
+        Err("windows only".into())
+    }
+}
+
+#[tauri::command]
+fn native_stop() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        native_rec::stop();
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -208,31 +232,14 @@ async fn ask_ai(prompt: String) -> Result<String, String> {
     }
 }
 
-/// Copy text to the Windows clipboard (the "复制" dispatch).
+/// Copy text to the clipboard (the "复制" dispatch). Uses arboard (Unicode-safe).
+/// 旧实现走 `cmd /C clip`, 把 UTF-8 中文按系统 GBK 解 → 乱码(测试 → 娴嬭瘯). arboard 用
+/// CF_UNICODETEXT, 中文路径不丢。
 #[tauri::command]
 async fn copy_text(text: String) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        use std::io::Write;
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let mut child = std::process::Command::new("cmd")
-            .args(["/C", "clip"])
-            .stdin(std::process::Stdio::piped())
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        if let Some(mut si) = child.stdin.take() {
-            let _ = si.write_all(text.as_bytes());
-        }
-        child.wait().map_err(|e| e.to_string())?;
-        Ok(())
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = text;
-        Err("windows only".into())
-    }
+    arboard::Clipboard::new()
+        .and_then(|mut c| c.set_text(text))
+        .map_err(|e| e.to_string())
 }
 
 /// Open a heavy surface (canvas / terminal / project / review / talk) as its OWN
@@ -556,7 +563,9 @@ pub fn run() {
             record_cmd::record_event,
             record_cmd::record_stop,
             record_cmd::list_sessions,
-            record_cmd::read_session
+            record_cmd::read_session,
+            native_start,
+            native_stop
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -90,6 +90,30 @@ fn handle(method: &Method, url: &str, body: &str) -> (u16, String) {
             crate::record_cmd::stamp_stop(&sid);
             (200, "{}".into())
         }
+        // P4 control plane — start/stop the native (desktop) coarse-layer recorder in-process.
+        // Loopback + token gated; lets a local controller (dashboard/CLI) drive desktop recording.
+        "/native/start" => {
+            #[cfg(windows)]
+            {
+                let title = serde_json::from_str::<serde_json::Value>(body)
+                    .ok()
+                    .and_then(|v| v.get("title").and_then(|t| t.as_str()).map(String::from))
+                    .unwrap_or_else(|| "桌面活动录制".into());
+                match crate::native_rec::start(&title) {
+                    Ok(sid) => (200, format!("{{\"sid\":\"{sid}\"}}")),
+                    Err(e) => (500, format!("{{\"error\":{}}}", serde_json::to_string(&e).unwrap_or_default())),
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                (500, "{\"error\":\"windows only\"}".into())
+            }
+        }
+        "/native/stop" => {
+            #[cfg(windows)]
+            crate::native_rec::stop();
+            (200, "{}".into())
+        }
         _ => (404, "{}".into()),
     }
 }

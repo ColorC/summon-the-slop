@@ -112,6 +112,24 @@ async function closeWindow() {
   try { await getCurrentWindow().hide(); } catch {}
 }
 
+// P4 — toggle the native desktop coarse-layer recorder (foreground window + activity). Runs
+// independently of the rrweb page recording above; both land in the same session store.
+const nativeBtn = $("native") as HTMLButtonElement;
+let nativeOn = false;
+nativeBtn.addEventListener("click", async () => {
+  try {
+    if (!nativeOn) {
+      await invoke<string>("native_start");
+      nativeOn = true; nativeBtn.textContent = "■ 停止桌面";
+      statusEl.textContent = "● 正在录桌面活动(前台窗口 + 活跃/空闲)…";
+    } else {
+      await invoke("native_stop");
+      nativeOn = false; nativeBtn.textContent = "录桌面";
+      statusEl.textContent = "✓ 桌面录制已保存,去「回放」用「导出AI时间线」查看";
+    }
+  } catch (e) { statusEl.textContent = "桌面录制出错: " + String(e); }
+});
+
 stopBtn.addEventListener("click", () => { stop(); });
 $("close").addEventListener("click", () => { closeWindow(); });
 window.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); closeWindow(); } });
