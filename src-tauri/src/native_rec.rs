@@ -24,6 +24,10 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static SID: Mutex<Option<String>> = Mutex::new(None);
 static SEQ: AtomicU64 = AtomicU64::new(0);
+// Generation guard: a rapid stop()->start() (within the 500ms poll tick) could otherwise leave
+// the old poll thread alive alongside the new one. Each start() bumps GEN; a poll thread exits
+// the moment GEN no longer matches the generation it was spawned with.
+static GEN: AtomicU64 = AtomicU64::new(0);
 
 pub fn is_recording() -> bool {
     ACTIVE.load(Ordering::SeqCst)
@@ -37,8 +41,9 @@ pub fn start(title: &str) -> Result<String, String> {
     let sid = crate::record_cmd::init_session(title, "native")?;
     *SID.lock().unwrap() = Some(sid.clone());
     SEQ.store(0, Ordering::SeqCst);
+    let gen = GEN.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
     ACTIVE.store(true, Ordering::SeqCst);
-    std::thread::spawn(poll_loop);
+    std::thread::spawn(move || poll_loop(gen));
     Ok(sid)
 }
 
@@ -123,11 +128,12 @@ fn idle_ms() -> u64 {
 
 const IDLE_THRESHOLD_MS: u64 = 5000;
 
-fn poll_loop() {
+fn poll_loop(gen: u64) {
     let mut last_focus = String::new();
     let mut last_active: Option<bool> = None;
     let mut tick: u64 = 0;
-    while ACTIVE.load(Ordering::SeqCst) {
+    // exit if stopped OR if a newer start() superseded this thread
+    while ACTIVE.load(Ordering::SeqCst) && GEN.load(Ordering::SeqCst) == gen {
         if let Some((hwnd, title, process)) = foreground() {
             let key = format!("{hwnd}|{title}"); // same hwnd can retitle (e.g. tab switch)
             if key != last_focus {

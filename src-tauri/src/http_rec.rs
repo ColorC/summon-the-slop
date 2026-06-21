@@ -44,12 +44,14 @@ fn token() -> &'static str {
     })
 }
 
-fn cors(resp: Response<std::io::Cursor<Vec<u8>>>) -> Response<std::io::Cursor<Vec<u8>>> {
+// JSON content type only — deliberately NO `Access-Control-Allow-Origin`. Our only clients are
+// the MV3 extension service worker (host_permissions → not a CORS request, no preflight) and the
+// VSCode extension host (Node, no CORS at all). Omitting ACAO means a browser PAGE that somehow
+// holds the token still cannot POST: its application/json preflight gets no ACAO → blocked. Token
+// + loopback bind remain the auth boundary; this just removes a pointless cross-origin opening.
+fn json_resp(resp: Response<std::io::Cursor<Vec<u8>>>) -> Response<std::io::Cursor<Vec<u8>>> {
     let h = |k: &str, v: &str| Header::from_bytes(k.as_bytes(), v.as_bytes()).unwrap();
-    resp.with_header(h("Access-Control-Allow-Origin", "*"))
-        .with_header(h("Access-Control-Allow-Methods", "POST, OPTIONS"))
-        .with_header(h("Access-Control-Allow-Headers", "Authorization, Content-Type"))
-        .with_header(h("Content-Type", "application/json"))
+    resp.with_header(h("Content-Type", "application/json"))
 }
 
 fn handle(method: &Method, url: &str, body: &str) -> (u16, String) {
@@ -129,9 +131,11 @@ pub fn start_http_server() {
     };
     eprintln!("poof rec collector on http://{ADDR} (token at %USERPROFILE%\\.poof\\rec_token)");
     for mut req in server.incoming_requests() {
-        // CORS preflight (Chrome sends OPTIONS because of the Authorization header)
+        // A browser page preflight (OPTIONS) gets 200 but NO Access-Control-Allow-Origin, so the
+        // page's actual cross-origin POST is blocked. The extension SW never preflights (it isn't
+        // a CORS request), so this does not affect the real client.
         if req.method() == &Method::Options {
-            let _ = req.respond(cors(Response::from_string("")));
+            let _ = req.respond(json_resp(Response::from_string("")));
             continue;
         }
         // bearer-token gate (field name case-insensitive; accept "Bearer X" or bare "X")
@@ -140,7 +144,7 @@ pub fn start_http_server() {
                 && h.value.as_str().trim().trim_start_matches("Bearer ").trim() == token
         });
         if !ok {
-            let _ = req.respond(cors(Response::from_string("{}").with_status_code(401)));
+            let _ = req.respond(json_resp(Response::from_string("{}").with_status_code(401)));
             continue;
         }
         let method = req.method().clone();
@@ -148,6 +152,6 @@ pub fn start_http_server() {
         let mut body = String::new();
         let _ = req.as_reader().read_to_string(&mut body);
         let (code, out) = handle(&method, &url, &body);
-        let _ = req.respond(cors(Response::from_string(out).with_status_code(code)));
+        let _ = req.respond(json_resp(Response::from_string(out).with_status_code(code)));
     }
 }
