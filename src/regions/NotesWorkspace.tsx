@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Loader2,
   Plus,
@@ -9,9 +9,16 @@ import {
   Trash2,
   Hash,
   PanelLeft,
+  Pencil,
+  Copy,
+  Archive,
+  ArchiveRestore,
+  RotateCcw,
+  Star,
+  ArrowDownUp,
 } from "lucide-react";
 import "@toeverything/theme/style.css";
-import { Schema, DocCollection, type Doc } from "@blocksuite/store";
+import { Schema, DocCollection, Job, type Doc } from "@blocksuite/store";
 import { AffineSchemas } from "@blocksuite/blocks";
 import { AffineEditorContainer } from "@blocksuite/presets";
 import { IndexedDBDocSource } from "@blocksuite/sync";
@@ -36,7 +43,6 @@ function registerEffects() {
 }
 
 // ONE persistent, IndexedDB-backed collection for all notes (survives summons/restarts).
-// Stable collection id => its docMetas (the note list) persist too.
 let collection: DocCollection | null = null;
 function getCollection(): DocCollection {
   if (collection) return collection;
@@ -62,10 +68,45 @@ function seedDoc(c: DocCollection): Doc {
     doc.addBlock("affine:paragraph", { type: "h1" as any }, noteId);
     doc.addBlock("affine:paragraph", {}, noteId);
   });
+  c.setDocMeta(doc.id, { title: "未命名笔记", updatedDate: Date.now() } as any);
   return doc;
 }
 
-// lightweight tags/category store (BlockSuite's tag schema is heavy; we keep our own)
+/** first non-empty paragraph/heading text — the note's auto-title (no editor needed). */
+function firstLineOf(doc: any): string {
+  try {
+    const blocks = doc.getBlocksByFlavour(["affine:paragraph", "affine:list"]) || [];
+    for (const b of blocks) {
+      const model = b?.model ?? b; // getBlocksByFlavour returns Block (.model); be defensive
+      const s = model?.text?.toString?.().trim();
+      if (s) return s.slice(0, 80);
+    }
+  } catch {
+    /* ignore */
+  }
+  return "";
+}
+
+async function duplicateDoc(c: DocCollection, id: string): Promise<string | null> {
+  const doc = c.getDoc(id);
+  if (!doc) return null;
+  doc.load();
+  try {
+    const job = new Job({ collection: c as any });
+    const snap = (job as any).docToSnapshot(doc);
+    if (!snap) return null;
+    const nd = await (job as any).snapshotToDoc(snap);
+    c.setDocMeta(nd.id, {
+      title: (((doc.meta as any)?.title || "未命名笔记") + " 副本"),
+      updatedDate: Date.now(),
+    } as any);
+    return nd.id;
+  } catch {
+    return null;
+  }
+}
+
+// lightweight tags store (BlockSuite's tag schema is heavy; we keep our own)
 const TAGS_KEY = "poof-notes-tags";
 type TagMap = Record<string, string[]>;
 function loadTags(): TagMap {
@@ -82,7 +123,14 @@ function saveTags(t: TagMap) {
 interface Meta {
   id: string;
   title: string;
+  archived: boolean;
+  trashed: boolean;
+  favorite: boolean;
+  createDate?: number;
+  updatedDate?: number;
 }
+type View = "notes" | "archive" | "trash";
+type Sort = "updated" | "created" | "title";
 
 export function NotesWorkspace({ onClose }: { onClose: () => void }) {
   const c = getCollection();
@@ -92,14 +140,27 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
   const [q, setQ] = useState("");
   const [full, setFull] = useState(false);
   const [libOpen, setLibOpen] = useState(false);
+  const [view, setView] = useState<View>("notes");
+  const [sort, setSort] = useState<Sort>("updated");
   const [tags, setTags] = useState<TagMap>(loadTags);
   const [ready, setReady] = useState(false);
   const seeded = useRef(false);
 
-  // load + keep the note list in sync (after IndexedDB pull settles)
+  function readMetas(): Meta[] {
+    return c.meta.docMetas.map((m: any) => ({
+      id: m.id,
+      title: (m.title || "").trim(),
+      archived: !!m.archived,
+      trashed: !!m.trashed,
+      favorite: !!m.favorite,
+      createDate: m.createDate,
+      updatedDate: m.updatedDate,
+    }));
+  }
+
+  // keep the note list in sync (after the IndexedDB pull settles)
   useEffect(() => {
-    const refresh = () =>
-      setMetas(c.meta.docMetas.map((m: any) => ({ id: m.id, title: (m.title || "").trim() })));
+    const refresh = () => setMetas(readMetas());
     refresh();
     const subs = [
       c.slots.docUpdated.on(refresh),
@@ -114,6 +175,7 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
       subs.forEach((s) => s.dispose());
       clearTimeout(t);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [c]);
 
   // first run ever → seed one note (once, after sync settled)
@@ -124,16 +186,51 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
       const d = seedDoc(c);
       setActiveId(d.id);
     } else if (!activeId) {
-      setActiveId(c.meta.docMetas[0].id);
+      const first = readMetas().find((m) => !m.trashed && !m.archived) ?? readMetas()[0];
+      if (first) setActiveId(first.id);
     }
   }, [ready, c, activeId]);
 
-  // mount the BlockSuite editor for the active doc (edgeless = infinite canvas)
+  // mount the BlockSuite editor for the active doc + auto-sync its title (fixes 未命名)
   useEffect(() => {
     if (!activeId || !host.current) return;
     const doc = c.getDoc(activeId);
     if (!doc) return;
     doc.load();
+
+    const root: any = doc.root;
+    const sync = () => {
+      let t = "";
+      try {
+        t = root?.title?.toString?.().trim() ?? "";
+      } catch {
+        /* ignore */
+      }
+      if (!t) t = firstLineOf(doc);
+      const cur = ((doc.meta as any)?.title || "").trim();
+      if (t && t !== cur) c.setDocMeta(activeId, { title: t, updatedDate: Date.now() } as any);
+    };
+    sync(); // backfill the title for older notes when opened
+    // blocks may materialize slightly after mount → retry the backfill a few times
+    const backfills = [250, 700, 1500].map((ms) => window.setTimeout(sync, ms));
+    let offTitle = () => {};
+    try {
+      const yt = root?.title?.yText;
+      if (yt?.observe) {
+        yt.observe(sync);
+        offTitle = () => yt.unobserve(sync);
+      }
+    } catch {
+      /* ignore */
+    }
+    let offBlock = () => {};
+    try {
+      const d = doc.slots?.blockUpdated?.on?.(sync);
+      if (d?.dispose) offBlock = () => d.dispose();
+    } catch {
+      /* ignore */
+    }
+
     const editor = new AffineEditorContainer();
     editor.edgelessSpecs = [...editor.edgelessSpecs, DARK_THEME];
     editor.pageSpecs = [...editor.pageSpecs, DARK_THEME];
@@ -142,6 +239,9 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
     host.current.innerHTML = "";
     host.current.appendChild(editor);
     return () => {
+      backfills.forEach((t) => clearTimeout(t));
+      offTitle();
+      offBlock();
       try {
         editor.remove();
       } catch {
@@ -150,17 +250,55 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
     };
   }, [activeId, c]);
 
+  // ---- actions ----
   function createNote() {
     const d = seedDoc(c);
     setActiveId(d.id);
+    setView("notes");
   }
-  function removeNote(id: string) {
-    c.removeDoc(id);
-    const next = tags;
-    delete next[id];
-    saveTags(next);
-    setTags({ ...next });
+  function setFlag(id: string, flag: Partial<Record<"archived" | "trashed" | "favorite", boolean>>) {
+    c.setDocMeta(id, { ...flag, updatedDate: Date.now() } as any);
+    setMetas(readMetas());
+  }
+  function toTrash(id: string) {
+    setFlag(id, { trashed: true, archived: false });
     if (activeId === id) setActiveId("");
+  }
+  function restore(id: string) {
+    setFlag(id, { trashed: false, archived: false });
+  }
+  function deleteForever(id: string) {
+    if (!window.confirm("彻底删除这条笔记？不可恢复。")) return;
+    c.removeDoc(id);
+    const t = { ...tags };
+    delete t[id];
+    saveTags(t);
+    setTags(t);
+    if (activeId === id) setActiveId("");
+    setMetas(readMetas());
+  }
+  function rename(id: string) {
+    const cur = metas.find((m) => m.id === id)?.title || "";
+    const v = window.prompt("重命名笔记：", cur);
+    if (v == null) return;
+    const name = v.trim() || "未命名笔记";
+    const doc = c.getDoc(id);
+    if (doc) {
+      try {
+        doc.load();
+        const root: any = doc.root;
+        if (root?.title?.replace) doc.transact(() => root.title.replace(0, root.title.length, name));
+      } catch {
+        /* ignore */
+      }
+    }
+    c.setDocMeta(id, { title: name, updatedDate: Date.now() } as any);
+    setMetas(readMetas());
+  }
+  async function duplicate(id: string) {
+    const nid = await duplicateDoc(c, id);
+    setMetas(readMetas());
+    if (nid) setActiveId(nid);
   }
   function addTag(id: string) {
     const v = window.prompt("标签 / 分类：")?.trim();
@@ -172,23 +310,33 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
     setTags(next);
   }
 
-  const ql = q.trim().toLowerCase();
-  const filtered = ql
-    ? metas.filter(
+  // ---- list: filter by view + search, then sort ----
+  const visible = useMemo(() => {
+    const ql = q.trim().toLowerCase();
+    const inView = (m: Meta) =>
+      view === "trash" ? m.trashed : view === "archive" ? m.archived && !m.trashed : !m.archived && !m.trashed;
+    let list = metas.filter(inView);
+    if (ql)
+      list = list.filter(
         (m) =>
           (m.title || "未命名").toLowerCase().includes(ql) ||
           (tags[m.id] || []).some((t) => t.toLowerCase().includes(ql))
-      )
-    : metas;
+      );
+    return list.sort((a, b) => {
+      if (view === "notes" && a.favorite !== b.favorite) return a.favorite ? -1 : 1;
+      if (sort === "title") return (a.title || "").localeCompare(b.title || "");
+      const ka = sort === "created" ? a.createDate || 0 : a.updatedDate || a.createDate || 0;
+      const kb = sort === "created" ? b.createDate || 0 : b.updatedDate || b.createDate || 0;
+      return kb - ka;
+    });
+  }, [metas, q, view, sort, tags]);
 
   const activeTitle = metas.find((m) => m.id === activeId)?.title || "未命名笔记";
 
   return (
     <div className={"notes-ws" + (full ? " full" : "")}>
-      {/* canvas fills the whole workspace (maximized) */}
       <div className="notespace" ref={host} />
 
-      {/* floating top bar (does not eat canvas space) */}
       <div className="notes-bar">
         <button
           className={"notes-bar-btn" + (libOpen ? " on" : "")}
@@ -214,19 +362,30 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
         </button>
       </div>
 
-      {/* toggleable library window (笔记库) — floats, not a permanent rail */}
       {libOpen && (
         <div className="notes-lib">
           <div className="notes-lib-head">
-            <span>笔记库</span>
-            <button onClick={() => setLibOpen(false)} title="收起">
+            <div className="notes-views">
+              <button className={view === "notes" ? "on" : ""} onClick={() => setView("notes")}>
+                笔记
+              </button>
+              <button className={view === "archive" ? "on" : ""} onClick={() => setView("archive")}>
+                归档
+              </button>
+              <button className={view === "trash" ? "on" : ""} onClick={() => setView("trash")}>
+                回收站
+              </button>
+            </div>
+            <button className="notes-lib-x" onClick={() => setLibOpen(false)} title="收起">
               <X size={14} />
             </button>
           </div>
           <div className="notes-rail-top">
-            <button className="notes-new" onClick={createNote}>
-              <Plus size={15} /> 新建笔记
-            </button>
+            {view === "notes" && (
+              <button className="notes-new" onClick={createNote}>
+                <Plus size={15} /> 新建笔记
+              </button>
+            )}
             <div className="notes-search">
               <Search size={14} />
               <input
@@ -236,6 +395,16 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
                 spellCheck={false}
               />
             </div>
+            <button
+              className="notes-sort"
+              title="排序"
+              onClick={() =>
+                setSort((s) => (s === "updated" ? "created" : s === "created" ? "title" : "updated"))
+              }
+            >
+              <ArrowDownUp size={13} />
+              {sort === "updated" ? "最近修改" : sort === "created" ? "创建时间" : "标题"}
+            </button>
           </div>
           <div className="notes-list">
             {!ready && (
@@ -243,28 +412,74 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
                 <Loader2 size={16} className="spin" /> 载入笔记库…
               </div>
             )}
-            {ready && filtered.length === 0 && <div className="notes-empty">无笔记</div>}
-            {filtered.map((m) => (
+            {ready && visible.length === 0 && (
+              <div className="notes-empty">
+                {view === "trash" ? "回收站为空" : view === "archive" ? "无归档" : "无笔记"}
+              </div>
+            )}
+            {visible.map((m) => (
               <div
                 key={m.id}
                 className={"notes-item" + (m.id === activeId ? " on" : "")}
-                onClick={() => setActiveId(m.id)}
+                onClick={() => view !== "trash" && setActiveId(m.id)}
+                onDoubleClick={() => view === "notes" && rename(m.id)}
               >
-                <div className="notes-item-title">{m.title || "未命名笔记"}</div>
-                <div className="notes-item-tags">
-                  {(tags[m.id] || []).map((t) => (
-                    <span className="notes-tag" key={t}>
-                      {t}
-                    </span>
-                  ))}
+                <div className="notes-item-title">
+                  {m.favorite && view === "notes" ? "★ " : ""}
+                  {m.title || "未命名笔记"}
                 </div>
-                <div className="notes-item-acts">
-                  <button title="加标签" onClick={(e) => { e.stopPropagation(); addTag(m.id); }}>
-                    <Hash size={13} />
-                  </button>
-                  <button title="删除" onClick={(e) => { e.stopPropagation(); removeNote(m.id); }}>
-                    <Trash2 size={13} />
-                  </button>
+                {!!(tags[m.id] || []).length && (
+                  <div className="notes-item-tags">
+                    {(tags[m.id] || []).map((t) => (
+                      <span className="notes-tag" key={t}>
+                        {t}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <div className="notes-item-acts" onClick={(e) => e.stopPropagation()}>
+                  {view === "notes" && (
+                    <>
+                      <button title="置顶/取消" onClick={() => setFlag(m.id, { favorite: !m.favorite })}>
+                        <Star size={13} fill={m.favorite ? "currentColor" : "none"} />
+                      </button>
+                      <button title="重命名" onClick={() => rename(m.id)}>
+                        <Pencil size={13} />
+                      </button>
+                      <button title="复制" onClick={() => duplicate(m.id)}>
+                        <Copy size={13} />
+                      </button>
+                      <button title="加标签" onClick={() => addTag(m.id)}>
+                        <Hash size={13} />
+                      </button>
+                      <button title="归档" onClick={() => setFlag(m.id, { archived: true })}>
+                        <Archive size={13} />
+                      </button>
+                      <button title="删除（移入回收站）" onClick={() => toTrash(m.id)}>
+                        <Trash2 size={13} />
+                      </button>
+                    </>
+                  )}
+                  {view === "archive" && (
+                    <>
+                      <button title="取消归档" onClick={() => restore(m.id)}>
+                        <ArchiveRestore size={13} />
+                      </button>
+                      <button title="删除（移入回收站）" onClick={() => toTrash(m.id)}>
+                        <Trash2 size={13} />
+                      </button>
+                    </>
+                  )}
+                  {view === "trash" && (
+                    <>
+                      <button title="恢复" onClick={() => restore(m.id)}>
+                        <RotateCcw size={13} />
+                      </button>
+                      <button title="彻底删除" onClick={() => deleteForever(m.id)}>
+                        <Trash2 size={13} />
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             ))}

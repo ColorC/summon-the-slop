@@ -906,13 +906,31 @@ body,
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 9px 10px 9px 14px;
+  padding: 8px 8px 8px 10px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  font-size: 13px;
-  font-weight: 600;
-  color: #c7cad3;
 }
-.notes-lib-head button {
+.notes-views {
+  display: flex;
+  gap: 2px;
+}
+.notes-views button {
+  background: transparent;
+  border: none;
+  color: #9aa0ad;
+  cursor: pointer;
+  padding: 5px 10px;
+  border-radius: 7px;
+  font-size: 12.5px;
+}
+.notes-views button:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #d6d9e0;
+}
+.notes-views button.on {
+  background: rgba(45, 108, 246, 0.22);
+  color: #fff;
+}
+.notes-lib-x {
   background: transparent;
   border: none;
   color: #9aa0ad;
@@ -921,8 +939,25 @@ body,
   border-radius: 6px;
   display: inline-flex;
 }
-.notes-lib-head button:hover {
+.notes-lib-x:hover {
   background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+}
+.notes-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #aab0bd;
+  cursor: pointer;
+  padding: 6px 9px;
+  border-radius: 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.notes-sort:hover {
+  background: rgba(255, 255, 255, 0.09);
   color: #fff;
 }
 .notes-rail-top {
