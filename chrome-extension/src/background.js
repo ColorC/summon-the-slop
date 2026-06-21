@@ -13,7 +13,7 @@ const Rec = {
   },
   async start(tabId, title, port, token) {
     this.S = { sid: null, tabId, port, token };
-    const j = await (await this.api("/rec/start", { title: title || "" })).json();
+    const j = await (await this.api("/rec/start", { title: title || "", surface: "chrome" })).json();
     this.S.sid = j.sid;
     await chrome.tabs.sendMessage(tabId, { type: "REC_START", sid: j.sid }); // inject + start rrweb
     return j.sid;

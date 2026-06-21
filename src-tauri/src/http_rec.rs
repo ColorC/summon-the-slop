@@ -59,11 +59,10 @@ fn handle(method: &Method, url: &str, body: &str) -> (u16, String) {
     let path = url.split('?').next().unwrap_or(url);
     match path {
         "/rec/start" => {
-            let title = serde_json::from_str::<serde_json::Value>(body)
-                .ok()
-                .and_then(|v| v.get("title").and_then(|t| t.as_str()).map(String::from))
-                .unwrap_or_else(|| "网页录制".into());
-            match crate::record_cmd::init_session(&title, "chrome") {
+            let v = serde_json::from_str::<serde_json::Value>(body).ok();
+            let title = v.as_ref().and_then(|v| v.get("title").and_then(|t| t.as_str())).unwrap_or("网页录制").to_string();
+            let surface = v.as_ref().and_then(|v| v.get("surface").and_then(|s| s.as_str())).unwrap_or("chrome").to_string();
+            match crate::record_cmd::init_session(&title, &surface) {
                 Ok(sid) => (200, format!("{{\"sid\":\"{sid}\"}}")),
                 Err(e) => (500, format!("{{\"error\":{}}}", serde_json::to_string(&e).unwrap_or_default())),
             }
@@ -75,7 +74,9 @@ fn handle(method: &Method, url: &str, body: &str) -> (u16, String) {
             };
             let sid = v.get("sid").and_then(|s| s.as_str()).unwrap_or("");
             let batch = v.get("batch").and_then(|b| b.as_array()).cloned().unwrap_or_default();
-            let _ = crate::record_cmd::ensure_session(sid, "chrome"); // crash-safety
+            // lazy-create uses the surface of the first event (crash-safety: event before /rec/start)
+            let surface = batch.first().and_then(|e| e.get("surface").and_then(|s| s.as_str())).unwrap_or("chrome");
+            let _ = crate::record_cmd::ensure_session(sid, surface);
             match crate::record_cmd::append_events(sid, &batch) {
                 Ok(_) => (200, "{}".into()),
                 Err(e) => (400, format!("{{\"error\":{}}}", serde_json::to_string(&e).unwrap_or_default())),

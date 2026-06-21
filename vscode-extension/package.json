@@ -1,0 +1,24 @@
+{
+  "name": "poof-recorder",
+  "displayName": "poof 录像 (VSCode 活动)",
+  "description": "把 VSCode 编辑活动(开/改/存文件、切换、终端、调试)录进 poof,给 AI 读。P3.",
+  "version": "0.1.0",
+  "publisher": "poof",
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Other"],
+  "main": "./extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "commands": [
+      { "command": "poof.startRecording", "title": "poof: 开始录制活动" },
+      { "command": "poof.stopRecording", "title": "poof: 停止录制" }
+    ],
+    "configuration": {
+      "title": "poof 录像",
+      "properties": {
+        "poof.port": { "type": "number", "default": 8732, "description": "poof 本地收集口端口" },
+        "poof.token": { "type": "string", "default": "", "description": "token,见 %USERPROFILE%\\.poof\\rec_token" }
+      }
+    }
+  }
+}
