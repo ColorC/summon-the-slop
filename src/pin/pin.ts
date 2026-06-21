@@ -29,24 +29,40 @@ function toast(msg: string) {
   clearTimeout(toastT); toastT = window.setTimeout(() => toastEl.classList.add("hidden"), 1100);
 }
 
+// Re-entrancy + no-op guards. setSize() fires a DOM 'resize'; if apply() ran on resize it
+// would loop setSize→resize→setSize forever and peg the thread (freezing the desktop), so
+// there is NO resize listener and apply() only calls setSize when the size truly changed.
+let applying = false;
+let lastW = -1, lastH = -1;
 async function apply() {
-  const swap = rot % 180 !== 0;
-  const physW = Math.max(16, Math.round((swap ? ch0 : cw0) * zoom));
-  const physH = Math.max(16, Math.round((swap ? cw0 : ch0) * zoom));
-  try { await win.setSize(new PhysicalSize(physW, physH)); } catch {}
-  const cssW = physW / dpr(), cssH = physH / dpr();
-  // pre-rotation image box (so after rotate it fills the window)
-  const baseW = swap ? cssH : cssW, baseH = swap ? cssW : cssH;
-  Object.assign(img.style, {
-    width: baseW + "px", height: baseH + "px",
-    left: (cssW - baseW) / 2 + "px", top: (cssH - baseH) / 2 + "px",
-    transform: `rotate(${rot}deg) scaleX(${flipH ? -1 : 1}) scaleY(${flipV ? -1 : 1})`,
-    opacity: String(opacity),
-  });
+  if (applying) return;
+  applying = true;
+  try {
+    const swap = rot % 180 !== 0;
+    const physW = Math.max(16, Math.round((swap ? ch0 : cw0) * zoom));
+    const physH = Math.max(16, Math.round((swap ? cw0 : ch0) * zoom));
+    if (physW !== lastW || physH !== lastH) {
+      lastW = physW; lastH = physH;
+      try { await win.setSize(new PhysicalSize(physW, physH)); } catch {}
+    }
+    const cssW = physW / dpr(), cssH = physH / dpr();
+    // pre-rotation image box (so after rotate it fills the window)
+    const baseW = swap ? cssH : cssW, baseH = swap ? cssW : cssH;
+    Object.assign(img.style, {
+      width: baseW + "px", height: baseH + "px",
+      left: (cssW - baseW) / 2 + "px", top: (cssH - baseH) / 2 + "px",
+      transform: `rotate(${rot}deg) scaleX(${flipH ? -1 : 1}) scaleY(${flipV ? -1 : 1})`,
+      opacity: String(opacity),
+    });
+  } finally {
+    applying = false;
+  }
 }
 
 img.addEventListener("load", apply);
-window.addEventListener("resize", apply);
+
+// always-available close button (in case keyboard focus is ever lost)
+document.getElementById("close")!.addEventListener("click", (e) => { e.stopPropagation(); win.close(); });
 
 // drag to move the whole window
 wrap.addEventListener("mousedown", (e) => {

@@ -16,6 +16,9 @@ dist-ssr
 src-tauri/target
 src-tauri/gen
 
+# Vendored external tools (pulled down for reference / integration, not uploaded)
+vendor/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
