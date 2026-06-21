@@ -22,6 +22,7 @@ pub struct SearchHit {
 // (kind, name, path)
 static INDEX: Mutex<Option<Vec<(String, String, String)>>> = Mutex::new(None);
 static BUILDING: AtomicBool = AtomicBool::new(false);
+static WATCHING: AtomicBool = AtomicBool::new(false);
 
 fn user_roots() -> Vec<PathBuf> {
     let mut v = Vec::new();
@@ -255,6 +256,111 @@ pub fn warm_start() {
         }
     }
     warm_index();
+    start_watchers();
+}
+
+fn kind_for(name: &str, is_dir: bool) -> &'static str {
+    let lower = name.to_lowercase();
+    if is_dir {
+        "folder"
+    } else if lower.ends_with(".exe")
+        || lower.ends_with(".bat")
+        || lower.ends_with(".cmd")
+        || lower.ends_with(".ps1")
+    {
+        "exe"
+    } else {
+        "file"
+    }
+}
+
+// apply a coalesced batch of filesystem events to the in-memory index. Returns whether
+// anything changed. Noise paths (node_modules/.git/…) are ignored, so a `git checkout` or
+// `npm install` never touches the index.
+fn apply_events(batch: Vec<Result<notify::Event, notify::Error>>) -> bool {
+    let mut changed = false;
+    let mut guard = INDEX.lock().unwrap();
+    let idx = match guard.as_mut() {
+        Some(i) => i,
+        None => return false,
+    };
+    for res in batch {
+        let ev = match res {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for path in ev.paths {
+            if path
+                .components()
+                .any(|c| c.as_os_str().to_str().map(is_noise).unwrap_or(false))
+            {
+                continue;
+            }
+            let ps = path.to_string_lossy().to_string();
+            let pos = idx.iter().position(|(_, _, p)| p == &ps);
+            let exists = path.exists();
+            if exists && pos.is_none() {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    let is_dir = path.is_dir();
+                    idx.push((kind_for(name, is_dir).to_string(), name.to_string(), ps));
+                    changed = true;
+                }
+            } else if !exists {
+                if let Some(p) = pos {
+                    idx.swap_remove(p);
+                    changed = true;
+                }
+            }
+        }
+    }
+    changed
+}
+
+// watch every root for create/delete/rename and keep the index live — non-admin
+// (ReadDirectoryChangesW), no child process, EDR-safe. Coalesces bursts + throttles persist.
+pub fn start_watchers() {
+    if WATCHING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(|| {
+        use notify::{RecursiveMode, Watcher};
+        use std::time::{Duration, Instant};
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher = match notify::recommended_watcher(tx) {
+            Ok(w) => w,
+            Err(_) => {
+                WATCHING.store(false, Ordering::SeqCst);
+                return;
+            }
+        };
+        for root in user_roots() {
+            let _ = watcher.watch(&root, RecursiveMode::Recursive);
+        }
+        let mut last_persist = Instant::now();
+        loop {
+            let first = match rx.recv() {
+                Ok(e) => e,
+                Err(_) => break,
+            };
+            // coalesce a burst of events before applying
+            let mut batch = vec![first];
+            while let Ok(e) = rx.recv_timeout(Duration::from_millis(700)) {
+                batch.push(e);
+                if batch.len() > 5000 {
+                    break;
+                }
+            }
+            let changed = apply_events(batch);
+            if changed && last_persist.elapsed() > Duration::from_secs(4) {
+                let snap = INDEX.lock().unwrap().clone();
+                if let Some(idx) = snap {
+                    persist(&idx);
+                }
+                last_persist = Instant::now();
+            }
+        }
+        WATCHING.store(false, Ordering::SeqCst);
+    });
 }
 
 #[tauri::command]
