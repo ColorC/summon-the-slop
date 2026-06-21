@@ -18,7 +18,9 @@ import {
   ArrowDownUp,
   History,
   Save,
+  SquareTerminal,
 } from "lucide-react";
+import { TerminalView } from "./Terminal";
 import * as Y from "yjs";
 import "@toeverything/theme/style.css";
 import { Schema, DocCollection, Job, type Doc } from "@blocksuite/store";
@@ -144,6 +146,7 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
   const [q, setQ] = useState("");
   const [full, setFull] = useState(true); // #6 默认全屏, 用户想退全屏再说
   const [libOpen, setLibOpen] = useState(false);
+  const [termOpen, setTermOpen] = useState(false); // #7 笔记里的 powershell 右侧栏
   const [view, setView] = useState<View>("notes");
   const [sort, setSort] = useState<Sort>("updated");
   const [tags, setTags] = useState<TagMap>(loadTags);
@@ -421,6 +424,13 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
           <History size={15} />
         </button>
         <button
+          className={"notes-bar-btn" + (termOpen ? " on" : "")}
+          title="PowerShell（笔记里的终端容器，右侧栏）"
+          onClick={() => setTermOpen((t) => !t)}
+        >
+          <SquareTerminal size={15} />
+        </button>
+        <button
           className="notes-bar-btn"
           title={full ? "退出全屏" : "无边全屏"}
           onClick={() => setFull((f) => !f)}
@@ -431,6 +441,21 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
           <X size={15} />
         </button>
       </div>
+
+      {termOpen && (
+        <div className="notes-term">
+          <div className="notes-term-head">
+            <SquareTerminal size={13} /> PowerShell
+            <span style={{ flex: 1 }} />
+            <button className="notes-lib-x" onClick={() => setTermOpen(false)} title="收起">
+              <X size={14} />
+            </button>
+          </div>
+          <div className="notes-term-body">
+            <TerminalView id="notes-ps" />
+          </div>
+        </div>
+      )}
 
       {libOpen && (
         <div className="notes-lib">

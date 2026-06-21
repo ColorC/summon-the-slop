@@ -1713,3 +1713,37 @@ body,
   z-index: 31;
   pointer-events: none;
 }
+
+/* #7 笔记里的 PowerShell 容器(右侧栏) */
+.notes-term {
+  position: absolute;
+  top: 52px;
+  right: 16px;
+  bottom: 16px;
+  width: 460px;
+  max-width: 46vw;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  background: rgba(12, 13, 17, 0.985);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 13px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+  backdrop-filter: blur(10px);
+}
+.notes-term-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 12.5px;
+  color: #aeb4c2;
+}
+.notes-term-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  background: #0c0d11;
+}
