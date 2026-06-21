@@ -41,33 +41,62 @@ interface Project {
   tags?: string[];
 }
 
+// ---------- omnidashboard 驾驶舱 (iframe-embedded; the real UI, fully aligned) ----------
+
+const DASH = "http://127.0.0.1:8210";
+
+/** Embed the real omnidashboard cockpit (port 8210). No CSP / X-Frame-Options / auth on
+ *  the localhost server, so WebView2 can iframe it directly. If it isn't running, offer to
+ *  start it (`omni dashboard restart`). */
+function DashboardFrame({ spine }: { spine: "home" | "review" }) {
+  const [status, setStatus] = useState<"checking" | "up" | "down">("checking");
+  const [starting, setStarting] = useState(false);
+
+  function check() {
+    setStatus("checking");
+    // no-cors: resolves if the server is reachable, rejects on connection-refused
+    fetch(DASH + "/", { mode: "no-cors" })
+      .then(() => setStatus("up"))
+      .catch(() => setStatus("down"));
+  }
+  useEffect(() => {
+    check();
+  }, []);
+
+  async function start() {
+    setStarting(true);
+    try {
+      await runShell("omni dashboard restart");
+    } catch {
+      /* ignore */
+    }
+    setTimeout(() => {
+      setStarting(false);
+      check();
+    }, 4500);
+  }
+
+  if (status === "checking") return <div className="muted">连接驾驶舱…</div>;
+  if (status === "down")
+    return (
+      <div className="dash-down">
+        <div className="dash-down-t">驾驶舱（omnidashboard）未运行</div>
+        <div className="dash-down-s">{DASH} · 8210</div>
+        <button onClick={start} disabled={starting}>
+          {starting ? "启动中…" : "启动驾驶舱"}
+        </button>
+        <button className="ghost" onClick={check}>
+          重试
+        </button>
+      </div>
+    );
+  return <iframe className="dash-frame" src={`${DASH}/?spine=${spine}`} title="omnidashboard" />;
+}
+
 // ---------- 项目 Project ----------
 
 export function ProjectSurface() {
-  const { data, err, loading } = useShellJson<{ projects: Project[] }>(
-    "omni project list --json"
-  );
-  if (loading) return <div className="muted">加载 omni 项目…</div>;
-  if (err) return <div className="error">omni project list 失败: {err}</div>;
-  const projects = data?.projects ?? [];
-  return (
-    <div className="cards">
-      {projects.map((p) => (
-        <div className="card" key={p.id}>
-          <div className="card-title">{p.name}</div>
-          <div className="card-meta">
-            <span className="chip">{p.group}</span>
-            {(p.tags ?? []).slice(0, 3).map((t) => (
-              <span className="chip ghost" key={t}>
-                {t}
-              </span>
-            ))}
-          </div>
-          {p.desc && <div className="card-desc">{p.desc}</div>}
-        </div>
-      ))}
-    </div>
-  );
+  return <DashboardFrame spine="home" />;
 }
 
 // ---------- 检索 Find (Listary 类) ----------
@@ -154,37 +183,10 @@ export function TalkSurface() {
   );
 }
 
-// ---------- 审阅台 Review ----------
+// ---------- 审阅台 Review (real boss_sight/reviewstage via the cockpit) ----------
 
 export function ReviewSurface() {
-  const { data, err, loading } = useShellJson<any>(
-    "omni project show omnidashboard-os --json"
-  );
-  if (loading) return <div className="muted">加载审阅项…</div>;
-  if (err) return <div className="error">{err}</div>;
-  const latest: string[] = data?.latest ?? [];
-  const links: { label: string; url: string }[] = data?.links ?? [];
-  return (
-    <div className="review">
-      <div className="review-h">omnidashboard-os · 最近 / 待审</div>
-      {latest.map((l, i) => (
-        <div className="review-item" key={i}>
-          📌 {l}
-        </div>
-      ))}
-      {links.length > 0 && (
-        <>
-          <div className="review-h">链接</div>
-          {links.map((l, i) => (
-            <div className="review-item" key={i}>
-              🔗 {l.label} — <span className="muted">{l.url}</span>
-            </div>
-          ))}
-        </>
-      )}
-      {latest.length === 0 && <div className="muted">无最近条目</div>}
-    </div>
-  );
+  return <DashboardFrame spine="review" />;
 }
 
 // ---------- 速记 / 画布 Note (P4: BlockSuite/Excalidraw) ----------

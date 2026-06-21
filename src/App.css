@@ -1057,6 +1057,57 @@ body,
   background: rgba(45, 108, 246, 0.3);
   color: #fff;
 }
+
+/* ===== omnidashboard 驾驶舱 embed (#8) — absolute fill, ignores pf-scroll padding ===== */
+.dash-frame {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: none;
+  background: #0e0f14;
+}
+.dash-down {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: #aab2c8;
+}
+.dash-down-t {
+  font-size: 15px;
+  color: #e3e5ea;
+}
+.dash-down-s {
+  font-size: 12px;
+  color: #7a8092;
+  font-family: monospace;
+}
+.dash-down button {
+  background: #2d6cf6;
+  color: #fff;
+  border: none;
+  border-radius: 9px;
+  padding: 9px 20px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.dash-down button:hover {
+  background: #3b78ff;
+}
+.dash-down button.ghost {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #aab0bd;
+  padding: 6px 16px;
+}
+.dash-down button.ghost:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
 .notes-rail-top {
   padding: 10px;
   display: flex;
