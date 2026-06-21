@@ -8,3 +8,7 @@ html, body { margin: 0; height: 100%; font: 14px "Microsoft YaHei", system-ui, s
 #player { padding: 16px; display: flex; justify-content: center; }
 /* rrweb replayer renders an iframe inside .replayer-wrapper */
 #player .replayer-wrapper { background: #fff; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5); }
+/* explicit display above beats the UA [hidden] rule, so force it for the player/timeline toggle */
+[hidden] { display: none !important; }
+/* AI 时间线面板(导出时替换播放器) */
+#timeline { margin: 0; padding: 16px 20px; height: calc(100vh - 49px); overflow: auto; white-space: pre-wrap; word-break: break-word; font: 12px/1.65 Consolas, "Microsoft YaHei", monospace; color: #cdd3df; }

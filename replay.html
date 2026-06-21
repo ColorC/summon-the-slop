@@ -12,11 +12,13 @@
       <select id="sessions"></select>
       <button id="play">播放</button>
       <button id="pause">暂停</button>
+      <button id="export" title="把这段录像转成 AI 能读的语义时间线并复制">导出AI时间线</button>
       <button id="refresh">刷新</button>
       <span id="info"></span>
       <button id="close" title="关闭 (Esc)" style="margin-left:auto">✕</button>
     </header>
     <div id="player"></div>
+    <pre id="timeline" hidden></pre>
     <script type="module" src="/src/replay/replay.ts"></script>
   </body>
 </html>
