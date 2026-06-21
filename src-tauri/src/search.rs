@@ -8,7 +8,7 @@ use rayon::prelude::*;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 #[derive(Serialize, Clone)]
@@ -128,15 +128,22 @@ fn is_noise(name: &str) -> bool {
     )
 }
 
-// (name, path, is_dir) — per-root cap (not shared) + the root folder itself is indexed.
+// (name, path, is_dir) — PARALLEL walk (all cores) so the cold build is ~seconds, not
+// tens of seconds. Per-root cap (not shared) + the root folder itself is indexed.
 fn collect(roots: &[PathBuf], max_depth: usize, per_root_cap: usize) -> Vec<(String, String, bool)> {
-    let mut out = Vec::new();
+    let out: Mutex<Vec<(String, String, bool)>> = Mutex::new(Vec::new());
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
     for root in roots {
         // index the root folder itself, so searching its name/path matches it
         if let Some(name) = root.file_name().and_then(|n| n.to_str()) {
-            out.push((name.to_string(), root.to_string_lossy().to_string(), true));
+            out.lock()
+                .unwrap()
+                .push((name.to_string(), root.to_string_lossy().to_string(), true));
         }
-        let mut count = 0usize;
+        let count = AtomicUsize::new(0);
+        let root_path = root.as_path();
         let mut wb = WalkBuilder::new(root);
         wb.max_depth(Some(max_depth))
             .hidden(false)
@@ -144,24 +151,34 @@ fn collect(roots: &[PathBuf], max_depth: usize, per_root_cap: usize) -> Vec<(Str
             .git_global(false)
             .git_exclude(false)
             .ignore(false)
+            .threads(threads)
             .filter_entry(|e| e.file_name().to_str().map(|n| !is_noise(n)).unwrap_or(true));
-        for dent in wb.build().flatten() {
-            if count >= per_root_cap {
-                break;
-            }
-            let p = dent.path();
-            if p == root.as_path() {
-                continue;
-            }
-            // file_type() is cached by the walker — avoids a stat() per entry
-            let is_dir = dent.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
-            if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-                out.push((name.to_string(), p.to_string_lossy().to_string(), is_dir));
-                count += 1;
-            }
-        }
+        wb.build_parallel().run(|| {
+            Box::new(|res| {
+                let dent = match res {
+                    Ok(d) => d,
+                    Err(_) => return ignore::WalkState::Continue,
+                };
+                if count.fetch_add(1, Ordering::Relaxed) >= per_root_cap {
+                    return ignore::WalkState::Quit;
+                }
+                let p = dent.path();
+                if p == root_path {
+                    return ignore::WalkState::Continue;
+                }
+                let is_dir = dent.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+                if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                    out.lock().unwrap().push((
+                        name.to_string(),
+                        p.to_string_lossy().to_string(),
+                        is_dir,
+                    ));
+                }
+                ignore::WalkState::Continue
+            })
+        });
     }
-    out
+    out.into_inner().unwrap()
 }
 
 fn build_index() -> Vec<(String, String, String)> {
