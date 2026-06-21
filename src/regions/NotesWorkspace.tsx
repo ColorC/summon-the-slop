@@ -16,9 +16,13 @@ import {
   RotateCcw,
   Star,
   ArrowDownUp,
+  History,
+  Save,
 } from "lucide-react";
+import * as Y from "yjs";
 import "@toeverything/theme/style.css";
 import { Schema, DocCollection, Job, type Doc } from "@blocksuite/store";
+import { listVersions, saveVersion, deleteVersionsFor, type NoteVersion } from "./noteVersions";
 import { AffineSchemas } from "@blocksuite/blocks";
 import { AffineEditorContainer } from "@blocksuite/presets";
 import { IndexedDBDocSource } from "@blocksuite/sync";
@@ -144,6 +148,8 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
   const [sort, setSort] = useState<Sort>("updated");
   const [tags, setTags] = useState<TagMap>(loadTags);
   const [ready, setReady] = useState(false);
+  const [verOpen, setVerOpen] = useState(false);
+  const [versions, setVersions] = useState<NoteVersion[]>([]);
   const seeded = useRef(false);
 
   function readMetas(): Meta[] {
@@ -210,6 +216,11 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
       const cur = ((doc.meta as any)?.title || "").trim();
       if (t && t !== cur) c.setDocMeta(activeId, { title: t, updatedDate: Date.now() } as any);
     };
+    let dirty = false;
+    const onChange = () => {
+      dirty = true;
+      sync();
+    };
     sync(); // backfill the title for older notes when opened
     // blocks may materialize slightly after mount → retry the backfill a few times
     const backfills = [250, 700, 1500].map((ms) => window.setTimeout(sync, ms));
@@ -217,19 +228,32 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
     try {
       const yt = root?.title?.yText;
       if (yt?.observe) {
-        yt.observe(sync);
-        offTitle = () => yt.unobserve(sync);
+        yt.observe(onChange);
+        offTitle = () => yt.unobserve(onChange);
       }
     } catch {
       /* ignore */
     }
     let offBlock = () => {};
     try {
-      const d = doc.slots?.blockUpdated?.on?.(sync);
+      const d = doc.slots?.blockUpdated?.on?.(onChange);
       if (d?.dispose) offBlock = () => d.dispose();
     } catch {
       /* ignore */
     }
+    // auto-snapshot a version every few minutes while the note is being edited
+    const snap = (label: string) => {
+      try {
+        saveVersion(activeId, Y.encodeStateAsUpdate(doc.spaceDoc), label);
+      } catch {
+        /* ignore */
+      }
+    };
+    const snapTimer = window.setInterval(() => {
+      if (!dirty) return;
+      dirty = false;
+      snap("自动");
+    }, 180000);
 
     const editor = new AffineEditorContainer();
     editor.edgelessSpecs = [...editor.edgelessSpecs, DARK_THEME];
@@ -240,6 +264,8 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
     host.current.appendChild(editor);
     return () => {
       backfills.forEach((t) => clearTimeout(t));
+      clearInterval(snapTimer);
+      if (dirty) snap("自动"); // capture the latest edits on close
       offTitle();
       offBlock();
       try {
@@ -270,6 +296,7 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
   function deleteForever(id: string) {
     if (!window.confirm("彻底删除这条笔记？不可恢复。")) return;
     c.removeDoc(id);
+    deleteVersionsFor(id).catch(() => {});
     const t = { ...tags };
     delete t[id];
     saveTags(t);
@@ -308,6 +335,41 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
     const next = { ...tags, [id]: [...cur, v] };
     saveTags(next);
     setTags(next);
+  }
+
+  // ---- version history ----
+  async function openVersions() {
+    if (!activeId) return;
+    setVersions(await listVersions(activeId));
+    setVerOpen(true);
+  }
+  function saveVersionNow() {
+    if (!activeId) return;
+    const doc = c.getDoc(activeId);
+    if (!doc) return;
+    try {
+      saveVersion(activeId, Y.encodeStateAsUpdate(doc.spaceDoc), "手动");
+    } catch {
+      /* ignore */
+    }
+    setTimeout(async () => setVersions(await listVersions(activeId)), 250);
+  }
+  async function restoreVersion(v: NoteVersion) {
+    const orig = metas.find((m) => m.id === activeId)?.title || "未命名笔记";
+    const nd = c.createDoc();
+    nd.load();
+    try {
+      Y.applyUpdate(nd.spaceDoc, v.bytes);
+    } catch {
+      /* ignore */
+    }
+    c.setDocMeta(nd.id, {
+      title: orig + " · 恢复@" + new Date(v.ts).toLocaleString(),
+      updatedDate: Date.now(),
+    } as any);
+    setMetas(readMetas());
+    setActiveId(nd.id);
+    setVerOpen(false);
   }
 
   // ---- list: filter by view + search, then sort ----
@@ -350,6 +412,14 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
         </button>
         <span className="notes-bar-title">{activeTitle}</span>
         <span className="notes-bar-spacer" />
+        <button
+          className={"notes-bar-btn" + (verOpen ? " on" : "")}
+          title="版本历史"
+          onClick={() => (verOpen ? setVerOpen(false) : openVersions())}
+          disabled={!activeId}
+        >
+          <History size={15} />
+        </button>
         <button
           className="notes-bar-btn"
           title={full ? "退出全屏" : "无边全屏"}
@@ -481,6 +551,42 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
                     </>
                   )}
                 </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {verOpen && (
+        <div className="notes-ver">
+          <div className="notes-ver-head">
+            <span>
+              <History size={14} /> 版本历史
+            </span>
+            <button onClick={() => setVerOpen(false)} title="收起">
+              <X size={14} />
+            </button>
+          </div>
+          <button className="notes-new" onClick={saveVersionNow}>
+            <Save size={14} /> 保存当前版本
+          </button>
+          <div className="notes-ver-list">
+            {versions.length === 0 && (
+              <div className="notes-empty">暂无版本（编辑约 3 分钟自动存，或点上方手动存）</div>
+            )}
+            {versions.map((v) => (
+              <div className="notes-ver-item" key={v.id}>
+                <div className="notes-ver-when">{new Date(v.ts).toLocaleString()}</div>
+                <span className={"notes-ver-tag" + (v.label === "手动" ? " manual" : "")}>
+                  {v.label}
+                </span>
+                <button
+                  className="notes-ver-restore"
+                  onClick={() => restoreVersion(v)}
+                  title="恢复为新笔记"
+                >
+                  <RotateCcw size={13} /> 恢复
+                </button>
               </div>
             ))}
           </div>
