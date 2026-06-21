@@ -4,6 +4,7 @@
 use ignore::WalkBuilder;
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
+use rayon::prelude::*;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -276,40 +277,60 @@ pub fn search(query: String, limit: usize) -> Vec<SearchHit> {
     let guard = INDEX.lock().unwrap();
     let index = guard.as_ref().unwrap();
 
-    let mut matcher = Matcher::new(Config::DEFAULT);
     let pat = Pattern::parse(q, CaseMatching::Ignore, Normalization::Smart);
     let usage = load_usage();
-    let mut hits: Vec<SearchHit> = Vec::new();
-    let mut buf: Vec<char> = Vec::new();
-    for (kind, name, path) in index.iter() {
-        buf.clear();
-        let sn = pat.score(Utf32Str::new(name, &mut buf), &mut matcher);
-        buf.clear();
-        let sp = pat.score(Utf32Str::new(path, &mut buf), &mut matcher);
-        // prefer a name match; fall back to a (lower-weighted) full-path match so
-        // path-shaped queries and multi-keyword/partial queries still find deep items
-        let base = match (sn, sp) {
-            (Some(n), Some(p)) => n.max(p / 2),
-            (Some(n), None) => n,
-            (None, Some(p)) => p / 3,
-            (None, None) => continue,
-        };
-        // surface apps/folders/exes a bit above deep files
-        let kind_bonus = match kind.as_str() {
-            "app" => 24,
-            "exe" => 16,
-            "folder" => 8,
-            _ => 0,
-        };
-        // most-used first: boost by how often this exact path was opened
-        let freq_bonus = usage.get(path).map(|c| (*c * 10).min(150)).unwrap_or(0);
-        hits.push(SearchHit {
-            kind: kind.clone(),
-            name: name.clone(),
-            path: path.clone(),
-            score: base + kind_bonus + freq_bonus,
+    // only score the (long) full path when the query looks path-shaped / multi-keyword;
+    // a plain single word matches against the name only — far fewer scores → fast.
+    let score_path = q.contains('/') || q.contains('\\') || q.contains(' ');
+
+    // parallel scoring across the (200k+) index with a per-thread Matcher + scratch buf
+    let mut hits: Vec<SearchHit> = index
+        .par_iter()
+        .fold(
+            || {
+                (
+                    Matcher::new(Config::DEFAULT),
+                    Vec::<char>::new(),
+                    Vec::<SearchHit>::new(),
+                )
+            },
+            |(mut matcher, mut buf, mut acc), (kind, name, path)| {
+                buf.clear();
+                let sn = pat.score(Utf32Str::new(name, &mut buf), &mut matcher);
+                let sp = if score_path {
+                    buf.clear();
+                    pat.score(Utf32Str::new(path, &mut buf), &mut matcher)
+                } else {
+                    None
+                };
+                // prefer a name match; fall back to a lower-weighted full-path match
+                let base = match (sn, sp) {
+                    (Some(n), Some(p)) => n.max(p / 2),
+                    (Some(n), None) => n,
+                    (None, Some(p)) => p / 3,
+                    (None, None) => return (matcher, buf, acc),
+                };
+                let kind_bonus = match kind.as_str() {
+                    "app" => 24,
+                    "exe" => 16,
+                    "folder" => 8,
+                    _ => 0,
+                };
+                let freq_bonus = usage.get(path).map(|c| (*c * 10).min(150)).unwrap_or(0);
+                acc.push(SearchHit {
+                    kind: kind.clone(),
+                    name: name.clone(),
+                    path: path.clone(),
+                    score: base + kind_bonus + freq_bonus,
+                });
+                (matcher, buf, acc)
+            },
+        )
+        .map(|(_, _, acc)| acc)
+        .reduce(Vec::new, |mut a, mut b| {
+            a.append(&mut b);
+            a
         });
-    }
     hits.sort_by(|a, b| b.score.cmp(&a.score));
     hits.truncate(limit);
     hits
@@ -317,7 +338,12 @@ pub fn search(query: String, limit: usize) -> Vec<SearchHit> {
 
 #[tauri::command]
 pub fn search_reindex() {
-    *INDEX.lock().unwrap() = None;
+    if !BUILDING.swap(true, Ordering::SeqCst) {
+        std::thread::spawn(|| {
+            warm_index();
+            BUILDING.store(false, Ordering::SeqCst);
+        });
+    }
 }
 
 /// Launch a file/folder/app with the OS default handler.
