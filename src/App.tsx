@@ -22,6 +22,7 @@ import { ProjectSurface, ReviewSurface } from "./surfaces";
 import { NotesWorkspace } from "./regions/NotesWorkspace";
 import { DockStage, type PanelKind } from "./panels";
 import { pushChatIntent } from "./chatIntents";
+import { dispatchMessage } from "./dispatch";
 import "./App.css";
 
 const PIN_KEY = "poof-panels-pinned";
@@ -109,7 +110,17 @@ export default function App() {
     openPanel("chat");
     pushChatIntent(provider, query);
   }
-  const askAI = (query: string) => newChat("claude", query || undefined);
+  // 新对话: 空 → 直接开一个 claude 终端; 有内容 → 先过 omni 总控路由(本机 sonnet 中思考),
+  // 再按 5 类执行(新起/发给已有/问)。路由是异步的, 不挡 UI。
+  const askAI = (query: string) => {
+    const q = (query || "").trim();
+    if (!q) {
+      newChat("claude");
+      return;
+    }
+    openPanel("chat");
+    void dispatchMessage(q, { newChat });
+  };
   const onLaunched = () => hide();
 
   function onBackdrop(e: React.MouseEvent) {
