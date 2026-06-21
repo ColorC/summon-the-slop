@@ -1,15 +1,8 @@
-import {
-  Fragment,
-  useEffect,
-  useRef,
-  useState,
-  type ReactNode,
-  type PointerEvent as RPE,
-} from "react";
-import { Pin, PinOff, X, PanelLeft, PanelRight, AppWindow } from "lucide-react";
+import { Fragment, useRef, useState, type ReactNode, type PointerEvent as RPE } from "react";
+import { Pin, PinOff, X, PanelLeft, PanelRight } from "lucide-react";
 
 export type PanelKind = "chat" | "project" | "review" | "notes";
-export type DockSide = "left" | "right" | "float";
+export type DockSide = "left" | "right";
 
 export const PANEL_TITLES: Record<PanelKind, string> = {
   chat: "对话 / 终端",
@@ -20,26 +13,13 @@ export const PANEL_TITLES: Record<PanelKind, string> = {
 
 const MIN_DOCK = 240; // a dock column never narrower than this
 const MAX_DOCK_FRAC = 0.66; // …nor wider than this fraction of the window
-const MIN_W = 300; // floating panel mins
-const MIN_H = 160;
-const FLOAT_SNAP = 30; // drop a floating panel within this of an edge → it docks
-const BARS = 168; // top search pill band (84) + bottom action bar band (84)
+const MIN_H = 140; // a stacked view never shorter than this
 
-interface Geom {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-function stageSize() {
-  return { w: window.innerWidth, h: Math.max(220, window.innerHeight - BARS) };
-}
 
 // ---------------- persistence ----------------
 const sideKey = (k: PanelKind) => `poof-panel-${k}-side`;
-const floatKey = (k: PanelKind) => `poof-panel-${k}-float`;
-const dockWKey = (s: "left" | "right") => `poof-dock-${s}-w`;
+const dockWKey = (s: DockSide) => `poof-dock-${s}-w`;
 
 // VSCode-ish defaults: views on the left, the assistant/terminal on the right.
 const DEFAULT_SIDE: Record<PanelKind, DockSide> = {
@@ -51,31 +31,19 @@ const DEFAULT_SIDE: Record<PanelKind, DockSide> = {
 
 function loadSide(k: PanelKind): DockSide {
   const v = localStorage.getItem(sideKey(k));
-  return v === "left" || v === "right" || v === "float" ? v : DEFAULT_SIDE[k];
+  return v === "left" || v === "right" ? v : DEFAULT_SIDE[k];
 }
-function loadDockW(s: "left" | "right"): number {
+function loadDockW(s: DockSide): number {
   const v = Number(localStorage.getItem(dockWKey(s)));
   return v >= MIN_DOCK ? v : 380;
 }
-function loadFloat(k: PanelKind): Geom {
-  try {
-    const v = localStorage.getItem(floatKey(k));
-    if (v) return JSON.parse(v) as Geom;
-  } catch {
-    /* ignore */
-  }
-  const { w: W, h: H } = stageSize();
-  const width = Math.min(720, Math.round(W * 0.5));
-  const height = Math.min(560, Math.round(H * 0.78));
-  return { x: Math.round((W - width) / 2), y: 24, width, height };
-}
 
 // ============================================================================
-//  DockStage — owns the whole middle band. Panels live on the left dock, the
-//  right dock, or float. A dock is flush to the window edge, full working
-//  height, square against the edge, with a sash on its inner seam (drag to
-//  resize). Multiple panels on one side stack with sashes between them. This is
-//  a real sidebar — not a card parked near the edge.
+//  DockStage — owns the middle band. Every open panel is docked to the left or
+//  the right: flush to the window edge, FULL height, square against the edge,
+//  with a sash on its inner seam (drag to resize width). Multiple panels on one
+//  side stack as views with a height-sash between them. A real sidebar — there
+//  is no "floating window" mode; a panel is docked or closed.
 // ============================================================================
 export function DockStage({
   open,
@@ -99,7 +67,6 @@ export function DockStage({
 
   const left = open.filter((k) => sideOf(k) === "left");
   const right = open.filter((k) => sideOf(k) === "right");
-  const floats = open.filter((k) => sideOf(k) === "float");
 
   const headFor = (k: PanelKind): HeadProps => ({
     kind: k,
@@ -118,9 +85,6 @@ export function DockStage({
       {right.length > 0 && (
         <Dock side="right" panels={right} headFor={headFor} renderContent={renderContent} />
       )}
-      {floats.map((k) => (
-        <FloatPanel key={k} head={headFor(k)} renderContent={renderContent} />
-      ))}
     </div>
   );
 }
@@ -132,7 +96,7 @@ function Dock({
   headFor,
   renderContent,
 }: {
-  side: "left" | "right";
+  side: DockSide;
   panels: PanelKind[];
   headFor: (k: PanelKind) => HeadProps;
   renderContent: (k: PanelKind) => ReactNode;
@@ -210,95 +174,6 @@ function Dock({
   );
 }
 
-// ---------------- a floating panel (draggable card) ----------------
-function FloatPanel({
-  head,
-  renderContent,
-}: {
-  head: HeadProps;
-  renderContent: (k: PanelKind) => ReactNode;
-}) {
-  const kind = head.kind;
-  const [geom, setGeom] = useState<Geom>(() => loadFloat(kind));
-  const gref = useRef(geom);
-  gref.current = geom;
-  useEffect(() => {
-    localStorage.setItem(floatKey(kind), JSON.stringify(geom));
-  }, [kind, geom]);
-
-  function startDrag(e: RPE) {
-    if (e.button !== 0) return;
-    if ((e.target as HTMLElement).closest(".pf-panel-acts")) return;
-    e.preventDefault();
-    const sx = e.clientX;
-    const sy = e.clientY;
-    const g0 = { ...gref.current };
-    const st = stageSize();
-    const mv = (ev: PointerEvent) => {
-      const nx = clamp(g0.x + ev.clientX - sx, -g0.width + 80, st.w - 80);
-      const ny = clamp(g0.y + ev.clientY - sy, 0, Math.max(0, st.h - 40));
-      setGeom({ ...g0, x: nx, y: ny });
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", mv);
-      window.removeEventListener("pointerup", up);
-      const g = gref.current;
-      // drag to an edge → dock there (VSCode dock-on-drop)
-      if (g.x <= FLOAT_SNAP) head.onMove("left");
-      else if (g.x + g.width >= st.w - FLOAT_SNAP) head.onMove("right");
-    };
-    window.addEventListener("pointermove", mv);
-    window.addEventListener("pointerup", up);
-  }
-
-  function startResize(e: RPE, dir: Dir) {
-    if (e.button !== 0) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const sx = e.clientX;
-    const sy = e.clientY;
-    const g0 = { ...gref.current };
-    const st = stageSize();
-    const mv = (ev: PointerEvent) => {
-      const dx = ev.clientX - sx;
-      const dy = ev.clientY - sy;
-      let { x, y, width, height } = g0;
-      if (dir.includes("e")) width = clamp(g0.width + dx, MIN_W, st.w - g0.x);
-      if (dir.includes("s")) height = clamp(g0.height + dy, MIN_H, st.h - g0.y);
-      if (dir.includes("w")) {
-        width = clamp(g0.width - dx, MIN_W, g0.x + g0.width);
-        x = g0.x + g0.width - width;
-      }
-      if (dir.includes("n")) {
-        height = clamp(g0.height - dy, MIN_H, g0.y + g0.height);
-        y = g0.y + g0.height - height;
-      }
-      setGeom({ x, y, width, height });
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", mv);
-      window.removeEventListener("pointerup", up);
-    };
-    window.addEventListener("pointermove", mv);
-    window.addEventListener("pointerup", up);
-  }
-
-  return (
-    <div
-      className="pf-panel"
-      style={{ left: geom.x, top: geom.y, width: geom.width, height: geom.height }}
-    >
-      <div className="pf-panel-inner">
-        <PanelHead {...head} draggable onDragStart={startDrag} />
-        <div className="pf-panel-body">{renderContent(kind)}</div>
-      </div>
-      {HANDLES.map((d) => (
-        <div key={d} className={"pf-rz pf-rz-" + d} onPointerDown={(e) => startResize(e, d)} />
-      ))}
-    </div>
-  );
-}
-
 // ---------------- shared header (title + dock controls) ----------------
 interface HeadProps {
   kind: PanelKind;
@@ -308,36 +183,18 @@ interface HeadProps {
   onClose: () => void;
   onMove: (s: DockSide) => void;
 }
-function PanelHead({
-  kind,
-  side,
-  pinned,
-  onPin,
-  onClose,
-  onMove,
-  draggable,
-  onDragStart,
-}: HeadProps & { draggable?: boolean; onDragStart?: (e: RPE) => void }) {
+function PanelHead({ kind, side, pinned, onPin, onClose, onMove }: HeadProps) {
   return (
-    <div
-      className={"pf-panel-head" + (draggable ? " drag" : "")}
-      onPointerDown={onDragStart}
-    >
+    <div className="pf-panel-head">
       <span className="pf-panel-title">{PANEL_TITLES[kind]}</span>
       <div className="pf-panel-acts">
-        {side !== "left" && (
-          <button onClick={() => onMove("left")} title="停靠到左侧栏">
+        {side === "right" ? (
+          <button onClick={() => onMove("left")} title="移到左侧栏">
             <PanelLeft size={15} />
           </button>
-        )}
-        {side !== "right" && (
-          <button onClick={() => onMove("right")} title="停靠到右侧栏">
+        ) : (
+          <button onClick={() => onMove("right")} title="移到右侧栏">
             <PanelRight size={15} />
-          </button>
-        )}
-        {side !== "float" && (
-          <button onClick={() => onMove("float")} title="浮动窗口">
-            <AppWindow size={15} />
           </button>
         )}
         <button onClick={onPin} title={pinned ? "取消钉住" : "钉住（召出时保持）"}>
@@ -350,6 +207,3 @@ function PanelHead({
     </div>
   );
 }
-
-type Dir = "e" | "w" | "s" | "n" | "se" | "sw" | "ne" | "nw";
-const HANDLES: Dir[] = ["e", "w", "s", "n", "se", "sw", "ne", "nw"];

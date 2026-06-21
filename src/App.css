@@ -689,7 +689,7 @@ body,
         against the edge, with a sash on the inner seam (a real dock, not a
         card parked near the edge) ===== */
 .pf-dock {
-  position: absolute;
+  position: fixed; /* viewport-relative → fills the FULL window height (拉满) */
   top: 0;
   bottom: 0;
   pointer-events: auto;
@@ -701,12 +701,10 @@ body,
 .pf-dock-left {
   left: 0;
   border-right: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 0 14px 14px 0; /* flat against the edge, rounded into the workspace */
 }
 .pf-dock-right {
   right: 0;
   border-left: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 14px 0 0 14px;
 }
 /* a stacked view within a dock */
 .pf-view {
@@ -714,13 +712,6 @@ body,
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
-}
-.pf-view:first-of-type .pf-panel-head {
-  border-top-right-radius: 14px;
-}
-.pf-dock-right .pf-view:first-of-type .pf-panel-head {
-  border-top-left-radius: 14px;
-  border-top-right-radius: 0;
 }
 
 /* sashes — the draggable seams */
