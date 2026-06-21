@@ -1,0 +1,37 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; user-select: none; }
+#wrap { position: fixed; inset: 0; cursor: move; }
+#img {
+  position: absolute;
+  transform-origin: center center;
+  image-rendering: auto;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+}
+.hidden { display: none !important; }
+
+.menu {
+  position: fixed;
+  background: rgba(24, 26, 32, 0.98);
+  border: 1px solid #33373f;
+  border-radius: 8px;
+  padding: 4px;
+  z-index: 100;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+  font: 12px/1.4 "Microsoft YaHei", "Segoe UI", sans-serif;
+  min-width: 168px;
+}
+.menu .mi {
+  display: flex; justify-content: space-between; gap: 18px;
+  color: #d8dbe2; padding: 6px 10px; border-radius: 5px; cursor: pointer;
+}
+.menu .mi:hover { background: #313641; }
+.menu .mi .sc { color: #8a90a0; }
+.menu .sep { height: 1px; background: #33373f; margin: 4px 6px; }
+
+.toast {
+  position: fixed; left: 50%; bottom: 8px; transform: translateX(-50%);
+  background: rgba(18, 18, 24, 0.92); color: #cfe6ff;
+  font: 11px/1.4 "Microsoft YaHei", sans-serif; padding: 3px 10px; border-radius: 10px;
+  z-index: 90; pointer-events: none;
+}

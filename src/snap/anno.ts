@@ -29,11 +29,12 @@ export class Annotator {
     this.dpr = dpr;
     this.shapes = [];
     this.draft = null;
+    this.redoStack = [];
     this.enabled = false;
     this.redraw();
   }
 
-  undo() { this.shapes.pop(); this.redraw(); }
+  undo() { const s = this.shapes.pop(); if (s) { this.redoStack.push(s); this.redraw(); } }
   hasInk() { return this.shapes.length > 0; }
 
   private toCanvas(cssX: number, cssY: number): Pt {
@@ -42,14 +43,25 @@ export class Annotator {
 
   onDown(cssX: number, cssY: number) {
     if (!this.enabled) return;
+    // text is committed by snap.ts via an inline input (window.prompt hangs a borderless
+    // always-on-top overlay), so the canvas ignores text-tool mousedowns here.
+    if (this.tool === "text") return;
     const p = this.toCanvas(cssX, cssY);
-    if (this.tool === "text") {
-      const t = window.prompt("文字：");
-      if (t) { this.shapes.push({ tool: "text", color: this.color, width: this.width, pts: [p], text: t }); this.redraw(); }
-      return;
-    }
     this.draft = { tool: this.tool, color: this.color, width: this.width, pts: [p] };
   }
+
+  /** Commit a text shape at a CSS point (called by the inline-input flow). */
+  addText(cssX: number, cssY: number, text: string, color: string) {
+    if (!text) return;
+    const p = this.toCanvas(cssX, cssY);
+    this.shapes.push({ tool: "text", color, width: this.width, pts: [p], text });
+    this.redoStack = [];
+    this.redraw();
+  }
+
+  /** Redo support: keep popped shapes so Ctrl+Y can restore them. */
+  private redoStack: Shape[] = [];
+  redo() { const s = this.redoStack.pop(); if (s) { this.shapes.push(s); this.redraw(); } }
 
   onMove(cssX: number, cssY: number) {
     if (!this.draft) return;
@@ -60,7 +72,7 @@ export class Annotator {
   }
 
   onUp() {
-    if (this.draft) { this.shapes.push(this.draft); this.draft = null; this.redraw(); }
+    if (this.draft) { this.shapes.push(this.draft); this.draft = null; this.redoStack = []; this.redraw(); }
   }
 
   private redraw() {

@@ -8,12 +8,14 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(async () => ({
   plugins: [react()],
 
-  // two entries: the React overlay (index.html) + the screenshot/annotate window (snap.html)
+  // entries: the React overlay (index.html), the screenshot/annotate window (snap.html),
+  // and the floating pin window (pin.html)
   build: {
     rollupOptions: {
       input: {
         main: "index.html",
         snap: "snap.html",
+        pin: "pin.html",
       },
     },
   },

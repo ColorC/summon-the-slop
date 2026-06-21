@@ -79,7 +79,7 @@ async fn run_shell(cmd: String) -> Result<CmdOut, String> {
 #[cfg(windows)]
 mod hook {
     use super::{log_line, now_ms};
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::sync::mpsc::Sender;
     use std::sync::OnceLock;
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -88,17 +88,28 @@ mod hook {
         CallNextHookEx, GetMessageW, SetWindowsHookExW, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL,
     };
 
-    // Summon gesture = HOLD Ctrl + double-tap Alt. "Ctrl held" is read from the real-time
+    /// What the hook asks the UI thread to do.
+    pub enum Sig {
+        Summon, // hold Ctrl + double-tap Alt → toggle the overlay
+        Snap,   // Ctrl+Alt+A → jump straight into 截图
+    }
+
+    // Summon gesture = HOLD Ctrl + double-tap Alt. "held" is read from the real-time
     // physical key state (GetAsyncKeyState) so a missed key-up can never wedge it.
     static LAST_ALT_UP: AtomicU64 = AtomicU64::new(0);
-    pub static TX: OnceLock<Sender<()>> = OnceLock::new();
+    static SNAP_DOWN: AtomicBool = AtomicBool::new(false); // de-dupe Ctrl+Alt+A auto-repeat
+    pub static TX: OnceLock<Sender<Sig>> = OnceLock::new();
 
+    const WM_KEYDOWN: usize = 0x0100;
     const WM_KEYUP: usize = 0x0101;
+    const WM_SYSKEYDOWN: usize = 0x0104;
     const WM_SYSKEYUP: usize = 0x0105;
     const VK_CONTROL: i32 = 0x11; // generic Ctrl (L or R)
+    const VK_MENU_STATE: i32 = 0x12; // generic Alt, for GetAsyncKeyState
     const VK_LMENU: u32 = 0xA4; // left Alt
     const VK_RMENU: u32 = 0xA5; // right Alt
     const VK_MENU: u32 = 0x12; // generic Alt (injected)
+    const VK_A: u32 = 0x41;
     const DOUBLE_MS: u64 = 450;
 
     #[inline]
@@ -106,21 +117,36 @@ mod hook {
         vk == VK_LMENU || vk == VK_RMENU || vk == VK_MENU
     }
     #[inline]
-    unsafe fn ctrl_held() -> bool {
-        (GetAsyncKeyState(VK_CONTROL) as u16 & 0x8000) != 0
+    unsafe fn held(vk: i32) -> bool {
+        (GetAsyncKeyState(vk) as u16 & 0x8000) != 0
     }
 
     unsafe extern "system" fn keyboard_proc(code: i32, wparam: usize, lparam: isize) -> isize {
-        if code >= 0 && (wparam == WM_KEYUP || wparam == WM_SYSKEYUP) {
+        if code >= 0 {
             let kb = &*(lparam as *const KBDLLHOOKSTRUCT);
-            if is_alt(kb.vkCode) {
-                if ctrl_held() {
+            // Ctrl+Alt+A → 截图. Swallow the 'A' (return 1) so it isn't typed into apps.
+            if (wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN) && kb.vkCode == VK_A {
+                if held(VK_CONTROL) && held(VK_MENU_STATE) {
+                    if !SNAP_DOWN.swap(true, Ordering::SeqCst) {
+                        if let Some(tx) = TX.get() {
+                            let _ = tx.send(Sig::Snap);
+                        }
+                    }
+                    return 1;
+                }
+            }
+            if (wparam == WM_KEYUP || wparam == WM_SYSKEYUP) && kb.vkCode == VK_A {
+                SNAP_DOWN.store(false, Ordering::SeqCst);
+            }
+            // hold Ctrl + double-tap Alt → toggle the overlay
+            if (wparam == WM_KEYUP || wparam == WM_SYSKEYUP) && is_alt(kb.vkCode) {
+                if held(VK_CONTROL) {
                     let now = now_ms();
                     let last = LAST_ALT_UP.swap(now, Ordering::SeqCst);
                     if last != 0 && now.saturating_sub(last) < DOUBLE_MS {
                         LAST_ALT_UP.store(0, Ordering::SeqCst);
                         if let Some(tx) = TX.get() {
-                            let _ = tx.send(());
+                            let _ = tx.send(Sig::Summon);
                         }
                     }
                 } else {
@@ -139,7 +165,7 @@ mod hook {
                 log_line("ERROR SetWindowsHookExW failed (EDR may block low-level keyboard hook)");
                 return;
             }
-            log_line("hook installed ok (hold Ctrl + double-tap Alt armed)");
+            log_line("hook installed ok (Ctrl+2xAlt summon · Ctrl+Alt+A 截图)");
             let mut msg: MSG = std::mem::zeroed();
             while GetMessageW(&mut msg, 0, 0, 0) != 0 {}
         });
@@ -280,24 +306,33 @@ fn start_inspect() -> Result<(), String> {
     Err("windows only".into())
 }
 
-/// Enter 截图 (screenshot/annotate): hide poof's overlay, then position + summon the
-/// transparent "snap" window, which captures the clean frame and shows itself via present_snap.
+/// Enter 截图 (screenshot/annotate). ORDER MATTERS: we show + focus the transparent snap
+/// window FIRST, while poof's main overlay still owns the foreground (so Windows lets us
+/// activate it), and only THEN hide main. If we hid main first, poof would lose foreground
+/// and the snap window would show without keyboard focus — Esc wouldn't reach it and the
+/// user would be trapped (only Alt+F4 closes an unfocused window). The snap content is
+/// transparent at this point, so the capture (kicked by snap-summon) stays clean.
 #[cfg(windows)]
-#[tauri::command]
-fn show_snap(app: tauri::AppHandle) -> Result<(), String> {
+fn summon_snap(app: &tauri::AppHandle) {
     use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize};
+    let Some(snap) = app.get_webview_window("snap") else { return };
+    if let Ok(Some(m)) = snap.primary_monitor() {
+        let p = m.position();
+        let s = m.size();
+        let _ = snap.set_position(PhysicalPosition::new(p.x, p.y));
+        let _ = snap.set_size(PhysicalSize::new(s.width, s.height));
+    }
+    let _ = snap.show();
+    let _ = snap.set_focus();
     if let Some(main) = app.get_webview_window("main") {
         let _ = main.hide();
     }
-    if let Some(snap) = app.get_webview_window("snap") {
-        if let Ok(Some(m)) = snap.primary_monitor() {
-            let p = m.position();
-            let s = m.size();
-            let _ = snap.set_position(PhysicalPosition::new(p.x, p.y));
-            let _ = snap.set_size(PhysicalSize::new(s.width, s.height));
-        }
-        let _ = snap.emit("snap-summon", ());
-    }
+    let _ = snap.emit("snap-summon", ());
+}
+#[cfg(windows)]
+#[tauri::command]
+fn show_snap(app: tauri::AppHandle) -> Result<(), String> {
+    summon_snap(&app);
     Ok(())
 }
 #[cfg(windows)]
@@ -379,25 +414,28 @@ pub fn run() {
                         let _ = w.set_position(tauri::PhysicalPosition::new(0, 0));
                     }
                 }
-                let (tx, rx) = channel::<()>();
+                let (tx, rx) = channel::<hook::Sig>();
                 let _ = hook::TX.set(tx);
                 hook::install();
                 std::thread::spawn(move || {
-                    for _ in rx {
+                    for sig in rx {
                         let h = handle.clone();
-                        let _ = handle.run_on_main_thread(move || {
-                            if let Some(w) = h.get_webview_window("main") {
-                                let visible = w.is_visible().unwrap_or(false);
-                                if visible {
-                                    let _ = w.hide();
-                                    log_line("toggle hide");
-                                } else {
-                                    let _ = w.unminimize();
-                                    let _ = w.show();
-                                    let _ = w.set_always_on_top(true);
-                                    let _ = w.set_focus();
-                                    let _ = h.emit("summon", ());
-                                    log_line("toggle show");
+                        let _ = handle.run_on_main_thread(move || match sig {
+                            hook::Sig::Snap => summon_snap(&h),
+                            hook::Sig::Summon => {
+                                if let Some(w) = h.get_webview_window("main") {
+                                    let visible = w.is_visible().unwrap_or(false);
+                                    if visible {
+                                        let _ = w.hide();
+                                        log_line("toggle hide");
+                                    } else {
+                                        let _ = w.unminimize();
+                                        let _ = w.show();
+                                        let _ = w.set_always_on_top(true);
+                                        let _ = w.set_focus();
+                                        let _ = h.emit("summon", ());
+                                        log_line("toggle show");
+                                    }
                                 }
                             }
                         });
@@ -430,7 +468,12 @@ pub fn run() {
             close_snap,
             snap_cmd::capture_screen,
             snap_cmd::copy_image,
+            snap_cmd::copy_image_file,
             snap_cmd::save_image,
+            snap_cmd::list_shots,
+            snap_cmd::read_image_b64,
+            snap_cmd::delete_shot,
+            snap_cmd::reveal_shot,
             snap_cmd::pin_image,
             snap_cmd::ocr_region
         ])
@@ -479,6 +522,26 @@ mod tests {
         let text = crate::ocr::ocr_png(&png).expect("ocr_png");
         let low = text.to_lowercase();
         assert!(low.contains("hello") || text.contains("12345"), "ocr returned: {text:?}");
+    }
+
+    #[test]
+    fn shot_history_roundtrip() {
+        // 1x1 PNG → save into the shots folder, find it in the history list, render a
+        // thumbnail data-URL, then delete it. Exercises the whole persistent-list backend.
+        let b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        let p = crate::snap_cmd::save_image(b64.to_string()).expect("save_image");
+        let shots = crate::snap_cmd::list_shots().expect("list_shots");
+        assert!(shots.iter().any(|s| s.path == p), "saved shot missing from history");
+        let thumb = crate::snap_cmd::read_image_b64(p.clone()).expect("read_image_b64");
+        assert!(thumb.starts_with("data:image/png;base64,"), "thumbnail isn't a png data-url");
+        // the path guard must reject anything outside the shots folder
+        assert!(
+            crate::snap_cmd::read_image_b64("C:\\Windows\\System32\\drivers\\etc\\hosts".into()).is_err(),
+            "ensure_in_shots failed to reject an outside path"
+        );
+        crate::snap_cmd::delete_shot(p.clone()).expect("delete_shot");
+        let after = crate::snap_cmd::list_shots().expect("list_shots after delete");
+        assert!(!after.iter().any(|s| s.path == p), "shot was not deleted");
     }
 
     #[test]

@@ -16,48 +16,79 @@ html, body {
   width: 100vw;
   height: 100vh;
   display: block;
+  pointer-events: none;
 }
-#anno { pointer-events: none; }
 
 .hidden { display: none !important; }
 
-.hl {
+/* full-screen dim shown before a region is chosen (Snipaste dims everything until you select) */
+#mask {
   position: fixed;
-  border: 2px solid #4aa3ff;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
+  inset: 0;
+  background: rgba(0, 0, 0, 0.42);
   pointer-events: none;
-  z-index: 10;
+  z-index: 5;
 }
 
+/* the selection: a clear hole punched out of a dark mask via a giant box-shadow.
+   Everything OUTSIDE the rect is dimmed; inside shows the frozen screenshot full-bright. */
 .sel {
   position: fixed;
-  border: 2px solid #4ade80;
-  background: rgba(74, 222, 128, 0.08);
+  border: 1px solid #4aa3ff;
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.42);
   pointer-events: none;
-  z-index: 10;
+  z-index: 6;
 }
 
-.tip {
+/* 8 resize handles on the committed selection */
+.handle {
+  position: fixed;
+  width: 10px;
+  height: 10px;
+  margin: -5px 0 0 -5px;
+  background: #4aa3ff;
+  border: 1px solid #fff;
+  border-radius: 50%;
+  z-index: 8;
+  pointer-events: auto;
+}
+.handle.nw, .handle.se { cursor: nwse-resize; }
+.handle.ne, .handle.sw { cursor: nesw-resize; }
+.handle.n, .handle.s { cursor: ns-resize; }
+.handle.e, .handle.w { cursor: ew-resize; }
+
+/* an interaction surface over the selection interior: lets us drive move/draw with the
+   right cursor without the canvases eating events */
+#hot {
+  position: fixed;
+  z-index: 7;
+  pointer-events: auto;
+}
+
+/* crosshair guide lines that track the cursor before selecting */
+.cross { position: fixed; background: rgba(74, 163, 255, 0.5); pointer-events: none; z-index: 9; }
+#chx { left: 0; width: 100vw; height: 1px; }
+#chy { top: 0; height: 100vh; width: 1px; }
+
+/* W x H badge near the selection */
+.sizebadge {
   position: fixed;
   background: rgba(18, 18, 24, 0.92);
-  color: #eef0f4;
-  padding: 4px 9px;
-  border-radius: 6px;
-  font-size: 12px;
-  line-height: 1.4;
-  max-width: 460px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  color: #d8e6ff;
+  font: 12px/1.4 "Consolas", monospace;
+  padding: 2px 7px;
+  border-radius: 4px;
   pointer-events: none;
-  z-index: 20;
+  z-index: 21;
+  white-space: nowrap;
 }
 
-.loupe { position: fixed; pointer-events: none; z-index: 20; }
+/* magnifier + color picker */
+.loupe { position: fixed; pointer-events: none; z-index: 22; }
 #loupeCanvas {
   display: block;
-  width: 160px;
-  height: 160px;
+  width: 130px;
+  height: 130px;
   border: 1px solid #2c2f37;
   border-radius: 6px;
   background: #000;
@@ -73,74 +104,88 @@ html, body {
   padding: 1px 4px;
 }
 
+/* inline text-tool input (replaces window.prompt, which hangs a borderless overlay) */
+#textIn {
+  position: fixed;
+  z-index: 41;
+  background: transparent;
+  border: 1px dashed #4aa3ff;
+  color: #ff3b30;
+  font: 18px "Microsoft YaHei", sans-serif;
+  padding: 2px 4px;
+  outline: none;
+  min-width: 40px;
+  pointer-events: auto;
+}
+
 .panel {
   position: fixed;
-  background: rgba(20, 22, 27, 0.96);
+  background: rgba(20, 22, 27, 0.97);
   color: #e7e9ee;
   border: 1px solid #2c2f37;
   border-radius: 10px;
   padding: 12px 14px;
   font-size: 13px;
-  max-width: 460px;
-  max-height: 70vh;
+  max-width: 520px;
+  max-height: 74vh;
   overflow: auto;
-  z-index: 30;
+  z-index: 50;
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
 }
-.ptitle { color: #8fd0ff; font-weight: 600; margin-bottom: 8px; }
-.pname { color: #fff; font-weight: 400; }
-.prow { display: flex; gap: 8px; margin: 3px 0; }
-.pk { color: #8a90a0; min-width: 96px; flex-shrink: 0; }
+.ptitle { color: #8fd0ff; font-weight: 600; margin-bottom: 8px; display: flex; justify-content: space-between; }
+.ptitle .x { cursor: pointer; color: #8a90a0; }
 .pv { color: #e7e9ee; word-break: break-all; }
-.llist { max-height: 46vh; overflow: auto; margin: 4px 0; }
-.lrow { padding: 3px 0; border-bottom: 1px solid #23262e; }
-.lt { color: #8fd0ff; margin-right: 6px; }
-.pacts { margin-top: 10px; display: flex; gap: 6px; flex-wrap: wrap; }
-.pacts button {
-  background: #262932; color: #d8dbe2; border: none; border-radius: 7px;
-  padding: 6px 12px; font-size: 12px; cursor: pointer;
+
+/* history grid */
+.hgrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.hcard { background: #1a1d24; border: 1px solid #262a33; border-radius: 8px; overflow: hidden; }
+.hcard img { width: 100%; height: 84px; object-fit: cover; display: block; background: #000; }
+.hmeta { font: 10px/1.3 "Consolas", monospace; color: #8a90a0; padding: 3px 5px; word-break: break-all; }
+.hacts { display: flex; gap: 2px; padding: 0 4px 5px; flex-wrap: wrap; }
+.hacts button {
+  background: #262932; color: #d8dbe2; border: none; border-radius: 5px;
+  padding: 3px 6px; font-size: 11px; cursor: pointer;
 }
-.pacts button:hover { background: #34394a; }
+.hacts button:hover { background: #34394a; }
+.hempty { color: #8a90a0; padding: 20px; text-align: center; }
 
 .toolbar {
   position: fixed;
   display: flex;
   align-items: center;
-  gap: 4px;
-  background: rgba(20, 22, 27, 0.97);
+  gap: 3px;
+  background: rgba(20, 22, 27, 0.98);
   border: 1px solid #2c2f37;
   border-radius: 10px;
-  padding: 6px 8px;
+  padding: 5px 7px;
   z-index: 40;
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
 }
 .toolbar button {
   background: transparent;
   color: #d8dbe2;
   border: none;
   border-radius: 6px;
-  min-width: 30px;
-  height: 30px;
-  font-size: 15px;
+  min-width: 28px;
+  height: 28px;
+  font-size: 14px;
   cursor: pointer;
-  padding: 0 8px;
+  padding: 0 7px;
 }
 .toolbar button:hover { background: #2c313c; }
 .toolbar button.on { background: #0a84ff; color: #fff; }
 .toolbar .swatch {
-  width: 20px;
-  min-width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  padding: 0;
-  border: 2px solid transparent;
+  width: 18px; min-width: 18px; height: 18px;
+  border-radius: 50%; padding: 0; border: 2px solid transparent;
 }
 .toolbar .swatch.on { border-color: #fff; }
-.toolbar .tsep { width: 1px; height: 22px; background: #3a3f4a; margin: 0 4px; }
+.toolbar .tsep { width: 1px; height: 20px; background: #3a3f4a; margin: 0 4px; }
 
 .hint {
   position: fixed;
-  bottom: 18px;
+  bottom: 16px;
   left: 50%;
   transform: translateX(-50%);
   background: rgba(18, 18, 24, 0.85);

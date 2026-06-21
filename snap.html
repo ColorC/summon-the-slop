@@ -9,36 +9,47 @@
   <body>
     <canvas id="screen"></canvas>
     <canvas id="anno"></canvas>
+    <div id="mask" class="hidden"></div>
+    <div id="chx" class="cross hidden"></div>
+    <div id="chy" class="cross hidden"></div>
     <div id="sel" class="sel hidden"></div>
+    <div id="hot" class="hidden"></div>
+    <div id="handles"></div>
+    <div id="sizebadge" class="sizebadge hidden"></div>
+    <input id="textIn" class="hidden" />
     <div id="loupe" class="loupe hidden">
-      <canvas id="loupeCanvas" width="160" height="160"></canvas>
+      <canvas id="loupeCanvas" width="130" height="130"></canvas>
       <div id="loupeInfo" class="loupeInfo"></div>
     </div>
     <div id="panel" class="panel hidden"></div>
     <div id="toolbar" class="toolbar hidden">
-      <button data-tool="rect" class="on" title="矩形">▭</button>
-      <button data-tool="ellipse" title="椭圆">◯</button>
-      <button data-tool="arrow" title="箭头">↗</button>
-      <button data-tool="line" title="直线">╱</button>
-      <button data-tool="pen" title="画笔">✎</button>
-      <button data-tool="text" title="文字">A</button>
-      <button data-tool="highlight" title="高亮">▆</button>
-      <button data-tool="mosaic" title="马赛克">▦</button>
+      <button data-tool="move" class="on" title="移动/调整 (M)">✥</button>
+      <button data-tool="rect" title="矩形 (R)">▭</button>
+      <button data-tool="ellipse" title="椭圆 (O)">◯</button>
+      <button data-tool="arrow" title="箭头 (A)">↗</button>
+      <button data-tool="line" title="直线 (L)">╱</button>
+      <button data-tool="pen" title="画笔 (P)">✎</button>
+      <button data-tool="highlight" title="荧光笔 (H)">▆</button>
+      <button data-tool="mosaic" title="马赛克 (K)">▦</button>
+      <button data-tool="text" title="文字 (T)">A</button>
       <span class="tsep"></span>
       <button data-color="#ff3b30" class="swatch on" style="background:#ff3b30"></button>
       <button data-color="#ffcc00" class="swatch" style="background:#ffcc00"></button>
       <button data-color="#34c759" class="swatch" style="background:#34c759"></button>
       <button data-color="#0a84ff" class="swatch" style="background:#0a84ff"></button>
+      <button data-color="#ffffff" class="swatch" style="background:#ffffff"></button>
       <button data-color="#1c1c1e" class="swatch" style="background:#1c1c1e"></button>
       <span class="tsep"></span>
-      <button data-act="undo" title="撤销 Ctrl+Z">↶</button>
-      <button data-act="copy">复制</button>
-      <button data-act="save">保存</button>
-      <button data-act="pin">钉屏</button>
-      <button data-act="ocr">OCR</button>
-      <button data-act="redo2">重选</button>
+      <button data-act="undo" title="撤销 (Ctrl+Z)">↶</button>
+      <button data-act="redo" title="重做 (Ctrl+Y)">↷</button>
+      <span class="tsep"></span>
+      <button data-act="history" title="历史 (H 列表)">🗂</button>
+      <button data-act="ocr" title="OCR 提取文字">OCR</button>
+      <button data-act="pin" title="贴图 (F3)">📌</button>
+      <button data-act="save" title="保存 (Ctrl+S)">保存</button>
+      <button data-act="copy" title="复制到剪贴板 (Enter / Ctrl+C)">复制</button>
     </div>
-    <div id="hint" class="hint hidden">拖拽框选 → 标注 → 复制 / 保存 / 钉屏 / OCR · Esc 退出</div>
+    <div id="hint" class="hint hidden">拖拽框选　·　Enter/双击 复制　·　F3 贴图　·　Ctrl+S 保存　·　右键/Esc 取消</div>
     <script type="module" src="/src/snap/snap.ts"></script>
   </body>
 </html>
