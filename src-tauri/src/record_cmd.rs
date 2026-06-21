@@ -76,7 +76,7 @@ fn write_atomic_meta(path: &Path, meta: &Meta) -> Result<(), String> {
 }
 
 /// Stamp stop_ms on a session's meta.json (best-effort).
-fn stamp_stop(sid: &str) {
+pub fn stamp_stop(sid: &str) {
     let meta_path = recordings_dir().join(sid).join("meta.json");
     if let Ok(text) = std::fs::read_to_string(&meta_path) {
         if let Ok(mut meta) = serde_json::from_str::<Meta>(&text) {
@@ -96,10 +96,17 @@ pub fn stop_active(state: &RecState) {
     }
 }
 
-/// Begin a session: make the dir, seed an empty events.jsonl + meta.json, arm state.
-/// Any session still marked active is stamped-stopped first (re-summon / orphan guard).
-#[tauri::command]
-pub fn record_start(state: tauri::State<RecState>, title: Option<String>) -> Result<String, String> {
+// ── Transport-agnostic session fs ops (shared by the Tauri IPC commands AND the P2 HTTP
+//    collector in http_rec.rs, so there is ONE copy of the store logic) ─────────────────
+
+/// A sid is attacker-influenced over HTTP — only allow the rec-<alnum> shape (no separators,
+/// so no path traversal) before touching the filesystem with it.
+fn sid_ok(sid: &str) -> bool {
+    sid.len() > 4 && sid.starts_with("rec-") && sid[4..].bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
+/// Create a new session dir + seed empty events.jsonl + meta.json; return the sid.
+pub fn init_session(title: &str, surface: &str) -> Result<String, String> {
     let sid = format!("rec-{}", now_ns());
     let dir = recordings_dir().join(&sid);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -108,10 +115,61 @@ pub fn record_start(state: tauri::State<RecState>, title: Option<String>) -> Res
         sid: sid.clone(),
         start_ms: now_ms(),
         stop_ms: None,
-        surfaces: vec!["poof".into()],
-        title: title.unwrap_or_else(|| "未命名录制".into()),
+        surfaces: vec![surface.to_string()],
+        title: title.to_string(),
     };
     write_atomic_meta(&dir.join("meta.json"), &meta)?;
+    Ok(sid)
+}
+
+/// Lazily ensure a session dir + meta exists (crash-safety: an extension event that arrives
+/// without a prior /rec/start still lands instead of erroring).
+pub fn ensure_session(sid: &str, surface: &str) -> Result<(), String> {
+    if !sid_ok(sid) {
+        return Err("bad sid".into());
+    }
+    let dir = recordings_dir().join(sid);
+    if dir.join("meta.json").exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    if !dir.join("events.jsonl").exists() {
+        std::fs::write(dir.join("events.jsonl"), b"").map_err(|e| e.to_string())?;
+    }
+    let meta = Meta {
+        sid: sid.to_string(),
+        start_ms: now_ms(),
+        stop_ms: None,
+        surfaces: vec![surface.to_string()],
+        title: format!("{surface} 网页录制"),
+    };
+    write_atomic_meta(&dir.join("meta.json"), &meta)
+}
+
+/// Append a batch of schema-envelope events to a session's events.jsonl, verbatim
+/// (p.ev raw rrweb + the client-set seq are never rewritten).
+pub fn append_events(sid: &str, batch: &[serde_json::Value]) -> Result<(), String> {
+    if !sid_ok(sid) {
+        return Err("bad sid".into());
+    }
+    let path = recordings_dir().join(sid).join("events.jsonl");
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .map_err(|e| e.to_string())?;
+    let mut buf = String::new();
+    for ev in batch {
+        buf.push_str(&serde_json::to_string(ev).map_err(|e| e.to_string())?);
+        buf.push('\n');
+    }
+    f.write_all(buf.as_bytes()).map_err(|e| e.to_string())
+}
+
+/// Begin a session (poof IPC surface): create it + arm RecState. Any session still marked
+/// active is stamped-stopped first (re-summon / orphan guard).
+#[tauri::command]
+pub fn record_start(state: tauri::State<RecState>, title: Option<String>) -> Result<String, String> {
+    let sid = init_session(&title.unwrap_or_else(|| "未命名录制".into()), "poof")?;
     let mut g = state.sid.lock().map_err(|e| e.to_string())?;
     if let Some(old) = g.take() {
         stamp_stop(&old);
@@ -121,24 +179,13 @@ pub fn record_start(state: tauri::State<RecState>, title: Option<String>) -> Res
     Ok(sid)
 }
 
-/// Append a batch of schema-envelope events to the active session's JSONL.
-/// Holds the session lock across the append so concurrent flushes can't interleave
-/// half-lines. Envelopes are written verbatim (p.ev raw rrweb is never rewritten).
+/// Append to the active poof session. Holds the session lock across the append so concurrent
+/// flushes can't interleave half-lines.
 #[tauri::command]
 pub fn record_event(state: tauri::State<RecState>, batch: Vec<serde_json::Value>) -> Result<(), String> {
     let guard = state.sid.lock().map_err(|e| e.to_string())?;
     let sid = guard.as_ref().ok_or("no active recording session")?;
-    let path = recordings_dir().join(sid).join("events.jsonl");
-    let mut f = std::fs::OpenOptions::new()
-        .append(true)
-        .open(&path)
-        .map_err(|e| e.to_string())?;
-    let mut buf = String::new();
-    for ev in &batch {
-        buf.push_str(&serde_json::to_string(ev).map_err(|e| e.to_string())?);
-        buf.push('\n');
-    }
-    f.write_all(buf.as_bytes()).map_err(|e| e.to_string())?;
+    append_events(sid, &batch)?;
     state.seq.fetch_add(batch.len() as u64, Ordering::SeqCst);
     Ok(())
 }

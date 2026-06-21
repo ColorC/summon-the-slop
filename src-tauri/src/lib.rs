@@ -1,4 +1,5 @@
 // Poof — summoned overlay shell. Hold Ctrl + double-tap Alt summons a transparent panel.
+mod http_rec; // AI 会话录像 (P2): localhost HTTP collector for extensions
 mod pty;
 mod record_cmd; // AI 会话录像 (P1)
 mod search;
@@ -456,6 +457,8 @@ pub fn run() {
             let handle = app.handle().clone();
             // warm the file-search index: load persisted instantly, then refresh in bg
             std::thread::spawn(|| search::warm_start());
+            // P2: localhost HTTP collector for the 录像 extensions (own thread, blocking accept).
+            std::thread::spawn(|| http_rec::start_http_server());
             #[cfg(windows)]
             {
                 // Fullscreen overlay: cover the whole monitor (taskbar included).

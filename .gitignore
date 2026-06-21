@@ -20,6 +20,8 @@ src-tauri/gen
 vendor/
 # ...but DO track vendored runtime libs under public/ (rrweb for 录像/回放, served at app://)
 !public/vendor/
+# ...and the Chrome extension's bundled rrweb (P2 — must ship in the extension, no CDN)
+!chrome-extension/vendor/
 
 # Editor directories and files
 .vscode/*

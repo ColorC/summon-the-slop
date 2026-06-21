@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      body { font: 13px "Microsoft YaHei", sans-serif; width: 250px; padding: 12px; }
+      h3 { margin: 0 0 8px; }
+      label { display: block; margin: 6px 0 2px; color: #444; }
+      input { width: 100%; box-sizing: border-box; padding: 4px 6px; }
+      details { margin: 8px 0; }
+      summary { cursor: pointer; color: #06c; }
+      #toggle { width: 100%; padding: 8px; margin-top: 10px; cursor: pointer; font-size: 14px; }
+      #status { margin-top: 8px; color: #666; min-height: 16px; word-break: break-all; }
+    </style>
+  </head>
+  <body>
+    <h3>poof 录像</h3>
+    <label>标题(可选)</label>
+    <input id="title" placeholder="这段录的是什么" />
+    <details>
+      <summary>连接设置</summary>
+      <label>端口</label>
+      <input id="port" value="8732" />
+      <label>token(粘贴 %USERPROFILE%\.poof\rec_token 内容)</label>
+      <input id="token" placeholder="首次必填" />
+      <button id="save" style="margin-top:6px">保存</button>
+    </details>
+    <button id="toggle">开始录制</button>
+    <div id="status"></div>
+    <script src="src/popup.js"></script>
+  </body>
+</html>
