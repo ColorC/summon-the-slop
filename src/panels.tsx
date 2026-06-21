@@ -1,5 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { Rnd } from "react-rnd";
+import { useEffect, useRef, useState, type ReactNode, type PointerEvent as RPE } from "react";
 import { Pin, PinOff, X, PanelLeft, PanelRight } from "lucide-react";
 
 export type PanelKind = "chat" | "project" | "review" | "notes";
@@ -14,7 +13,9 @@ export const PANEL_TITLES: Record<PanelKind, string> = {
 // the panel stage sits between the top search bar and the bottom action bar
 const TOP = 84;
 const BOTTOM = 84;
-const SNAP = 28; // drag within this many px of an edge → dock to that sidebar
+const SNAP = 30; // drop within this many px of an edge → dock to that sidebar
+const MIN_W = 300;
+const MIN_H = 180;
 
 interface Geom {
   x: number;
@@ -32,24 +33,26 @@ function loadGeom(k: PanelKind): Geom | null {
     return null;
   }
 }
-
-function panelWidth(k: PanelKind): number {
+function stageSize() {
+  return { w: window.innerWidth, h: Math.max(240, window.innerHeight - TOP - BOTTOM) };
+}
+function panelWidth(k: PanelKind) {
   const W = window.innerWidth;
   return k === "chat" ? Math.min(660, Math.round(W * 0.42)) : Math.min(820, Math.round(W * 0.52));
 }
-
-/** docked to the left or right edge of the stage, full band height */
 function dockGeom(k: PanelKind, side: "left" | "right"): Geom {
-  const W = window.innerWidth;
-  const bandH = Math.max(240, window.innerHeight - TOP - BOTTOM);
+  const { w: W, h } = stageSize();
   const w = panelWidth(k);
-  const x = side === "left" ? 8 : Math.max(8, W - w - 12);
-  return { x, y: 0, width: w, height: bandH };
+  return { x: side === "left" ? 8 : Math.max(8, W - w - 12), y: 0, width: w, height: h };
 }
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+type Dir = "e" | "w" | "s" | "n" | "se" | "sw" | "ne" | "nw";
+const HANDLES: Dir[] = ["e", "w", "s", "n", "se", "sw", "ne", "nw"];
 
-/** A draggable + resizable panel that remembers its geometry per kind. Default docks
- *  right; drag the header to float it; dock-left / dock-right buttons snap to a sidebar;
- *  dragging near a screen edge auto-snaps to that sidebar. */
+/** Draggable + resizable panel — pure pointer-events (React 19 native). We do NOT use
+ *  react-rnd: its react-draggable dep calls ReactDOM.findDOMNode, which React 19 removed,
+ *  so drag/resize silently threw. Position is via left/top (no CSS transform → safe to
+ *  host coordinate-sensitive content). */
 export function PanelFrame({
   kind,
   pinned,
@@ -64,44 +67,75 @@ export function PanelFrame({
   children: ReactNode;
 }) {
   const [geom, setGeom] = useState<Geom>(() => loadGeom(kind) ?? dockGeom(kind, "right"));
+  const gref = useRef(geom);
+  gref.current = geom;
   useEffect(() => {
     localStorage.setItem(gkey(kind), JSON.stringify(geom));
   }, [kind, geom]);
 
-  function onDragStop(x: number, y: number) {
-    const W = window.innerWidth;
-    if (x <= SNAP) setGeom(dockGeom(kind, "left"));
-    else if (x + geom.width >= W - SNAP) setGeom(dockGeom(kind, "right"));
-    else setGeom((g) => ({ ...g, x, y }));
+  function startDrag(e: RPE) {
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest(".pf-panel-acts")) return; // buttons aren't a drag
+    e.preventDefault();
+    const sx = e.clientX;
+    const sy = e.clientY;
+    const g0 = { ...gref.current };
+    const st = stageSize();
+    const move = (ev: PointerEvent) => {
+      const nx = clamp(g0.x + ev.clientX - sx, 0, Math.max(0, st.w - g0.width));
+      const ny = clamp(g0.y + ev.clientY - sy, 0, Math.max(0, st.h - g0.height));
+      setGeom({ ...g0, x: nx, y: ny });
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      const g = gref.current;
+      if (g.x <= SNAP) setGeom(dockGeom(kind, "left"));
+      else if (g.x + g.width >= st.w - SNAP) setGeom(dockGeom(kind, "right"));
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  }
+
+  function startResize(e: RPE, dir: Dir) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const sx = e.clientX;
+    const sy = e.clientY;
+    const g0 = { ...gref.current };
+    const st = stageSize();
+    const move = (ev: PointerEvent) => {
+      const dx = ev.clientX - sx;
+      const dy = ev.clientY - sy;
+      let { x, y, width, height } = g0;
+      if (dir.includes("e")) width = clamp(g0.width + dx, MIN_W, st.w - g0.x);
+      if (dir.includes("s")) height = clamp(g0.height + dy, MIN_H, st.h - g0.y);
+      if (dir.includes("w")) {
+        width = clamp(g0.width - dx, MIN_W, g0.x + g0.width);
+        x = g0.x + g0.width - width;
+      }
+      if (dir.includes("n")) {
+        height = clamp(g0.height - dy, MIN_H, g0.y + g0.height);
+        y = g0.y + g0.height - height;
+      }
+      setGeom({ x, y, width, height });
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
   }
 
   return (
-    <Rnd
+    <div
       className="pf-panel"
-      bounds="parent"
-      size={{ width: geom.width, height: geom.height }}
-      position={{ x: geom.x, y: geom.y }}
-      minWidth={300}
-      minHeight={180}
-      dragHandleClassName="pf-panel-head"
-      cancel=".pf-panel-acts"
-      resizeHandleStyles={{
-        right: { width: "12px", right: "-3px", cursor: "ew-resize" },
-        left: { width: "12px", left: "-3px", cursor: "ew-resize" },
-        top: { height: "12px", top: "-3px", cursor: "ns-resize" },
-        bottom: { height: "12px", bottom: "-3px", cursor: "ns-resize" },
-        bottomRight: { width: "18px", height: "18px", right: "-4px", bottom: "-4px" },
-        bottomLeft: { width: "18px", height: "18px", left: "-4px", bottom: "-4px" },
-        topRight: { width: "18px", height: "18px", right: "-4px", top: "-4px" },
-        topLeft: { width: "18px", height: "18px", left: "-4px", top: "-4px" },
-      }}
-      onDragStop={(_, d) => onDragStop(d.x, d.y)}
-      onResizeStop={(_, __, ref, ___, pos) =>
-        setGeom({ x: pos.x, y: pos.y, width: ref.offsetWidth, height: ref.offsetHeight })
-      }
+      style={{ left: geom.x, top: geom.y, width: geom.width, height: geom.height }}
     >
       <div className="pf-panel-inner">
-        <div className="pf-panel-head">
+        <div className="pf-panel-head" onPointerDown={startDrag}>
           <span className="pf-panel-title">{PANEL_TITLES[kind]}</span>
           <div className="pf-panel-acts">
             <button onClick={() => setGeom(dockGeom(kind, "left"))} title="停靠到左侧栏">
@@ -120,6 +154,13 @@ export function PanelFrame({
         </div>
         <div className="pf-panel-body">{children}</div>
       </div>
-    </Rnd>
+      {HANDLES.map((d) => (
+        <div
+          key={d}
+          className={"pf-rz pf-rz-" + d}
+          onPointerDown={(e) => startResize(e, d)}
+        />
+      ))}
+    </div>
   );
 }

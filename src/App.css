@@ -685,6 +685,7 @@ body,
   pointer-events: none; /* empty band clicks fall through to the backdrop */
 }
 .pf-panel {
+  position: absolute;
   pointer-events: auto;
   background: rgba(16, 17, 22, 0.985);
   border: 1px solid rgba(255, 255, 255, 0.13);
@@ -692,8 +693,6 @@ body,
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.62);
   box-sizing: border-box;
 }
-/* inner wrapper holds the flex column + clipping, so react-rnd keeps its own
-   absolute box model and its resize handles aren't clipped (panel-regression fix) */
 .pf-panel-inner {
   width: 100%;
   height: 100%;
@@ -701,6 +700,67 @@ body,
   flex-direction: column;
   overflow: hidden;
   border-radius: 14px;
+}
+/* custom resize handles (pointer-events drag) */
+.pf-rz {
+  position: absolute;
+  z-index: 3;
+}
+.pf-rz-e {
+  top: 0;
+  right: -3px;
+  width: 9px;
+  height: 100%;
+  cursor: ew-resize;
+}
+.pf-rz-w {
+  top: 0;
+  left: -3px;
+  width: 9px;
+  height: 100%;
+  cursor: ew-resize;
+}
+.pf-rz-s {
+  left: 0;
+  bottom: -3px;
+  height: 9px;
+  width: 100%;
+  cursor: ns-resize;
+}
+.pf-rz-n {
+  left: 0;
+  top: -3px;
+  height: 9px;
+  width: 100%;
+  cursor: ns-resize;
+}
+.pf-rz-se {
+  right: -4px;
+  bottom: -4px;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+}
+.pf-rz-sw {
+  left: -4px;
+  bottom: -4px;
+  width: 16px;
+  height: 16px;
+  cursor: nesw-resize;
+}
+.pf-rz-ne {
+  right: -4px;
+  top: -4px;
+  width: 16px;
+  height: 16px;
+  cursor: nesw-resize;
+}
+.pf-rz-nw {
+  left: -4px;
+  top: -4px;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
 }
 .pf-panel-head {
   display: flex;
