@@ -96,6 +96,16 @@ function handleNoteOp(cmd: any): any {
     if (op === "refresh") {
       return { ok: true, op };
     }
+    if (op === "new") {
+      const id = "note-" + Math.random().toString(36).slice(2, 9);
+      const doc: any = c.createDoc({ id });
+      doc.load(() => {
+        const root = doc.addBlock("affine:page", { title: new Text(String(cmd.title || "新笔记")) });
+        const noteBlk = doc.addBlock("affine:note", {}, root);
+        doc.addBlock("affine:paragraph", { text: new Text(String(cmd.text || "")) }, noteBlk);
+      });
+      return { ok: true, created: id, link: `poof-note://${id}` };
+    }
 
     const note = cmd.note;
     const doc = note ? c.getDoc(note) : null;
