@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <title>poof · 录制</title>
+    <link rel="stylesheet" href="/src/record/record.css" />
+    <script src="/vendor/rrweb/1.1.3/rrweb-all.min.js"></script>
+  </head>
+  <body>
+    <div id="hud">
+      <span id="dot" class="dot"></span>
+      <span id="status">准备录制…</span>
+      <button id="stop" disabled>停止并保存</button>
+      <button id="close" title="关闭 (Esc)">✕</button>
+    </div>
+    <main>
+      <h1>录制测试面 (P1)</h1>
+      <p>
+        这是 poof 自己的页面。rrweb 正在录制你在这页上的一切(点击 / 输入 / 滚动 / DOM 变化)。
+        随便操作,然后点右上「停止并保存」,再去「回放」看一遍。
+      </p>
+      <section>
+        <button id="add" class="act">添加一行</button>
+        <button id="clear" class="act">清空</button>
+        <ul id="list"></ul>
+      </section>
+      <section>
+        <label>普通输入(明文记录):<input id="t1" placeholder="输入点什么" /></label>
+        <label>敏感输入(name 含 secret → 只记字数):<input id="t2" name="secret_token" placeholder="不会明文" /></label>
+        <label>密码(恒遮罩):<input id="t3" type="password" placeholder="密码" /></label>
+      </section>
+      <section>
+        <div id="scroller"><div class="inner">滚动我 ↓↓↓ 滚动也会被记录</div></div>
+      </section>
+    </main>
+    <script type="module" src="/src/record/record.ts"></script>
+  </body>
+</html>

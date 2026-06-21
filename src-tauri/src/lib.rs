@@ -1,5 +1,6 @@
 // Poof — summoned overlay shell. Hold Ctrl + double-tap Alt summons a transparent panel.
 mod pty;
+mod record_cmd; // AI 会话录像 (P1)
 mod search;
 mod snapshot;
 // live-inspector 洞察 capability (ported from waiela)
@@ -353,6 +354,54 @@ fn show_snap() -> Result<(), String> {
     Err("windows only".into())
 }
 
+/// Enter 录制 (AI session recording): show + focus the record window (a poof-owned page
+/// that records itself via rrweb), then hide the overlay. Focus FIRST (while poof owns the
+/// foreground) then hide main — same ordering as summon_snap. The "record-summon" event
+/// tells record.ts to begin a fresh session.
+#[cfg(windows)]
+fn summon_record(app: &tauri::AppHandle) {
+    use tauri::{Emitter, Manager};
+    if let Some(w) = app.get_webview_window("record") {
+        let _ = w.show();
+        let _ = w.set_focus();
+        if let Some(main) = app.get_webview_window("main") {
+            let _ = main.hide();
+        }
+        let _ = w.emit("record-summon", ());
+    }
+}
+#[cfg(windows)]
+#[tauri::command]
+fn show_record(app: tauri::AppHandle) -> Result<(), String> {
+    summon_record(&app);
+    Ok(())
+}
+/// Open 回放 (replay) window; "replay-summon" tells replay.ts to refresh the session list.
+#[cfg(windows)]
+#[tauri::command]
+fn show_replay(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::{Emitter, Manager};
+    if let Some(w) = app.get_webview_window("replay") {
+        let _ = w.show();
+        let _ = w.set_focus();
+        if let Some(main) = app.get_webview_window("main") {
+            let _ = main.hide();
+        }
+        let _ = w.emit("replay-summon", ());
+    }
+    Ok(())
+}
+#[cfg(not(windows))]
+#[tauri::command]
+fn show_record() -> Result<(), String> {
+    Err("windows only".into())
+}
+#[cfg(not(windows))]
+#[tauri::command]
+fn show_replay() -> Result<(), String> {
+    Err("windows only".into())
+}
+
 // pending AI chats (provider, optional query) handed to the terminal window
 static CHAT_INTENTS: std::sync::Mutex<Vec<(String, Option<String>)>> =
     std::sync::Mutex::new(Vec::new());
@@ -402,6 +451,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_opener::init())
         .manage(pty::PtyState::default())
+        .manage(record_cmd::RecState::default())
         .setup(|app| {
             let handle = app.handle().clone();
             // warm the file-search index: load persisted instantly, then refresh in bg
@@ -414,6 +464,25 @@ pub fn run() {
                         let sz = mon.size();
                         let _ = w.set_size(tauri::PhysicalSize::new(sz.width, sz.height));
                         let _ = w.set_position(tauri::PhysicalPosition::new(0, 0));
+                    }
+                }
+                // record + replay: a close (titlebar X / Alt+F4) HIDES instead of destroying,
+                // so they stay re-summonable; closing the record window also stops + saves the
+                // active session so it's never orphaned.
+                for label in ["record", "replay"] {
+                    if let Some(w) = app.get_webview_window(label) {
+                        let wc = w.clone();
+                        let h = app.handle().clone();
+                        let is_record = label == "record";
+                        w.on_window_event(move |e| {
+                            if let tauri::WindowEvent::CloseRequested { api, .. } = e {
+                                api.prevent_close();
+                                if is_record {
+                                    record_cmd::stop_active(h.state::<record_cmd::RecState>().inner());
+                                }
+                                let _ = wc.hide();
+                            }
+                        });
                     }
                 }
                 let (tx, rx) = channel::<hook::Sig>();
@@ -477,7 +546,14 @@ pub fn run() {
             snap_cmd::delete_shot,
             snap_cmd::reveal_shot,
             snap_cmd::pin_image,
-            snap_cmd::ocr_region
+            snap_cmd::ocr_region,
+            show_record,
+            show_replay,
+            record_cmd::record_start,
+            record_cmd::record_event,
+            record_cmd::record_stop,
+            record_cmd::list_sessions,
+            record_cmd::read_session
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

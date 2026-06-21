@@ -1,0 +1,10 @@
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; font: 14px "Microsoft YaHei", system-ui, sans-serif; background: #1a1d24; color: #e7e9ee; }
+#bar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: #11151c; border-bottom: 1px solid #2a2f3a; }
+#bar select { flex: 1; min-width: 200px; background: #20242c; color: #e7e9ee; border: 1px solid #333a45; border-radius: 6px; padding: 5px 8px; font: inherit; }
+#bar button { background: #2a2f3a; color: #fff; border: none; border-radius: 6px; padding: 5px 12px; cursor: pointer; }
+#bar button:hover { background: #39414f; }
+#bar #info { color: #9aa0ad; font-size: 12px; white-space: nowrap; }
+#player { padding: 16px; display: flex; justify-content: center; }
+/* rrweb replayer renders an iframe inside .replayer-wrapper */
+#player .replayer-wrapper { background: #fff; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5); }

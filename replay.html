@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <title>poof · 回放</title>
+    <link rel="stylesheet" href="/vendor/rrweb/1.1.3/rrweb-all.min.css" />
+    <link rel="stylesheet" href="/src/replay/replay.css" />
+    <script src="/vendor/rrweb/1.1.3/rrweb-all.min.js"></script>
+  </head>
+  <body>
+    <header id="bar">
+      <select id="sessions"></select>
+      <button id="play">播放</button>
+      <button id="pause">暂停</button>
+      <button id="refresh">刷新</button>
+      <span id="info"></span>
+      <button id="close" title="关闭 (Esc)" style="margin-left:auto">✕</button>
+    </header>
+    <div id="player"></div>
+    <script type="module" src="/src/replay/replay.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,24 @@
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px "Microsoft YaHei", system-ui, sans-serif; color: #1c1c1e; background: #f6f7f9; }
+#hud {
+  position: sticky; top: 0; z-index: 10;
+  display: flex; align-items: center; gap: 10px;
+  background: #11151c; color: #e7e9ee; padding: 8px 14px;
+}
+#hud .dot { width: 10px; height: 10px; border-radius: 50%; background: #555; flex-shrink: 0; }
+#hud .dot.on { background: #ff3b30; box-shadow: 0 0 8px #ff3b30; animation: pulse 1.2s infinite; }
+@keyframes pulse { 50% { opacity: 0.35; } }
+#hud #status { flex: 1; font-size: 13px; }
+#hud button { background: #2a2f3a; color: #fff; border: none; border-radius: 6px; padding: 6px 14px; cursor: pointer; }
+#hud button:hover { background: #39414f; }
+#hud button:disabled { opacity: 0.5; cursor: default; }
+main { max-width: 720px; margin: 0 auto; padding: 20px; }
+h1 { font-size: 20px; }
+section { background: #fff; border: 1px solid #e3e6ea; border-radius: 10px; padding: 14px; margin: 14px 0; }
+button.act { background: #0a84ff; color: #fff; border: none; border-radius: 6px; padding: 6px 12px; cursor: pointer; margin-right: 8px; }
+button.act:hover { background: #0a72db; }
+input { font: inherit; padding: 5px 8px; border: 1px solid #ccd1d9; border-radius: 6px; margin: 4px 0; min-width: 260px; }
+label { display: block; margin: 8px 0; }
+#list { margin: 8px 0 0; padding-left: 20px; }
+#scroller { height: 130px; overflow: auto; border: 1px solid #ccd1d9; border-radius: 8px; }
+#scroller .inner { height: 700px; background: linear-gradient(#eef, #fee); padding: 8px; }

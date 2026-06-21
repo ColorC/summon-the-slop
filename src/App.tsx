@@ -9,6 +9,8 @@ import {
   SquareTerminal,
   Camera,
   ScanEye,
+  Video,
+  Film,
   Bell,
   Pin,
   PinOff,
@@ -88,6 +90,18 @@ export default function App() {
   // 截图：hide poof, summon the transparent snap window (freeze + annotate + copy/save/pin/OCR).
   const startSnap = useCallback(() => {
     invoke("show_snap").catch(() => {});
+    hide();
+  }, [hide]);
+
+  // 录制：hide poof, open the record window (rrweb session recording → JSONL for AI).
+  const startRecord = useCallback(() => {
+    invoke("show_record").catch(() => {});
+    hide();
+  }, [hide]);
+
+  // 回放：open the replay window to watch a recorded session.
+  const startReplay = useCallback(() => {
+    invoke("show_replay").catch(() => {});
     hide();
   }, [hide]);
 
@@ -180,6 +194,12 @@ export default function App() {
           </button>
           <button className="pf-btn" onClick={startInspect} title="圈选 / 洞察（系统级 · 指哪看哪 · 点击抓取元素 → 带信息的截图给 AI · Esc 退出）">
             <ScanEye size={17} />
+          </button>
+          <button className="pf-btn" onClick={startRecord} title="录制（rrweb 会话录像 → 给 AI 看的语义事件流，非视频）">
+            <Video size={17} />
+          </button>
+          <button className="pf-btn" onClick={startReplay} title="回放（看录制的会话）">
+            <Film size={17} />
           </button>
           <span className="pf-sep" />
           <button

@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "record",
+  "description": "Capability for the 录制 (record) + 回放 (replay) surfaces: listen for summon events (core:event), invoke the record/list/read commands (app commands, no perm), and be shown/hidden/focused/closed.",
+  "windows": ["record", "replay"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:window:allow-close"
+  ]
+}

@@ -40,6 +40,26 @@
         "visible": false,
         "resizable": false,
         "shadow": false
+      },
+      {
+        "label": "record",
+        "url": "record.html",
+        "title": "poof · 录制",
+        "width": 900,
+        "height": 720,
+        "center": true,
+        "visible": false,
+        "resizable": true
+      },
+      {
+        "label": "replay",
+        "url": "replay.html",
+        "title": "poof · 回放",
+        "width": 1120,
+        "height": 800,
+        "center": true,
+        "visible": false,
+        "resizable": true
       }
     ],
     "security": {
