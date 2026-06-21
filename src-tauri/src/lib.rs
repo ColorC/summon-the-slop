@@ -404,6 +404,8 @@ pub fn run() {
         .manage(pty::PtyState::default())
         .setup(|app| {
             let handle = app.handle().clone();
+            // warm the file-search index: load persisted instantly, then refresh in bg
+            std::thread::spawn(|| search::warm_start());
             #[cfg(windows)]
             {
                 // Fullscreen overlay: cover the whole monitor (taskbar included).

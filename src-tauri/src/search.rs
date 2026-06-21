@@ -7,6 +7,7 @@ use nucleo_matcher::{Config, Matcher, Utf32Str};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 #[derive(Serialize, Clone)]
@@ -19,6 +20,7 @@ pub struct SearchHit {
 
 // (kind, name, path)
 static INDEX: Mutex<Option<Vec<(String, String, String)>>> = Mutex::new(None);
+static BUILDING: AtomicBool = AtomicBool::new(false);
 
 fn user_roots() -> Vec<PathBuf> {
     let mut v = Vec::new();
@@ -86,28 +88,74 @@ fn app_roots() -> Vec<PathBuf> {
     v.into_iter().filter(|p| p.exists()).collect()
 }
 
-// (name, path, is_dir)
-fn collect(roots: &[PathBuf], max_depth: usize, cap: usize) -> Vec<(String, String, bool)> {
+// dirs we never descend into — pruning these keeps the index small + COMPLETE.
+// (without this, node_modules alone exhausts the cap before other drives are reached,
+// which is why deep folders / a second drive went un-indexed.)
+fn is_noise(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    matches!(
+        n.as_str(),
+        "node_modules"
+            | ".git"
+            | ".svn"
+            | ".hg"
+            | ".jj"
+            | "target"
+            | "dist"
+            | "build"
+            | "out"
+            | "__pycache__"
+            | ".pytest_cache"
+            | ".mypy_cache"
+            | ".next"
+            | ".nuxt"
+            | ".venv"
+            | "venv"
+            | ".cache"
+            | ".turbo"
+            | ".gradle"
+            | ".terraform"
+            | ".pnpm-store"
+            | "pods"
+            | ".idea"
+            | ".vs"
+            | "bin"
+            | "obj"
+            | "$recycle.bin"
+            | "system volume information"
+    )
+}
+
+// (name, path, is_dir) — per-root cap (not shared) + the root folder itself is indexed.
+fn collect(roots: &[PathBuf], max_depth: usize, per_root_cap: usize) -> Vec<(String, String, bool)> {
     let mut out = Vec::new();
     for root in roots {
+        // index the root folder itself, so searching its name/path matches it
+        if let Some(name) = root.file_name().and_then(|n| n.to_str()) {
+            out.push((name.to_string(), root.to_string_lossy().to_string(), true));
+        }
+        let mut count = 0usize;
         let mut wb = WalkBuilder::new(root);
         wb.max_depth(Some(max_depth))
             .hidden(false)
             .git_ignore(false)
             .git_global(false)
             .git_exclude(false)
-            .ignore(false);
+            .ignore(false)
+            .filter_entry(|e| e.file_name().to_str().map(|n| !is_noise(n)).unwrap_or(true));
         for dent in wb.build().flatten() {
-            if out.len() >= cap {
+            if count >= per_root_cap {
                 break;
             }
             let p = dent.path();
             if p == root.as_path() {
                 continue;
             }
-            let is_dir = p.is_dir();
+            // file_type() is cached by the walker — avoids a stat() per entry
+            let is_dir = dent.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
             if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
                 out.push((name.to_string(), p.to_string_lossy().to_string(), is_dir));
+                count += 1;
             }
         }
     }
@@ -117,7 +165,7 @@ fn collect(roots: &[PathBuf], max_depth: usize, cap: usize) -> Vec<(String, Stri
 fn build_index() -> Vec<(String, String, String)> {
     let mut idx = Vec::new();
     // apps = Start Menu .lnk shortcuts
-    for (name, path, is_dir) in collect(&app_roots(), 5, 6000) {
+    for (name, path, is_dir) in collect(&app_roots(), 5, 8000) {
         let lower = name.to_lowercase();
         if is_dir || !lower.ends_with(".lnk") {
             continue;
@@ -125,11 +173,18 @@ fn build_index() -> Vec<(String, String, String)> {
         let display = name[..name.len() - 4].to_string();
         idx.push(("app".to_string(), display, path));
     }
-    // user roots: folders + files (incl. executables)
-    for (name, path, is_dir) in collect(&user_roots(), 6, 50000) {
+    // user roots: deep + generous PER-ROOT cap (noise pruned, so this is plenty) so
+    // every root is fully indexed instead of one big root starving the others.
+    for (name, path, is_dir) in collect(&user_roots(), 14, 150_000) {
+        let lower = name.to_lowercase();
+        // .bat/.cmd/.ps1 are launch-intent like .exe — rank them above generic deep files
         let kind = if is_dir {
             "folder"
-        } else if name.to_lowercase().ends_with(".exe") {
+        } else if lower.ends_with(".exe")
+            || lower.ends_with(".bat")
+            || lower.ends_with(".cmd")
+            || lower.ends_with(".ps1")
+        {
             "exe"
         } else {
             "file"
@@ -139,16 +194,86 @@ fn build_index() -> Vec<(String, String, String)> {
     idx
 }
 
+// ---- persisted index (instant warm start) ----
+// %LOCALAPPDATA%\poof\index.tsv (NOT %TEMP%, which gets cleared).
+fn index_dir() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("poof")
+}
+fn index_file() -> PathBuf {
+    index_dir().join("index.tsv")
+}
+fn load_persisted() -> Option<Vec<(String, String, String)>> {
+    let s = std::fs::read_to_string(index_file()).ok()?;
+    let mut v = Vec::new();
+    for line in s.lines() {
+        let mut it = line.splitn(3, '\t');
+        if let (Some(k), Some(n), Some(p)) = (it.next(), it.next(), it.next()) {
+            v.push((k.to_string(), n.to_string(), p.to_string()));
+        }
+    }
+    if v.is_empty() {
+        None
+    } else {
+        Some(v)
+    }
+}
+fn persist(idx: &[(String, String, String)]) {
+    let dir = index_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let mut out = String::with_capacity(idx.len() * 64);
+    for (k, n, p) in idx {
+        out.push_str(k);
+        out.push('\t');
+        out.push_str(n);
+        out.push('\t');
+        out.push_str(p);
+        out.push('\n');
+    }
+    let tmp = dir.join("index.tsv.tmp");
+    if std::fs::write(&tmp, out).is_ok() {
+        let _ = std::fs::rename(&tmp, index_file()); // atomic on NTFS
+    }
+}
+
+// full fresh walk → persist → swap in. The query-time refresh core.
+pub fn warm_index() {
+    let idx = build_index();
+    persist(&idx);
+    *INDEX.lock().unwrap() = Some(idx);
+}
+
+// startup: load the persisted index instantly (search works on the 1st keystroke),
+// then do a full fresh walk in the background and swap it in.
+pub fn warm_start() {
+    if INDEX.lock().unwrap().is_none() {
+        if let Some(idx) = load_persisted() {
+            *INDEX.lock().unwrap() = Some(idx);
+        }
+    }
+    warm_index();
+}
+
 #[tauri::command]
 pub fn search(query: String, limit: usize) -> Vec<SearchHit> {
     let q = query.trim();
     if q.is_empty() {
         return Vec::new();
     }
-    let mut guard = INDEX.lock().unwrap();
-    if guard.is_none() {
-        *guard = Some(build_index());
+    // build in the background on first use so the UI never blocks; until the index is
+    // ready, return nothing (the next keystroke, ~1-2s later, has full results).
+    if INDEX.lock().unwrap().is_none() {
+        if !BUILDING.swap(true, Ordering::SeqCst) {
+            std::thread::spawn(|| {
+                warm_index();
+                BUILDING.store(false, Ordering::SeqCst);
+            });
+        }
+        return Vec::new();
     }
+    let guard = INDEX.lock().unwrap();
     let index = guard.as_ref().unwrap();
 
     let mut matcher = Matcher::new(Config::DEFAULT);
