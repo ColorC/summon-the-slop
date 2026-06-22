@@ -6,7 +6,8 @@ use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use rayon::prelude::*;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -41,27 +42,46 @@ fn dedup_existing(v: Vec<PathBuf>) -> Vec<PathBuf> {
         .collect()
 }
 
-// Roots poof indexes + watches. NOTE on whole-drive indexing: it was tried and reverted.
-// A plain directory walk of every fixed drive hit ~3.2M files (the D:/P4/main Perforce depot
-// alone) → 463MB index → froze the machine (cold walk storm under Kaspersky/EDR + scoring 3.2M
-// entries per keystroke). Everything/Listary only do whole-disk because they read the NTFS MFT/
-// USN journal, which needs admin — poof is deliberately non-elevated. So a *walk* is only viable
-// over bounded roots: the dirs you actually work in + anything added via %TEMP%/poof-roots.txt.
-// (True whole-disk = the MFT path, a separate one-time-elevation feature.)
-fn user_roots() -> Vec<PathBuf> {
+// All FIXED local drives (C:, D:, E:, …) — whole-disk scope, like Everything/Listary. We do
+// NOT avoid any user directory. (Removable/USB/network drives skipped: walking them is slow.)
+#[cfg(windows)]
+fn fixed_drive_roots() -> Vec<PathBuf> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
+    const DRIVE_FIXED: u32 = 3;
     let mut v = Vec::new();
-    if let Some(p) = std::env::var_os("USERPROFILE") {
-        let base = PathBuf::from(p);
-        for sub in ["Desktop", "Documents", "Downloads"] {
-            v.push(base.join(sub));
+    let mask = unsafe { GetLogicalDrives() };
+    for i in 0..26u32 {
+        if mask & (1 << i) == 0 {
+            continue;
+        }
+        let letter = (b'A' + i as u8) as char;
+        let wide: Vec<u16> = format!("{}:\\", letter)
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        if unsafe { GetDriveTypeW(PCWSTR(wide.as_ptr())) } == DRIVE_FIXED {
+            v.push(PathBuf::from(format!("{}:/", letter)));
         }
     }
-    // primary work roots. D:/P4/main is a huge Perforce depot, so index the specific work
-    // sub-dirs, NOT the parent: AIWorkSpace (agent) + Excel (igame 配表 xlsm 真源, 如 LineQuest.xlsm).
-    for p in ["E:/WindowsWorkspace", "D:/P4/main/AIWorkSpace", "D:/P4/main/Excel"] {
-        v.push(PathBuf::from(p));
+    v
+}
+#[cfg(not(windows))]
+fn fixed_drive_roots() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+// INDEX scope = every fixed drive + user additions. Whole-disk; no hand-picked allow-list.
+// This froze before NOT because the scope was too big, but because (1) the cold walk used all
+// cores → EDR storm, and (2) search materialized every match before sorting → a 1-char query
+// built millions of results. Both are fixed below (throttled walk + bounded top-K search).
+fn index_roots() -> Vec<PathBuf> {
+    let mut v = fixed_drive_roots();
+    if v.is_empty() {
+        if let Some(p) = std::env::var_os("USERPROFILE") {
+            v.push(PathBuf::from(p)); // fallback if drive enumeration fails
+        }
     }
-    // user-extendable roots: %TEMP%/poof-roots.txt, one absolute path per line
     if let Ok(s) = std::fs::read_to_string(std::env::temp_dir().join("poof-roots.txt")) {
         for line in s.lines() {
             let t = line.trim();
@@ -69,6 +89,23 @@ fn user_roots() -> Vec<PathBuf> {
                 v.push(PathBuf::from(t));
             }
         }
+    }
+    dedup_existing(v)
+}
+
+// WATCH scope = work dirs only. Recursively watching whole drives (ReadDirectoryChangesW)
+// would be a CPU/IO storm — Everything/Listary stay live via the NTFS USN journal (needs admin,
+// poof is non-elevated). So we live-watch where you work; the rest refreshes via periodic re-walk.
+fn watch_roots() -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    if let Some(p) = std::env::var_os("USERPROFILE") {
+        let base = PathBuf::from(p);
+        for sub in ["Desktop", "Documents", "Downloads"] {
+            v.push(base.join(sub));
+        }
+    }
+    for p in ["E:/WindowsWorkspace", "D:/P4/main/AIWorkSpace", "D:/P4/main/Excel"] {
+        v.push(PathBuf::from(p));
     }
     dedup_existing(v)
 }
@@ -166,16 +203,27 @@ fn is_noise(name: &str) -> bool {
             | "obj"
             | "$recycle.bin"
             | "system volume information"
+            // OS component stores — pure noise that floods a whole-drive C: walk
+            | "winsxs"
+            | "driverstore"
+            | "servicing"
+            | "softwaredistribution"
+            | "installer"
+            | "config.msi"
+            | "$windows.~bt"
+            | "$windows.~ws"
     )
 }
 
-// (name, path, is_dir) — PARALLEL walk (all cores) so the cold build is ~seconds, not
-// tens of seconds. Per-root cap (not shared) + the root folder itself is indexed.
+// (name, path, is_dir) — PARALLEL walk, but THROTTLED to a few threads. Whole-disk scope means
+// the cold walk touches millions of files, each one scanned by Kaspersky/EDR; using all cores
+// turned that into an IO storm that froze the machine. A small thread count keeps the box
+// responsive (slower cold build, but it's a one-time background job, then persisted + watched).
 fn collect(roots: &[PathBuf], max_depth: usize, per_root_cap: usize) -> Vec<(String, String, bool)> {
     let out: Mutex<Vec<(String, String, bool)>> = Mutex::new(Vec::new());
     let threads = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4);
+        .map(|n| n.get().saturating_sub(1).clamp(2, 4))
+        .unwrap_or(3);
     for root in roots {
         // index the root folder itself, so searching its name/path matches it
         if let Some(name) = root.file_name().and_then(|n| n.to_str()) {
@@ -234,9 +282,8 @@ fn build_index() -> Vec<Entry> {
         let py = pinyin_of(&display);
         idx.push(("app".to_string(), display, path, py));
     }
-    // work roots: deep + generous PER-ROOT cap (noise pruned, so this is plenty) so
-    // every root is fully indexed instead of one big root starving the others.
-    for (name, path, is_dir) in collect(&user_roots(), 14, 150_000) {
+    // whole drives: deep walk, high PER-DRIVE cap (runaway safety valve, NOT an allow-list).
+    for (name, path, is_dir) in collect(&index_roots(), 18, 2_000_000) {
         let lower = name.to_lowercase();
         // .bat/.cmd/.ps1 are launch-intent like .exe — rank them above generic deep files
         let kind = if is_dir {
@@ -320,6 +367,20 @@ pub fn warm_start() {
     }
     warm_index();
     start_watchers();
+    start_periodic_refresh();
+}
+
+// Whole drives can't be cheaply watched live (no admin → no USN journal), so areas outside the
+// live-watched work dirs are refreshed by a throttled full re-walk every 2h (background, few
+// threads, persisted). Guarded by BUILDING so it never overlaps a manual reindex.
+pub fn start_periodic_refresh() {
+    std::thread::spawn(|| loop {
+        std::thread::sleep(std::time::Duration::from_secs(7200));
+        if !BUILDING.swap(true, Ordering::SeqCst) {
+            warm_index();
+            BUILDING.store(false, Ordering::SeqCst);
+        }
+    });
 }
 
 fn kind_for(name: &str, is_dir: bool) -> &'static str {
@@ -401,7 +462,7 @@ pub fn start_watchers() {
                 return;
             }
         };
-        for root in user_roots() {
+        for root in watch_roots() {
             let _ = watcher.watch(&root, RecursiveMode::Recursive);
         }
         let mut last_persist = Instant::now();
@@ -431,6 +492,21 @@ pub fn start_watchers() {
     });
 }
 
+// keep a bounded top-K of (score, idx) in a min-heap: push if under capacity, else replace the
+// current minimum when a higher score arrives. O(log k) per candidate, O(k) memory — no matter
+// how many entries match. (min-heap = max-heap of Reverse, so peek() is the smallest score.)
+#[inline]
+fn push_topk(heap: &mut BinaryHeap<Reverse<(u32, usize)>>, k: usize, score: u32, idx: usize) {
+    if heap.len() < k {
+        heap.push(Reverse((score, idx)));
+    } else if let Some(&Reverse((min_score, _))) = heap.peek() {
+        if score > min_score {
+            heap.pop();
+            heap.push(Reverse((score, idx)));
+        }
+    }
+}
+
 #[tauri::command]
 pub fn search(query: String, limit: usize) -> Vec<SearchHit> {
     let q = query.trim();
@@ -457,18 +533,23 @@ pub fn search(query: String, limit: usize) -> Vec<SearchHit> {
     // a plain single word matches against the name only — far fewer scores → fast.
     let score_path = q.contains('/') || q.contains('\\') || q.contains(' ');
 
-    // parallel scoring across the (200k+) index with a per-thread Matcher + scratch buf
-    let mut hits: Vec<SearchHit> = index
+    // Bounded TOP-K parallel scoring. The index can be millions of entries and a short query
+    // (e.g. "e") can match most of them — so we must NEVER materialize all matches (that's what
+    // froze it before). Each thread keeps only the best `k` (score, idx) in a min-heap; strings
+    // are cloned into SearchHit ONLY for the ~k survivors at the end. O(k) memory regardless.
+    let k = limit.max(1);
+    let final_heap = index
         .par_iter()
+        .enumerate()
         .fold(
             || {
                 (
                     Matcher::new(Config::DEFAULT),
                     Vec::<char>::new(),
-                    Vec::<SearchHit>::new(),
+                    BinaryHeap::<Reverse<(u32, usize)>>::new(),
                 )
             },
-            |(mut matcher, mut buf, mut acc), (kind, name, path, py)| {
+            |(mut matcher, mut buf, mut heap), (idx, (kind, name, path, py))| {
                 buf.clear();
                 let sn = pat.score(Utf32Str::new(name, &mut buf), &mut matcher);
                 // pinyin match (typing "ceshi"/"cs" finds 测试…) counts as a name match
@@ -495,7 +576,7 @@ pub fn search(query: String, limit: usize) -> Vec<SearchHit> {
                     (Some(n), Some(p)) => n.max(p / 2),
                     (Some(n), None) => n,
                     (None, Some(p)) => p / 3,
-                    (None, None) => return (matcher, buf, acc),
+                    (None, None) => return (matcher, buf, heap),
                 };
                 let kind_bonus = match kind.as_str() {
                     "app" => 24,
@@ -504,23 +585,31 @@ pub fn search(query: String, limit: usize) -> Vec<SearchHit> {
                     _ => 0,
                 };
                 let freq_bonus = usage.get(path).map(|c| (*c * 10).min(150)).unwrap_or(0);
-                acc.push(SearchHit {
-                    kind: kind.clone(),
-                    name: name.clone(),
-                    path: path.clone(),
-                    score: base + kind_bonus + freq_bonus,
-                });
-                (matcher, buf, acc)
+                push_topk(&mut heap, k, base + kind_bonus + freq_bonus, idx);
+                (matcher, buf, heap)
             },
         )
-        .map(|(_, _, acc)| acc)
-        .reduce(Vec::new, |mut a, mut b| {
-            a.append(&mut b);
+        .map(|(_, _, heap)| heap)
+        .reduce(BinaryHeap::new, |mut a, b| {
+            for Reverse((score, idx)) in b {
+                push_topk(&mut a, k, score, idx);
+            }
             a
         });
-    hits.sort_by(|a, b| b.score.cmp(&a.score));
-    hits.truncate(limit);
-    hits
+    // clone strings only for the ~k survivors, then sort descending by score
+    let mut top: Vec<(u32, usize)> = final_heap.into_iter().map(|Reverse(x)| x).collect();
+    top.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    top.into_iter()
+        .map(|(score, idx)| {
+            let (kind, name, path, _) = &index[idx];
+            SearchHit {
+                kind: kind.clone(),
+                name: name.clone(),
+                path: path.clone(),
+                score,
+            }
+        })
+        .collect()
 }
 
 #[tauri::command]
