@@ -559,13 +559,6 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
         <button className="notes-bar-btn" title="新建笔记" onClick={createNote}>
           <Plus size={15} />
         </button>
-        <button
-          className="notes-bar-btn"
-          title={mode === "page" ? "回到画布" : "展开写作（把这张文档铺成全幅写作）"}
-          onClick={() => setMode((m) => (m === "page" ? "edgeless" : "page"))}
-        >
-          {mode === "page" ? <LayoutGrid size={15} /> : <Maximize2 size={15} />}
-        </button>
         <span className="notes-bar-title">{activeTitle}</span>
         <span className="notes-bar-spacer" />
         <button
@@ -603,7 +596,24 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
         </button>
       </div>
 
-      {/* #6 AI 块入口放在画布"底部工具栏"区(底部中央), 不在上面的工具条 */}
+      {/* #2 从这篇文档展开/收起写作: 浮在文档右上角, 不在文件工具条里 */}
+      <button
+        className="notes-expand"
+        title={mode === "page" ? "回到画布" : "展开写作（把这篇文档铺成全幅）"}
+        onClick={() => setMode((m) => (m === "page" ? "edgeless" : "page"))}
+      >
+        {mode === "page" ? (
+          <>
+            <LayoutGrid size={14} /> 画布
+          </>
+        ) : (
+          <>
+            <Maximize2 size={14} /> 展开写作
+          </>
+        )}
+      </button>
+
+      {/* #6 AI 块入口放在画布"底部工具栏"区(右下角), 不在上面的工具条 */}
       {mode === "edgeless" && (
         <button className="notes-aibtn" title="加一个 AI 块（绑定本笔记的持续对话 · 关=关 · 再开=resume）" onClick={addAiBlock}>
           <Bot size={15} /> AI 块
