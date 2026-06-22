@@ -5,6 +5,7 @@ import {
   MessagesSquare, Plus, RefreshCw, ChevronDown,
   Code2, Globe, SquareTerminal, Bot, Circle,
 } from "lucide-react";
+import { invoke } from "@tauri-apps/api/core";
 import { runShell } from "../lib";
 import { listPanes, focusPane, type PoofPane } from "../poofPanes";
 import { getControllerKind, setControllerKind, type ControllerKind } from "../controller";
@@ -18,6 +19,7 @@ interface AgentRec {
   location?: string;
   current_task?: string;
   pty_id?: string;
+  cwd?: string; // 工作目录, 跳窗按它的文件夹名匹配 VSCode 窗口
   mtime?: number; // transcript 最后活跃时间(排序用)
   running?: boolean;
 }
@@ -118,7 +120,13 @@ export function ConvBar({
   const externals = agents.filter((a) => !a.pty_id || !panePtyIds.has(a.pty_id));
 
   async function jumpExternal(a: AgentRec) {
-    if (a.location) await runShell(`omni dispatch activate --location "${a.location}" --json`).catch(() => {});
+    // #3 直接在 poof 这边按工作目录/项目名匹配到那个窗口并切到前台(再藏起 poof)
+    const q = a.cwd || a.project || a.name || "";
+    let ok = false;
+    try { ok = await invoke<boolean>("focus_window", { query: q }); } catch { /* */ }
+    if (!ok && a.location) {
+      await runShell(`omni dispatch activate --location "${a.location}" --json`).catch(() => {});
+    }
     setOpen(false);
   }
 

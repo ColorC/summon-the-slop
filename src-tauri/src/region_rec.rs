@@ -11,8 +11,9 @@ use std::sync::Mutex;
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, RECT};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowLongW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW, IsIconic,
-    IsWindow, IsWindowVisible, GWL_EXSTYLE, WS_EX_TOOLWINDOW,
+    BringWindowToTop, EnumWindows, GetWindowLongW, GetWindowRect, GetWindowTextLengthW,
+    GetWindowTextW, IsIconic, IsWindow, IsWindowVisible, SetForegroundWindow, ShowWindow,
+    GWL_EXSTYLE, SW_RESTORE, WS_EX_TOOLWINDOW,
 };
 
 static ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -229,4 +230,50 @@ pub fn list_windows() -> Vec<WinInfo> {
         EnumWindows(Some(enum_cb), &mut out as *mut _ as LPARAM);
     }
     out
+}
+
+/// #3 点对话跳窗: find the open window that best matches `query`(项目名 / cwd 路径)and bring it
+/// to the foreground. Matches on the path's basename + the raw query, prefers VSCode. Returns
+/// the matched window title (so the caller can confirm), or "" if nothing matched.
+pub fn focus_window(query: &str) -> String {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return String::new();
+    }
+    let qbase = q.rsplit(['\\', '/']).next().unwrap_or(&q).to_string();
+    let mut best: Option<&WinInfo> = None;
+    let mut best_score = 0;
+    let wins = list_windows();
+    for w in &wins {
+        let t = w.title.to_lowercase();
+        let mut score = 0;
+        if !qbase.is_empty() && t.contains(&qbase) {
+            score += 3;
+        }
+        if t.contains(&q) {
+            score += 2;
+        }
+        if t.contains("visual studio code") {
+            score += 1;
+        }
+        if score > best_score {
+            best_score = score;
+            best = Some(w);
+        }
+    }
+    match best {
+        Some(w) if best_score > 0 => {
+            unsafe {
+                let h = w.hwnd as HWND;
+                if IsIconic(h) != 0 {
+                    ShowWindow(h, SW_RESTORE);
+                }
+                // poof is the foreground caller, so it's allowed to hand foreground to the target
+                BringWindowToTop(h);
+                SetForegroundWindow(h);
+            }
+            w.title.clone()
+        }
+        _ => String::new(),
+    }
 }

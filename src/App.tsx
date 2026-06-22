@@ -10,6 +10,7 @@ import {
   ScanEye,
   MonitorPlay,
   Film,
+  SquareTerminal,
   Bell,
   Pin,
   PinOff,
@@ -236,6 +237,13 @@ export default function App() {
             title="审阅台"
           >
             <CheckSquare size={17} />
+          </button>
+          <button
+            className={"pf-btn" + (isOpen("chat") ? " on" : "")}
+            onClick={() => togglePanel("chat")}
+            title="终端 / 对话（PowerShell · Claude · Codex）"
+          >
+            <SquareTerminal size={17} />
           </button>
           <span className="pf-sep" />
           <button className="pf-btn" onClick={startSnap} title="截图 / 标注（框选 → 标注 → 复制 / 保存 / 钉屏 / OCR · Esc 退出）">

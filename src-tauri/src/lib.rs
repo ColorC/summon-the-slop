@@ -200,6 +200,28 @@ fn list_windows() -> Vec<region_rec::WinInfo> {
     region_rec::list_windows()
 }
 
+/// #3 点对话跳窗: focus the open window matching `query`(项目名/cwd), then hide poof to reveal it.
+#[tauri::command]
+fn focus_window(app: tauri::AppHandle, query: String) -> bool {
+    #[cfg(windows)]
+    {
+        let title = region_rec::focus_window(&query);
+        if !title.is_empty() {
+            use tauri::Manager;
+            if let Some(main) = app.get_webview_window("main") {
+                let _ = main.hide();
+            }
+            return true;
+        }
+        false
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, query);
+        false
+    }
+}
+
 #[cfg(windows)]
 mod hook {
     use super::log_line;
@@ -738,6 +760,7 @@ pub fn run() {
             region_record_stop,
             region_is_recording,
             list_windows,
+            focus_window,
             show_snap_record
         ])
         .run(tauri::generate_context!())
