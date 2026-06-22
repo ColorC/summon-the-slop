@@ -101,10 +101,30 @@ function handleNoteOp(cmd: any): any {
       const doc: any = c.createDoc({ id });
       doc.load(() => {
         const root = doc.addBlock("affine:page", { title: new Text(String(cmd.title || "新笔记")) });
-        const noteBlk = doc.addBlock("affine:note", {}, root);
+        doc.addBlock("affine:surface", {}, root); // edgeless 画布需要 surface, 否则打开是空的
+        const noteBlk = doc.addBlock("affine:note", { xywh: "[0,0,540,360]" }, root);
         doc.addBlock("affine:paragraph", { text: new Text(String(cmd.text || "")) }, noteBlk);
       });
+      // 写 docMeta(标题/时间), 否则在笔记列表里是"未命名"且排序漂移
+      try {
+        c.setDocMeta(id, { title: String(cmd.title || "新笔记"), updatedDate: Date.now() } as any);
+      } catch {
+        /* ignore */
+      }
       return { ok: true, created: id, link: `poof-note://${id}` };
+    }
+    if (op === "trash" || op === "drop") {
+      if (!cmd.note) return { ok: false, error: "缺 note" };
+      if (op === "trash") {
+        c.setDocMeta(cmd.note, { trashed: true, updatedDate: Date.now() } as any);
+        return { ok: true, trashed: cmd.note };
+      }
+      try {
+        c.removeDoc(cmd.note);
+      } catch (e) {
+        return { ok: false, error: String(e) };
+      }
+      return { ok: true, dropped: cmd.note };
     }
 
     const note = cmd.note;

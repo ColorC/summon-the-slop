@@ -114,6 +114,9 @@ async function duplicateDoc(c: DocCollection, id: string): Promise<string | null
   }
 }
 
+// remember the last-opened note so re-summoning lands you back where you were (#4)
+const LAST_KEY = "poof-notes-last";
+
 // lightweight tags store (BlockSuite's tag schema is heavy; we keep our own)
 const TAGS_KEY = "poof-notes-tags";
 type TagMap = Record<string, string[]>;
@@ -189,18 +192,29 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [c]);
 
-  // first run ever → seed one note (once, after sync settled)
+  // 打开时落点 (#4): 上次打开的笔记 → 否则最近修改的真实笔记 → 否则新建一条。绝不停在空白/旧测试笔记。
   useEffect(() => {
-    if (!ready || seeded.current) return;
-    if (c.meta.docMetas.length === 0) {
+    if (!ready || seeded.current || activeId) return;
+    const all = readMetas();
+    const live = all.filter((m) => !m.trashed && !m.archived);
+    if (live.length === 0) {
+      // 没有可打开的真实笔记(首次运行, 或全在回收站/归档) → 新建一条
       seeded.current = true;
       const d = seedDoc(c);
       setActiveId(d.id);
-    } else if (!activeId) {
-      const first = readMetas().find((m) => !m.trashed && !m.archived) ?? readMetas()[0];
-      if (first) setActiveId(first.id);
+      return;
     }
+    const lastId = localStorage.getItem(LAST_KEY) || "";
+    const pick =
+      live.find((m) => m.id === lastId) ??
+      [...live].sort((a, b) => (b.updatedDate || 0) - (a.updatedDate || 0))[0];
+    setActiveId(pick.id);
   }, [ready, c, activeId]);
+
+  // 记住当前打开的笔记, 下次召出回到这里 (#4)
+  useEffect(() => {
+    if (activeId) localStorage.setItem(LAST_KEY, activeId);
+  }, [activeId]);
 
   // mount the BlockSuite editor for the active doc + auto-sync its title (fixes 未命名)
   useEffect(() => {
