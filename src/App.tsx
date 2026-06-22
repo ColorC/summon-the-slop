@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -115,6 +115,21 @@ export default function App() {
     const un = listen("open-notes", () => openPanel("notes"));
     return () => { un.then((f) => f()).catch(() => {}); };
   }, [openPanel]);
+
+  // 召唤: 双击Ctrl(payload !== true) → 干净搜索, 收起侧栏面板(记住,供三击还原);
+  //        三击Ctrl(payload === true) → 还原上次的面板布局。
+  const prevOpen = useRef<PanelKind[]>([]);
+  useEffect(() => {
+    const un = listen<boolean>("summon", (e) => {
+      if (e.payload === true) {
+        setOpen((o) => (o.length ? o : prevOpen.current.length ? prevOpen.current : loadPinned()));
+      } else {
+        setOpen((o) => { if (o.length) prevOpen.current = o; return []; });
+        setNotifOpen(false);
+      }
+    });
+    return () => { un.then((f) => f()).catch(() => {}); };
+  }, []);
 
   // 回放：open the replay window to watch a recorded session.
   const startReplay = useCallback(() => {

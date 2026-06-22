@@ -465,7 +465,8 @@ fn summon_main(app: &tauri::AppHandle, restore_floats: bool) {
     let _ = main.show();
     let _ = main.set_always_on_top(true);
     let _ = main.set_focus();
-    let _ = app.emit("summon", ());
+    // payload = full?  双击Ctrl(false) → 干净搜索(收起侧栏面板);三击Ctrl(true) → 还原面板
+    let _ = app.emit("summon", restore_floats);
     // ONLY touch floats that are actually open. A hidden/never-shown window must be left hidden —
     // calling minimize() on it would surface it (the 录屏 demo window kept popping up this way).
     for w in float_windows(app) {
@@ -491,7 +492,7 @@ fn open_notes(app: &tauri::AppHandle) {
         let _ = main.show();
         let _ = main.set_always_on_top(true);
         let _ = main.set_focus();
-        let _ = app.emit("summon", ());
+        let _ = app.emit("summon", true); // notes 召出不收起面板
         let _ = app.emit("open-notes", ());
     }
 }
