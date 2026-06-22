@@ -1,5 +1,5 @@
 import { Fragment, useRef, useState, type ReactNode, type PointerEvent as RPE } from "react";
-import { Pin, PinOff, X, PanelLeft, PanelRight } from "lucide-react";
+import { Pin, PinOff, X, PanelLeft, PanelRight, PictureInPicture2, PanelBottomClose } from "lucide-react";
 
 export type PanelKind = "chat" | "project" | "review" | "notes";
 export type DockSide = "left" | "right";
@@ -20,6 +20,21 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
 // ---------------- persistence ----------------
 const sideKey = (k: PanelKind) => `poof-panel-${k}-side`;
 const dockWKey = (s: DockSide) => `poof-dock-${s}-w`;
+const floatKey = (k: PanelKind) => `poof-panel-${k}-float`;
+const geoKey = (k: PanelKind) => `poof-panel-${k}-geo`;
+
+interface Geo { x: number; y: number; w: number; h: number }
+function loadFloat(k: PanelKind): boolean {
+  return localStorage.getItem(floatKey(k)) === "1";
+}
+function loadGeo(k: PanelKind, i = 0): Geo {
+  try {
+    const g = JSON.parse(localStorage.getItem(geoKey(k)) || "null");
+    if (g && typeof g.x === "number") return g;
+  } catch {}
+  const w = 460, h = 420;
+  return { x: Math.max(20, (window.innerWidth - w) / 2 + i * 28), y: Math.max(20, (window.innerHeight - h) / 2 + i * 28), w, h };
+}
 
 // VSCode-ish defaults: views on the left, the assistant/terminal on the right.
 const DEFAULT_SIDE: Record<PanelKind, DockSide> = {
@@ -59,22 +74,33 @@ export function DockStage({
   renderContent: (k: PanelKind) => ReactNode;
 }) {
   const [sides, setSides] = useState<Record<string, DockSide>>({});
+  const [floats, setFloats] = useState<Record<string, boolean>>({});
   const sideOf = (k: PanelKind): DockSide => sides[k] ?? loadSide(k);
+  const floatOf = (k: PanelKind): boolean => floats[k] ?? loadFloat(k);
   const move = (k: PanelKind, s: DockSide) => {
     localStorage.setItem(sideKey(k), s);
     setSides((p) => ({ ...p, [k]: s }));
   };
+  const toggleFloat = (k: PanelKind) => {
+    const v = !floatOf(k);
+    localStorage.setItem(floatKey(k), v ? "1" : "0");
+    setFloats((p) => ({ ...p, [k]: v }));
+  };
 
-  const left = open.filter((k) => sideOf(k) === "left");
-  const right = open.filter((k) => sideOf(k) === "right");
+  const floating = open.filter((k) => floatOf(k));
+  const docked = open.filter((k) => !floatOf(k));
+  const left = docked.filter((k) => sideOf(k) === "left");
+  const right = docked.filter((k) => sideOf(k) === "right");
 
   const headFor = (k: PanelKind): HeadProps => ({
     kind: k,
     side: sideOf(k),
+    floating: floatOf(k),
     pinned: pinned.includes(k),
     onPin: () => onPin(k),
     onClose: () => onClose(k),
     onMove: (s: DockSide) => move(k, s),
+    onFloat: () => toggleFloat(k),
   });
 
   return (
@@ -85,6 +111,9 @@ export function DockStage({
       {right.length > 0 && (
         <Dock side="right" panels={right} headFor={headFor} renderContent={renderContent} />
       )}
+      {floating.map((k, i) => (
+        <FloatingCard key={k} kind={k} idx={i} head={headFor(k)} renderContent={renderContent} />
+      ))}
     </div>
   );
 }
@@ -178,24 +207,37 @@ function Dock({
 interface HeadProps {
   kind: PanelKind;
   side: DockSide;
+  floating: boolean;
   pinned: boolean;
   onPin: () => void;
   onClose: () => void;
   onMove: (s: DockSide) => void;
+  onFloat: () => void;
 }
-function PanelHead({ kind, side, pinned, onPin, onClose, onMove }: HeadProps) {
+function PanelHead({ kind, side, floating, pinned, onPin, onClose, onMove, onFloat }: HeadProps) {
   return (
     <div className="pf-panel-head">
       <span className="pf-panel-title">{PANEL_TITLES[kind]}</span>
       <div className="pf-panel-acts">
-        {side === "right" ? (
-          <button onClick={() => onMove("left")} title="移到左侧栏">
-            <PanelLeft size={15} />
+        {floating ? (
+          <button onClick={onFloat} title="停靠回侧栏">
+            <PanelBottomClose size={15} />
           </button>
         ) : (
-          <button onClick={() => onMove("right")} title="移到右侧栏">
-            <PanelRight size={15} />
-          </button>
+          <>
+            {side === "right" ? (
+              <button onClick={() => onMove("left")} title="移到左侧栏">
+                <PanelLeft size={15} />
+              </button>
+            ) : (
+              <button onClick={() => onMove("right")} title="移到右侧栏">
+                <PanelRight size={15} />
+              </button>
+            )}
+            <button onClick={onFloat} title="变成浮动窗口">
+              <PictureInPicture2 size={15} />
+            </button>
+          </>
         )}
         <button onClick={onPin} title={pinned ? "取消钉住" : "钉住（召出时保持）"}>
           {pinned ? <Pin size={15} /> : <PinOff size={15} />}
@@ -204,6 +246,66 @@ function PanelHead({ kind, side, pinned, onPin, onClose, onMove }: HeadProps) {
           <X size={15} />
         </button>
       </div>
+    </div>
+  );
+}
+
+// ---------------- a floating card (a panel popped out of the dock into a draggable window) ----
+function FloatingCard({
+  kind,
+  idx,
+  head,
+  renderContent,
+}: {
+  kind: PanelKind;
+  idx: number;
+  head: HeadProps;
+  renderContent: (k: PanelKind) => ReactNode;
+}) {
+  const [geo, setGeo] = useState<Geo>(() => loadGeo(kind, idx));
+  const geoRef = useRef(geo);
+  geoRef.current = geo;
+  const save = () => localStorage.setItem(geoKey(kind), JSON.stringify(geoRef.current));
+
+  function startDrag(e: RPE) {
+    if (e.button !== 0) return;
+    if ((e.target as HTMLElement).closest("button")) return; // header buttons keep their own clicks
+    e.preventDefault();
+    const sx = e.clientX, sy = e.clientY, g0 = { ...geoRef.current };
+    const mv = (ev: PointerEvent) => {
+      setGeo({
+        ...geoRef.current,
+        x: clamp(g0.x + ev.clientX - sx, 0, window.innerWidth - 80),
+        y: clamp(g0.y + ev.clientY - sy, 0, window.innerHeight - 40),
+      });
+    };
+    const up = () => { window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up); save(); };
+    window.addEventListener("pointermove", mv);
+    window.addEventListener("pointerup", up);
+  }
+  function startResize(e: RPE) {
+    if (e.button !== 0) return;
+    e.preventDefault(); e.stopPropagation();
+    const sx = e.clientX, sy = e.clientY, g0 = { ...geoRef.current };
+    const mv = (ev: PointerEvent) => {
+      setGeo({
+        ...geoRef.current,
+        w: clamp(g0.w + ev.clientX - sx, MIN_DOCK, window.innerWidth - g0.x - 8),
+        h: clamp(g0.h + ev.clientY - sy, MIN_H, window.innerHeight - g0.y - 8),
+      });
+    };
+    const up = () => { window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up); save(); };
+    window.addEventListener("pointermove", mv);
+    window.addEventListener("pointerup", up);
+  }
+
+  return (
+    <div className="pf-float" style={{ left: geo.x, top: geo.y, width: geo.w, height: geo.h }}>
+      <div className="pf-float-grip" onPointerDown={startDrag}>
+        <PanelHead {...head} />
+      </div>
+      <div className="pf-panel-body">{renderContent(kind)}</div>
+      <div className="pf-float-resize" onPointerDown={startResize} title="拖动调整大小" />
     </div>
   );
 }

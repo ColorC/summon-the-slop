@@ -18,6 +18,8 @@ interface AgentRec {
   location?: string;
   current_task?: string;
   pty_id?: string;
+  mtime?: number; // transcript 最后活跃时间(排序用)
+  running?: boolean;
 }
 
 const KIND_LABEL: Record<ControllerKind, string> = {
@@ -51,6 +53,7 @@ export function ConvBar({
   const [agents, setAgents] = useState<AgentRec[]>([]);
   const [panes, setPanes] = useState<PoofPane[]>([]);
   const [loading, setLoading] = useState(false);
+  const [limit, setLimit] = useState(20); // 和 Omnicompany 一致: 先 20, 拉到底再加载
   const [hover, setHover] = useState<{ key: string; top: number } | null>(null);
   const [preview, setPreview] = useState<string>("");
   const tailCache = useRef<Map<string, string>>(new Map());
@@ -60,8 +63,11 @@ export function ConvBar({
     setPanes(listPanes());
     setLoading(true);
     try {
-      const out = await runShell("omni agents list --running --json");
-      setAgents(JSON.parse((out.stdout || "").trim() || "[]"));
+      // 列本机所有对话(不止在跑的), omni 已按 (在跑, 最后活跃) 排好序, 取前 limit 条
+      const out = await runShell(`omni agents list --json --limit ${limit}`);
+      const list: AgentRec[] = JSON.parse((out.stdout || "").trim() || "[]");
+      list.sort((a, b) => (b.running ? 1 : 0) - (a.running ? 1 : 0) || (Number(b.mtime) || 0) - (Number(a.mtime) || 0));
+      setAgents(list);
     } catch {
       /* omni/dashboard down — still show poof panes */
     }
@@ -70,7 +76,16 @@ export function ConvBar({
   useEffect(() => {
     if (open) void refresh();
     else { setHover(null); setPreview(""); }
-  }, [open]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, limit]);
+
+  // 拉到底 → 多加载一批(只要这批已满 limit, 说明可能还有更多)
+  function onRowsScroll(e: React.UIEvent<HTMLDivElement>) {
+    const el = e.currentTarget;
+    if (!loading && agents.length >= limit && el.scrollTop + el.clientHeight >= el.scrollHeight - 24) {
+      setLimit((l) => l + 20);
+    }
+  }
 
   function pickKind(k: ControllerKind) {
     setKind(k);
@@ -145,7 +160,7 @@ export function ConvBar({
             <button onClick={() => { onNewChat("ps"); setOpen(false); }}>PS</button>
           </div>
 
-          <div className="conv-rows" onMouseLeave={() => setHover(null)}>
+          <div className="conv-rows" onScroll={onRowsScroll} onMouseLeave={() => setHover(null)}>
             {panes.length === 0 && externals.length === 0 && (
               <div className="conv-empty">还没有在跑的对话。</div>
             )}
