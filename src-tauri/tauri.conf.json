@@ -60,6 +60,20 @@
         "center": true,
         "visible": false,
         "resizable": true
+      },
+      {
+        "label": "recbar",
+        "url": "rec-bar.html",
+        "title": "poof 录制中",
+        "width": 248,
+        "height": 56,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "resizable": false,
+        "shadow": false
       }
     ],
     "security": {

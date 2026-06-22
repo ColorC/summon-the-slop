@@ -35,8 +35,17 @@ let down: { x: number; y: number } | null = null;
 let origSel: Rect = { l: 0, t: 0, r: 0, b: 0 };
 let sel: Rect = { l: 0, t: 0, r: 0, b: 0 };
 let textAt: { x: number; y: number } | null = null;
-let recordMode = false; // summoned via Ctrl+Alt+R: a selection starts 区域录制 instead of a copy
+let recordMode = false; // summoned via Ctrl+Alt+R: pick a WINDOW (or drag a region) to 录制
 const HINT_DEFAULT = hint.textContent || "";
+
+interface WinInfo { l: number; t: number; r: number; b: number; hwnd: number; title: string }
+let recWindows: WinInfo[] = []; // physical-pixel rects, top of z-order first (captured at summon)
+let hoverWin: WinInfo | null = null;
+// physical desktop rect <-> snap-canvas CSS coords
+const cssToPhys = (rc: Rect): [number, number, number, number] =>
+  [cap!.x + Math.round(rc.l * dpr), cap!.y + Math.round(rc.t * dpr), cap!.x + Math.round(rc.r * dpr), cap!.y + Math.round(rc.b * dpr)];
+const physToCssRect = (w: WinInfo): Rect =>
+  ({ l: (w.l - cap!.x) / dpr, t: (w.t - cap!.y) / dpr, r: (w.r - cap!.x) / dpr, b: (w.b - cap!.y) / dpr });
 
 const esc = (s: string) => (s || "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]!));
 const clampX = (x: number) => Math.max(0, Math.min(x, window.innerWidth));
@@ -70,6 +79,9 @@ async function doCapture() {
     scr.height = annoEl.height = h;
     sctx.putImageData(new ImageData(new Uint8ClampedArray(raw, 20), w, h), 0, 0);
     annot.reset(dpr);
+    if (recordMode) {
+      try { recWindows = await invoke<WinInfo[]>("list_windows"); } catch { recWindows = []; }
+    }
     enterIdle();
   } catch (e) {
     enterIdle();
@@ -81,13 +93,14 @@ async function doCapture() {
 }
 
 function enterIdle() {
-  mode = "idle"; action = "none"; down = null;
+  mode = "idle"; action = "none"; down = null; hoverWin = null;
   sel = { l: 0, t: 0, r: 0, b: 0 };
+  selEl.classList.remove("rec");
   for (const el of [selEl, hot, toolbar, panel, sizebadge, textIn]) el.classList.add("hidden");
   handlesEl.innerHTML = "";
   annot.enabled = false;
   mask.classList.remove("hidden");
-  hint.textContent = recordMode ? "框选要录的窗口 / 区域 → 回车开始录屏 · Esc 取消" : HINT_DEFAULT;
+  hint.textContent = recordMode ? "悬停高亮窗口 → 点击录制 · 或拖拽选区域 · Esc 取消" : HINT_DEFAULT;
   hint.classList.remove("hidden");
 }
 
@@ -246,15 +259,47 @@ function onMove(e: MouseEvent) {
     return;
   }
   if (action === "draw") { annot.onMove(x, y); return; }
-  // idle hover: magnifier + crosshair
-  if (mode === "idle") { updateLoupe(x, y); updateCross(x, y); }
+  // idle hover
+  if (mode === "idle") {
+    if (recordMode) { highlightWindowAt(x, y); return; } // record mode: outline the window under cursor
+    updateLoupe(x, y); updateCross(x, y);
+  }
+}
+
+// In 录制模式, hovering outlines the topmost window under the cursor; clicking it records that window.
+function highlightWindowAt(cx: number, cy: number) {
+  if (!cap) return;
+  const px = cap.x + cx * dpr, py = cap.y + cy * dpr;
+  hoverWin = recWindows.find((w) => px >= w.l && px <= w.r && py >= w.t && py <= w.b) || null;
+  loupe.classList.add("hidden"); chx.classList.add("hidden"); chy.classList.add("hidden");
+  if (hoverWin) {
+    sel = physToCssRect(hoverWin);
+    selEl.classList.add("rec");
+    paintSel();
+    sizebadge.textContent = "▶ 点击录制此窗口";
+  } else {
+    selEl.classList.add("hidden"); sizebadge.classList.add("hidden");
+  }
 }
 
 function onUp(e: MouseEvent) {
   if (!cap) return;
   if (action === "create" && down) {
-    sel = norm(down, { x: e.clientX, y: e.clientY });
+    const moved = Math.abs(e.clientX - down.x) + Math.abs(e.clientY - down.y);
+    const dragged = norm(down, { x: e.clientX, y: e.clientY });
     action = "none"; down = null;
+    if (recordMode) {
+      if (moved < 6 && hoverWin) {
+        // a click on a window → record that whole window (recorder follows it if it moves)
+        startRegionRecord(hoverWin.l, hoverWin.t, hoverWin.r, hoverWin.b, hoverWin.hwnd);
+      } else if (dragged.r - dragged.l >= 6 && dragged.b - dragged.t >= 6) {
+        // a dragged custom region → record it (fixed rect, no window follow)
+        const [pl, pt, pr, pb] = cssToPhys(dragged);
+        startRegionRecord(pl, pt, pr, pb, 0);
+      }
+      return;
+    }
+    sel = dragged;
     if (sel.r - sel.l >= 3 && sel.b - sel.t >= 3) commitSelected();
     else enterIdle();
     return;
@@ -334,15 +379,16 @@ async function doAction(act: string) {
 
 // 区域录制: hand the selected PHYSICAL rect to region_rec, then close the frozen overlay so the
 // recorder captures the LIVE desktop (a short delay lets the hidden overlay clear before frame 0).
-async function startRegionRecord() {
-  if (!cap || mode !== "selected") return;
-  const [pl, pt, pr, pb] = cropPhys();
-  // confirmation cue in the snap panel itself (no extra window) before closing + recording
-  showPanel("● 开始录屏", `<div class="pv">正在录制选中区域。<br>再按 <b>Ctrl + Alt + R</b> 即可停止保存。</div>`);
-  await new Promise((r) => setTimeout(r, 1100));
+async function startRegionRecord(pl: number, pt: number, pr: number, pb: number, hwnd: number) {
+  if (!cap) return;
+  // brief confirmation in the snap panel (no extra window) before closing + recording
+  showPanel("● 开始录屏", `<div class="pv">${hwnd ? "正在录制选中的<b>窗口</b>(它移动也会跟着录)" : "正在录制选中<b>区域</b>"}。<br>到录制条点 <b>■ 停止</b>,或按 <b>Ctrl + Alt + R</b> 结束。</div>`);
+  await new Promise((r) => setTimeout(r, 950));
   await closeSnap();
   await new Promise((r) => setTimeout(r, 220)); // let the hidden overlay clear before frame 0
-  try { await invoke("region_record_start", { l: pl, t: pt, r: pr, b: pb }); } catch {}
+  try {
+    await invoke("region_record_start", { l: Math.round(pl), t: Math.round(pt), r: Math.round(pr), b: Math.round(pb), hwnd: hwnd || 0 });
+  } catch {}
 }
 
 // ---- history panel --------------------------------------------------------
@@ -417,8 +463,17 @@ window.addEventListener("keydown", (e) => {
   if (document.activeElement === textIn) return;
   const k = e.key;
   if (k === "Escape") { e.preventDefault(); onEscape(); return; }
+  if (recordMode) {
+    // 录制模式: Enter records the hovered window, or the full screen if nothing is highlighted
+    if (k === "Enter") {
+      e.preventDefault();
+      if (hoverWin) startRegionRecord(hoverWin.l, hoverWin.t, hoverWin.r, hoverWin.b, hoverWin.hwnd);
+      else { const [pl, pt, pr, pb] = cssToPhys({ l: 0, t: 0, r: window.innerWidth, b: window.innerHeight }); startRegionRecord(pl, pt, pr, pb, 0); }
+    }
+    return; // record mode has no annotation/copy keys
+  }
   if (mode === "selected") {
-    if (k === "Enter") { e.preventDefault(); if (recordMode) startRegionRecord(); else doAction("copy"); return; }
+    if (k === "Enter") { e.preventDefault(); doAction("copy"); return; }
     if ((e.ctrlKey || e.metaKey) && (k === "c" || k === "C")) { e.preventDefault(); doAction("copy"); return; }
     if ((e.ctrlKey || e.metaKey) && (k === "s" || k === "S")) { e.preventDefault(); doAction("save"); return; }
     if ((e.ctrlKey || e.metaKey) && (k === "z" || k === "Z")) { e.preventDefault(); annot.undo(); return; }
@@ -430,16 +485,16 @@ window.addEventListener("keydown", (e) => {
       if (nt) { e.preventDefault(); setTool(nt); return; }
     }
   } else {
-    if (k === "Enter") { e.preventDefault(); selectFull(); if (recordMode) startRegionRecord(); else doAction("copy"); return; }
+    if (k === "Enter") { e.preventDefault(); selectFull(); doAction("copy"); return; }
     if (k === "F3") { e.preventDefault(); selectFull(); doAction("pin"); return; }
   }
 });
 
-// double-click inside the selection copies (Snipaste behavior)
+// double-click inside the selection copies (Snipaste behavior; record mode records on single click)
 document.addEventListener("dblclick", (e) => {
-  if (mode !== "selected") return;
+  if (recordMode || mode !== "selected") return;
   const inside = e.clientX >= sel.l && e.clientX <= sel.r && e.clientY >= sel.t && e.clientY <= sel.b;
-  if (inside) { if (recordMode) startRegionRecord(); else doAction("copy"); }
+  if (inside) doAction("copy");
 });
 
 // right-click anywhere cancels (selection first, then the whole snip)

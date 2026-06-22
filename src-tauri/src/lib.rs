@@ -105,27 +105,97 @@ fn native_stop() -> Result<(), String> {
     Ok(())
 }
 
-/// 区域录制 — start recording a selected physical-pixel rect (截图选区交给这里).
+/// Show the 录制条 (recording bar) just OUTSIDE the recorded rect (below it, or above/bottom if
+/// no room) so it's always visible but stays out of the captured frames. Tells it the start time.
+#[cfg(windows)]
+fn show_recbar(app: &tauri::AppHandle, l: i32, t: i32, r: i32, b: i32, start_ms: u64) {
+    use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize};
+    let Some(bar) = app.get_webview_window("recbar") else { return };
+    let (mx, my, mw, mh, scale) = if let Ok(Some(m)) = bar.primary_monitor() {
+        let p = m.position();
+        let s = m.size();
+        (p.x, p.y, s.width as i32, s.height as i32, m.scale_factor())
+    } else {
+        (0, 0, 1920, 1080, 1.0)
+    };
+    let bw = (248.0 * scale) as i32;
+    let bh = (56.0 * scale) as i32;
+    let mut bx = (l + r) / 2 - bw / 2;
+    bx = bx.max(mx).min(mx + mw - bw);
+    let mut by = b + 8; // prefer just below the recorded region
+    if by + bh > my + mh {
+        by = t - bh - 8; // else just above
+    }
+    if by < my {
+        by = my + mh - bh - 8; // else pin to screen bottom
+    }
+    let _ = bar.set_size(PhysicalSize::new(bw.max(1) as u32, bh.max(1) as u32));
+    let _ = bar.set_position(PhysicalPosition::new(bx, by));
+    let _ = bar.show();
+    let _ = bar.set_always_on_top(true);
+    let _ = bar.emit("rec-started", start_ms);
+}
+#[cfg(windows)]
+fn hide_recbar(app: &tauri::AppHandle) {
+    use tauri::{Emitter, Manager};
+    if let Some(bar) = app.get_webview_window("recbar") {
+        let _ = bar.emit("rec-stopped", ());
+        let _ = bar.hide();
+    }
+}
+
+/// 区域录制 — start recording a rect (截图选区交给这里). hwnd!=0 → follow that window. Shows the bar.
 #[tauri::command]
-fn region_record_start(l: i32, t: i32, r: i32, b: i32) -> Result<String, String> {
+fn region_record_start(app: tauri::AppHandle, l: i32, t: i32, r: i32, b: i32, hwnd: Option<i64>) -> Result<String, String> {
     #[cfg(windows)]
     {
-        region_rec::start(l, t, r, b)
+        let sid = region_rec::start(l, t, r, b, hwnd.unwrap_or(0))?;
+        let start_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        show_recbar(&app, l, t, r, b, start_ms);
+        Ok(sid)
     }
     #[cfg(not(windows))]
     {
-        let _ = (l, t, r, b);
+        let _ = (app, l, t, r, b, hwnd);
         Err("windows only".into())
     }
 }
 
 #[tauri::command]
-fn region_record_stop() -> Result<(), String> {
+fn region_record_stop(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(windows)]
     {
         region_rec::stop();
+        hide_recbar(&app);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = app;
     }
     Ok(())
+}
+
+/// Is a 区域录制 session active? The recbar polls this so it self-hides on ANY stop.
+#[tauri::command]
+fn region_is_recording() -> bool {
+    #[cfg(windows)]
+    {
+        region_rec::is_recording()
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// Top-level windows (z-order, titled, visible) for the 录制模式 window picker.
+#[cfg(windows)]
+#[tauri::command]
+fn list_windows() -> Vec<region_rec::WinInfo> {
+    region_rec::list_windows()
 }
 
 #[cfg(windows)]
@@ -550,8 +620,9 @@ pub fn run() {
                             hook::Sig::RecordToggle => {
                                 if region_rec::is_recording() {
                                     region_rec::stop();
+                                    hide_recbar(&h);
                                 } else {
-                                    summon_snap(&h, true); // select a region, then 录
+                                    summon_snap(&h, true); // select a window/region, then 录
                                 }
                             }
                             hook::Sig::Summon => {
@@ -620,7 +691,9 @@ pub fn run() {
             native_start,
             native_stop,
             region_record_start,
-            region_record_stop
+            region_record_stop,
+            region_is_recording,
+            list_windows
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

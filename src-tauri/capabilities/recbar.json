@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "recbar",
+  "description": "Capability for the 录制条 (recording control bar): listen for rec-started/rec-stopped and show/hide itself + the stop button invokes region_record_stop.",
+  "windows": ["recbar"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:window:allow-start-dragging"
+  ]
+}

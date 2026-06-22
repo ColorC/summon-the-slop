@@ -121,8 +121,8 @@ fn handle(method: &Method, url: &str, body: &str) -> (u16, String) {
             #[cfg(windows)]
             {
                 let v = serde_json::from_str::<serde_json::Value>(body).ok();
-                let g = |k: &str| v.as_ref().and_then(|v| v.get(k).and_then(|n| n.as_i64())).unwrap_or(0) as i32;
-                match crate::region_rec::start(g("l"), g("t"), g("r"), g("b")) {
+                let g = |k: &str| v.as_ref().and_then(|v| v.get(k).and_then(|n| n.as_i64())).unwrap_or(0);
+                match crate::region_rec::start(g("l") as i32, g("t") as i32, g("r") as i32, g("b") as i32, g("hwnd")) {
                     Ok(sid) => (200, format!("{{\"sid\":\"{sid}\"}}")),
                     Err(e) => (500, format!("{{\"error\":{}}}", serde_json::to_string(&e).unwrap_or_default())),
                 }
@@ -136,6 +136,17 @@ fn handle(method: &Method, url: &str, body: &str) -> (u16, String) {
             #[cfg(windows)]
             crate::region_rec::stop();
             (200, "{}".into())
+        }
+        "/windows" => {
+            #[cfg(windows)]
+            {
+                let ws = crate::region_rec::list_windows();
+                (200, serde_json::to_string(&ws).unwrap_or_else(|_| "[]".into()))
+            }
+            #[cfg(not(windows))]
+            {
+                (200, "[]".into())
+            }
         }
         _ => (404, "{}".into()),
     }

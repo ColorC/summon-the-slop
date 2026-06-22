@@ -39,6 +39,11 @@ html, body {
   pointer-events: none;
   z-index: 6;
 }
+/* 录制模式: the window/region under the cursor is the RECORD target — red accent (vs snap blue) */
+.sel.rec {
+  border: 2px solid #ff4d4f;
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.46), inset 0 0 0 1px rgba(255, 77, 79, 0.45);
+}
 
 /* 8 resize handles on the committed selection */
 .handle {
