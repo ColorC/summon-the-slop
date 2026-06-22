@@ -26,32 +26,38 @@ static INDEX: Mutex<Option<Vec<Entry>>> = Mutex::new(None);
 static BUILDING: AtomicBool = AtomicBool::new(false);
 static WATCHING: AtomicBool = AtomicBool::new(false);
 
-fn user_roots() -> Vec<PathBuf> {
+// All FIXED local drives (C:, D:, E:, …). Like Listary/Everything we do NOT avoid any user
+// directory — we index whole volumes and let noise-pruning + ranking carry the weight.
+// (Removable/USB/network drives are skipped: walking them would be slow / surprising.)
+#[cfg(windows)]
+fn fixed_drive_roots() -> Vec<PathBuf> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
+    const DRIVE_FIXED: u32 = 3;
     let mut v = Vec::new();
-    if let Some(p) = std::env::var_os("USERPROFILE") {
-        let base = PathBuf::from(p);
-        for sub in ["Desktop", "Documents", "Downloads"] {
-            v.push(base.join(sub));
+    let mask = unsafe { GetLogicalDrives() };
+    for i in 0..26u32 {
+        if mask & (1 << i) == 0 {
+            continue;
+        }
+        let letter = (b'A' + i as u8) as char;
+        let wide: Vec<u16> = format!("{}:\\", letter)
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        if unsafe { GetDriveTypeW(PCWSTR(wide.as_ptr())) } == DRIVE_FIXED {
+            v.push(PathBuf::from(format!("{}:/", letter)));
         }
     }
-    // primary work roots (where the user actually keeps projects). D:/P4/main itself
-    // is a huge Perforce branch, so index specific sub-dirs, not the parent:
-    //  · AIWorkSpace  — agent workspace
-    //  · Excel        — igame 配表 xlsm 真源(如 LineQuest.xlsm), 高频工作目录
-    // broader roots go in poof-roots.txt below.
-    for p in ["E:/WindowsWorkspace", "D:/P4/main/AIWorkSpace", "D:/P4/main/Excel"] {
-        v.push(PathBuf::from(p));
-    }
-    // user-extendable roots: %TEMP%/poof-roots.txt, one absolute path per line
-    if let Ok(s) = std::fs::read_to_string(std::env::temp_dir().join("poof-roots.txt")) {
-        for line in s.lines() {
-            let t = line.trim();
-            if !t.is_empty() && !t.starts_with('#') {
-                v.push(PathBuf::from(t));
-            }
-        }
-    }
-    // de-dup while keeping order; drop a root that is nested under an earlier one
+    v
+}
+#[cfg(not(windows))]
+fn fixed_drive_roots() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+// de-dup keeping order; drop a root nested under an earlier one; keep only existing.
+fn dedup_existing(v: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut seen: Vec<PathBuf> = Vec::new();
     v.into_iter()
         .filter(|p| p.exists())
@@ -63,6 +69,45 @@ fn user_roots() -> Vec<PathBuf> {
             true
         })
         .collect()
+}
+
+// Roots we INDEX (full walk): every fixed drive + any user-added paths. No hand-picked
+// "only these folders" allow-list anymore — that allow-list is exactly what made me miss
+// D:/P4/main/Excel/LineQuest.xlsm until I added it by hand.
+fn index_roots() -> Vec<PathBuf> {
+    let mut v = fixed_drive_roots();
+    if v.is_empty() {
+        if let Some(p) = std::env::var_os("USERPROFILE") {
+            v.push(PathBuf::from(p)); // fallback if drive enumeration fails
+        }
+    }
+    if let Ok(s) = std::fs::read_to_string(std::env::temp_dir().join("poof-roots.txt")) {
+        for line in s.lines() {
+            let t = line.trim();
+            if !t.is_empty() && !t.starts_with('#') {
+                v.push(PathBuf::from(t));
+            }
+        }
+    }
+    dedup_existing(v)
+}
+
+// Roots we WATCH live (ReadDirectoryChangesW). Watching whole drives recursively would be a
+// CPU/IO storm — Everything/Listary stay live via the NTFS USN journal, which needs admin
+// (poof is deliberately non-elevated). So we live-watch only the dirs the user actually
+// works in; the rest of every drive stays fresh via the periodic full re-walk.
+fn watch_roots() -> Vec<PathBuf> {
+    let mut v = Vec::new();
+    if let Some(p) = std::env::var_os("USERPROFILE") {
+        let base = PathBuf::from(p);
+        for sub in ["Desktop", "Documents", "Downloads"] {
+            v.push(base.join(sub));
+        }
+    }
+    for p in ["E:/WindowsWorkspace", "D:/P4/main/AIWorkSpace", "D:/P4/main/Excel"] {
+        v.push(PathBuf::from(p));
+    }
+    dedup_existing(v)
 }
 
 // ---- usage frequency (most-used first) ----
@@ -158,6 +203,15 @@ fn is_noise(name: &str) -> bool {
             | "obj"
             | "$recycle.bin"
             | "system volume information"
+            // OS component stores — pure noise that floods a whole-drive C: walk
+            | "winsxs"
+            | "driverstore"
+            | "servicing"
+            | "softwaredistribution"
+            | "installer"
+            | "config.msi"
+            | "$windows.~bt"
+            | "$windows.~ws"
     )
 }
 
@@ -226,9 +280,9 @@ fn build_index() -> Vec<Entry> {
         let py = pinyin_of(&display);
         idx.push(("app".to_string(), display, path, py));
     }
-    // user roots: deep + generous PER-ROOT cap (noise pruned, so this is plenty) so
-    // every root is fully indexed instead of one big root starving the others.
-    for (name, path, is_dir) in collect(&user_roots(), 14, 150_000) {
+    // whole fixed drives: deep + high PER-DRIVE cap (noise pruned). The cap is a runaway
+    // safety valve, not an allow-list — real work files sit shallow and get caught early.
+    for (name, path, is_dir) in collect(&index_roots(), 16, 1_500_000) {
         let lower = name.to_lowercase();
         // .bat/.cmd/.ps1 are launch-intent like .exe — rank them above generic deep files
         let kind = if is_dir {
@@ -312,6 +366,20 @@ pub fn warm_start() {
     }
     warm_index();
     start_watchers();
+    start_periodic_refresh();
+}
+
+// Whole drives can't be cheaply watched (no admin → no USN journal), so areas outside the
+// live-watched work dirs are kept fresh by a full re-walk every 30 min (background, parallel,
+// persisted). Guarded by BUILDING so it never overlaps a manual reindex.
+pub fn start_periodic_refresh() {
+    std::thread::spawn(|| loop {
+        std::thread::sleep(std::time::Duration::from_secs(1800));
+        if !BUILDING.swap(true, Ordering::SeqCst) {
+            warm_index();
+            BUILDING.store(false, Ordering::SeqCst);
+        }
+    });
 }
 
 fn kind_for(name: &str, is_dir: bool) -> &'static str {
@@ -393,7 +461,7 @@ pub fn start_watchers() {
                 return;
             }
         };
-        for root in user_roots() {
+        for root in watch_roots() {
             let _ = watcher.watch(&root, RecursiveMode::Recursive);
         }
         let mut last_persist = Instant::now();
