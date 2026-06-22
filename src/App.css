@@ -714,6 +714,35 @@ body,
   overflow: hidden;
 }
 
+/* a panel popped out of the dock into a draggable / resizable floating window (#5) */
+.pf-float {
+  position: fixed;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  pointer-events: auto;
+  background: rgba(15, 16, 21, 0.985);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
+  min-width: 240px;
+  min-height: 140px;
+}
+.pf-float-grip { cursor: move; flex: 0 0 auto; }
+.pf-float > .pf-panel-body { flex: 1 1 0%; min-height: 0; }
+.pf-float-resize { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; z-index: 31; }
+.pf-float-resize::after {
+  content: "";
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid rgba(255, 255, 255, 0.35);
+  border-bottom: 2px solid rgba(255, 255, 255, 0.35);
+}
+
 /* sashes — the draggable seams */
 .pf-sash {
   position: relative;
@@ -896,25 +925,36 @@ body,
 /* ===== 笔记空间 (BlockSuite edgeless) ===== */
 /* ===== 笔记空间 workspace (fullscreen, persistent BlockSuite library) ===== */
 /* non-fullscreen = a contained floating window (clear margins, rounded, framed) */
+/* #1 非全屏 = 一个不挡到上/下悬浮层的小浮窗, 且可自己拖右下角调大小 */
 .notes-ws {
   position: fixed;
-  top: 66px;
-  bottom: 66px;
-  left: 56px;
-  right: 56px;
+  top: 84px; /* 让开顶部搜索条 */
+  left: 84px;
+  width: 760px;
+  height: 520px;
+  min-width: 360px;
+  min-height: 260px;
+  max-width: calc(100vw - 168px);
+  max-height: calc(100vh - 168px); /* 不会够到底部动作条 */
+  resize: both; /* 用户自己拖右下角调整大小 */
   z-index: 9;
   border-radius: 16px;
   overflow: hidden;
-  background: #16171c; /* 实心深灰底, 非纯黑/非透明(全屏时别露出黑桌面) */
+  background: #16171c;
   border: 1px solid rgba(255, 255, 255, 0.12);
   box-shadow: 0 36px 110px rgba(0, 0, 0, 0.62);
 }
 /* 无边全屏: edge-to-edge, cover the bars */
 .notes-ws.full {
   top: 0;
-  bottom: 0;
   left: 0;
+  width: auto;
+  height: auto;
   right: 0;
+  bottom: 0;
+  max-width: none;
+  max-height: none;
+  resize: none;
   z-index: 20;
   border-radius: 0;
   border: none;
@@ -1027,10 +1067,25 @@ body,
   font-size: 11px;
   color: #7b8194;
   margin-left: auto;
-  max-width: 320px;
+  max-width: 280px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.notes-find-item .ff-open {
+  flex: 0 0 auto;
+  margin-left: 8px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: #c3c6cf;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.notes-find-item .ff-open:hover {
+  background: #2d6cf6;
+  color: #fff;
 }
 
 /* toggleable library window (笔记库) — previous panel style, not a permanent rail */
@@ -1412,33 +1467,28 @@ body,
   height: 100%;
 }
 
-/* ===== #3 米色记事本观感（自定义属性穿透 shadow DOM 级联到块上）===== */
-/* 文档(page)模式: 整面米色纸 + 深字, 像记事本页(线性文档, 不会冒一堆浮动框) */
-.notes-ws.page .notespace,
-.notes-ws.page .notespace affine-editor-container,
+/* ===== 米色记事本观感 — LIGHT 主题(深字/浅菜单可读) + 背景直接铆在"画背景的那个元素"上 =====
+   关键: --affine-background-primary-color 是被 affine-editor-container / page-editor /
+   edgeless-editor 这些元素 *自身* 用 background:var() 画的, 主题也把这个变量声明在这些元素上。
+   继承来的覆盖(声明在 .notespace 祖先上)斗不过"元素自身的声明"——这就是黑了三次的原因。
+   所以这里把变量直接声明在这些元素上, 才盖得住。 */
+.notes-ws .notespace affine-editor-container,
+.notes-ws .notespace page-editor,
 .notes-ws.page .notespace affine-page-root,
 .notes-ws.page .notespace .affine-page-root-block-container {
   --affine-background-primary-color: #ece3cf !important; /* 米色纸 */
-  --affine-text-primary-color: #2c2a26 !important; /* 深字 */
-  --affine-text-secondary-color: #6b6557 !important;
-  --affine-placeholder-color: #b3a98f !important;
-  --affine-icon-color: #6b6557 !important;
-  --affine-divider-color: rgba(0, 0, 0, 0.1) !important;
 }
-/* 画布(edgeless)模式: 深灰画布 + 淡点阵 */
+/* 画布(edgeless)模式: 暖灰画布 + 淡点阵(浅色, 配 LIGHT 主题的深字) */
 .notes-ws.edgeless .notespace affine-edgeless-viewport,
 .notes-ws.edgeless .notespace .edgeless-editor-container,
 .notes-ws.edgeless .notespace edgeless-editor {
-  --affine-background-primary-color: #16171c !important;
-  --affine-edgeless-grid-color: rgba(165, 171, 186, 0.09) !important;
+  --affine-background-primary-color: #e7e4dc !important;
+  --affine-edgeless-grid-color: rgba(120, 110, 90, 0.18) !important;
 }
-/* 画布上的便签(note card): 米色纸 + 深字, 不再是纯黑矩形 */
-.notes-ws.edgeless .notespace affine-note {
+/* 画布上的便签(note card): 米色纸, 不再是纯黑矩形(默认 white 槽位直接铆在 affine-note 上) */
+.notes-ws .notespace affine-note {
   --affine-note-background-white: #ece3cf !important;
   --affine-note-background-grey: #ddd3bb !important;
-  --affine-text-primary-color: #2c2a26 !important;
-  --affine-text-secondary-color: #6b6557 !important;
-  --affine-placeholder-color: #b3a98f !important;
 }
 
 /* ===== 圈选 / 检视 element inspector ===== */

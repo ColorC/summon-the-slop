@@ -26,7 +26,7 @@ import {
   Bot,
 } from "lucide-react";
 import { TerminalView } from "./Terminal";
-import { copyText, search, type SearchHit } from "../lib";
+import { copyText, search, openPath, type SearchHit } from "../lib";
 import { insertAiBlock, AiBlockSpec, AiBlockSchema } from "../blocks/aiblock";
 import * as Y from "yjs";
 import "@toeverything/theme/style.css";
@@ -40,11 +40,14 @@ import { signal } from "@preact/signals-core";
 import { effects as blocksEffects } from "@blocksuite/blocks/effects";
 import { effects as presetsEffects } from "@blocksuite/presets/effects";
 
-// force dark theme on the editor (toolbar + default elements = 深底浅字)
-const DARK = signal("dark" as any);
-const DARK_THEME = OverrideThemeExtension({
-  getAppTheme: () => DARK,
-  getEdgelessTheme: () => DARK,
+// LIGHT theme: dark text on light surfaces everywhere — including the slash menu / format-bar
+// popovers (so菜单/正文不再深底深字看不见). The paper tint (米色) is done in CSS by declaring the
+// bg var directly on the painting elements (affine-editor-container/page-editor/edgeless-editor),
+// because an inherited var can't override the theme's value declared on that same element.
+const LIGHT = signal("light" as any);
+const LIGHT_THEME = OverrideThemeExtension({
+  getAppTheme: () => LIGHT,
+  getEdgelessTheme: () => LIGHT,
 });
 
 let registered = false;
@@ -293,8 +296,8 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
     }, 180000);
 
     const editor = new AffineEditorContainer();
-    editor.edgelessSpecs = [...editor.edgelessSpecs, DARK_THEME, ...AiBlockSpec];
-    editor.pageSpecs = [...editor.pageSpecs, DARK_THEME, ...AiBlockSpec];
+    editor.edgelessSpecs = [...editor.edgelessSpecs, LIGHT_THEME, ...AiBlockSpec];
+    editor.pageSpecs = [...editor.pageSpecs, LIGHT_THEME, ...AiBlockSpec];
     editor.doc = doc;
     editor.mode = loadMode() as any; // #3 文档/画布(默认文档)
     host.current.innerHTML = "";
@@ -596,10 +599,20 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
               <div className="notes-empty">没找到匹配的文件</div>
             )}
             {fhits.map((h) => (
-              <div className="notes-find-item" key={h.path} onClick={() => insertFile(h)} title={"插入：" + h.path}>
+              <div className="notes-find-item" key={h.path} onClick={() => insertFile(h)} title={"插入引用卡片：" + h.path}>
                 <FileText size={14} />
                 <span className="ff-name">{h.name}</span>
                 <span className="ff-path">{h.path}</span>
+                <button
+                  className="ff-open"
+                  title="打开文件（系统默认程序）"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void openPath(h.path);
+                  }}
+                >
+                  打开
+                </button>
               </div>
             ))}
           </div>
