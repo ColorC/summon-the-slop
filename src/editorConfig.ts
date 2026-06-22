@@ -66,13 +66,15 @@ const SLASH_ZH: Record<string, string> = {
   List: "列表",
   Style: "样式",
   Docs: "文档",
+  Page: "页面",
+  Headings: "标题",
   "Content & Media": "内容与媒体",
   Date: "日期",
   Database: "数据库",
-  "AI image processing with all the basic models": "AI 图像",
   Others: "其他",
   Actions: "操作",
   // 条目
+  "Other Headings": "更多标题",
   Text: "正文",
   "Heading 1": "标题 1",
   "Heading 2": "标题 2",
@@ -117,6 +119,7 @@ function translateItems(items: any[]): any[] {
     if (typeof n.name === "string" && SLASH_ZH[n.name]) n.name = SLASH_ZH[n.name];
     if (typeof n.groupName === "string" && SLASH_ZH[n.groupName]) n.groupName = SLASH_ZH[n.groupName];
     if (typeof n.description === "string" && SLASH_ZH[n.description]) n.description = SLASH_ZH[n.description];
+    if (Array.isArray(n.subMenu)) n.subMenu = translateItems(n.subMenu); // 递归子菜单
     return n;
   });
 }
