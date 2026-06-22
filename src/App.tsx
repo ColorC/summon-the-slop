@@ -9,7 +9,6 @@ import {
   Camera,
   ScanEye,
   MonitorPlay,
-  Video,
   Film,
   Bell,
   Pin,
@@ -101,12 +100,6 @@ export default function App() {
   // 截图：hide poof, summon the transparent snap window (freeze + annotate + copy/save/pin/OCR).
   const startSnap = useCallback(() => {
     invoke("show_snap").catch(() => {});
-    hide();
-  }, [hide]);
-
-  // 录制：hide poof, open the record window (rrweb session recording → JSONL for AI).
-  const startRecord = useCallback(() => {
-    invoke("show_record").catch(() => {});
     hide();
   }, [hide]);
 
@@ -239,10 +232,7 @@ export default function App() {
           <button className="pf-btn" onClick={startScreenRecord} title="录屏（框选窗口 / 区域 → 定时画面快照 + OCR 文字 + 焦点，给 AI 读 · 录制条上 ■ 停止）">
             <MonitorPlay size={17} />
           </button>
-          <button className="pf-btn" onClick={startRecord} title="录制（rrweb 网页会话录像 → 给 AI 看的语义事件流，非视频）">
-            <Video size={17} />
-          </button>
-          <button className="pf-btn" onClick={startReplay} title="回放（看录制的会话）">
+          <button className="pf-btn" onClick={startReplay} title="回放（看录制的会话 · 导出 AI 时间线）">
             <Film size={17} />
           </button>
           <span className="pf-sep" />

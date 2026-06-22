@@ -16,7 +16,6 @@ export default defineConfig(async () => ({
         main: "index.html",
         snap: "snap.html",
         pin: "pin.html",
-        record: "record.html",
         replay: "replay.html",
         recbar: "rec-bar.html",
       },

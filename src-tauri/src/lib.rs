@@ -464,11 +464,17 @@ fn summon_main(app: &tauri::AppHandle, restore_floats: bool) {
     let _ = main.set_always_on_top(true);
     let _ = main.set_focus();
     let _ = app.emit("summon", ());
+    // ONLY touch floats that are actually open. A hidden/never-shown window must be left hidden —
+    // calling minimize() on it would surface it (the 录屏 demo window kept popping up this way).
     for w in float_windows(app) {
+        let visible = w.is_visible().unwrap_or(false);
+        let minimized = w.is_minimized().unwrap_or(false);
         if restore_floats {
-            let _ = w.unminimize();
-            let _ = w.show();
-        } else {
+            if visible && minimized {
+                let _ = w.unminimize();
+                let _ = w.show();
+            }
+        } else if visible && !minimized {
             let _ = w.minimize();
         }
     }
@@ -542,28 +548,6 @@ fn show_snap() -> Result<(), String> {
     Err("windows only".into())
 }
 
-/// Enter 录制 (AI session recording): show + focus the record window (a poof-owned page
-/// that records itself via rrweb), then hide the overlay. Focus FIRST (while poof owns the
-/// foreground) then hide main — same ordering as summon_snap. The "record-summon" event
-/// tells record.ts to begin a fresh session.
-#[cfg(windows)]
-fn summon_record(app: &tauri::AppHandle) {
-    use tauri::{Emitter, Manager};
-    if let Some(w) = app.get_webview_window("record") {
-        let _ = w.show();
-        let _ = w.set_focus();
-        if let Some(main) = app.get_webview_window("main") {
-            let _ = main.hide();
-        }
-        let _ = w.emit("record-summon", ());
-    }
-}
-#[cfg(windows)]
-#[tauri::command]
-fn show_record(app: tauri::AppHandle) -> Result<(), String> {
-    summon_record(&app);
-    Ok(())
-}
 /// Open 回放 (replay) window; "replay-summon" tells replay.ts to refresh the session list.
 #[cfg(windows)]
 #[tauri::command]
@@ -578,11 +562,6 @@ fn show_replay(app: tauri::AppHandle) -> Result<(), String> {
         let _ = w.emit("replay-summon", ());
     }
     Ok(())
-}
-#[cfg(not(windows))]
-#[tauri::command]
-fn show_record() -> Result<(), String> {
-    Err("windows only".into())
 }
 #[cfg(not(windows))]
 #[tauri::command]
@@ -665,24 +644,16 @@ pub fn run() {
                         exclude_from_capture(&w);
                     }
                 }
-                // record + replay: a close (titlebar X / Alt+F4) HIDES instead of destroying,
-                // so they stay re-summonable; closing the record window also stops + saves the
-                // active session so it's never orphaned.
-                for label in ["record", "replay"] {
-                    if let Some(w) = app.get_webview_window(label) {
-                        let wc = w.clone();
-                        let h = app.handle().clone();
-                        let is_record = label == "record";
-                        w.on_window_event(move |e| {
-                            if let tauri::WindowEvent::CloseRequested { api, .. } = e {
-                                api.prevent_close();
-                                if is_record {
-                                    record_cmd::stop_active(h.state::<record_cmd::RecState>().inner());
-                                }
-                                let _ = wc.hide();
-                            }
-                        });
-                    }
+                // replay: a close (titlebar X / Alt+F4) HIDES instead of destroying, so it stays
+                // re-summonable.
+                if let Some(w) = app.get_webview_window("replay") {
+                    let wc = w.clone();
+                    w.on_window_event(move |e| {
+                        if let tauri::WindowEvent::CloseRequested { api, .. } = e {
+                            api.prevent_close();
+                            let _ = wc.hide();
+                        }
+                    });
                 }
                 let (tx, rx) = channel::<hook::Sig>();
                 let _ = hook::TX.set(tx);
@@ -752,7 +723,6 @@ pub fn run() {
             snap_cmd::reveal_shot,
             snap_cmd::pin_image,
             snap_cmd::ocr_region,
-            show_record,
             show_replay,
             record_cmd::record_start,
             record_cmd::record_event,
