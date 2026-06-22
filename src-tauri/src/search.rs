@@ -270,6 +270,18 @@ fn collect(roots: &[PathBuf], max_depth: usize, per_root_cap: usize) -> Vec<(Str
     out.into_inner().unwrap()
 }
 
+// bare drive root like "C:" / "C:/" / "C:\" → its letter (for MFT). Sub-paths → None (walk).
+#[cfg(windows)]
+fn drive_root_letter(p: &std::path::Path) -> Option<char> {
+    let s = p.to_str()?;
+    let b = s.as_bytes();
+    if (2..=3).contains(&b.len()) && b[1] == b':' && b[0].is_ascii_alphabetic() {
+        Some(b[0].to_ascii_uppercase() as char)
+    } else {
+        None
+    }
+}
+
 fn build_index() -> Vec<Entry> {
     let mut idx = Vec::new();
     // apps = Start Menu .lnk shortcuts
@@ -282,8 +294,24 @@ fn build_index() -> Vec<Entry> {
         let py = pinyin_of(&display);
         idx.push(("app".to_string(), display, path, py));
     }
-    // whole drives: deep walk, high PER-DRIVE cap (runaway safety valve, NOT an allow-list).
-    for (name, path, is_dir) in collect(&index_roots(), 18, 2_000_000) {
+    // whole disk. Prefer the NTFS MFT per drive (Everything-grade: millions of files in seconds,
+    // no directory walk); fall back to the throttled walk where MFT can't run (not elevated / not
+    // NTFS) and for non-drive sub-roots from poof-roots.txt.
+    let mut fs: Vec<(String, String, bool)> = Vec::new();
+    for root in index_roots() {
+        #[cfg(windows)]
+        {
+            if let Some(letter) = drive_root_letter(&root) {
+                if let Some(mut e) = crate::mft::enumerate_volume(letter) {
+                    fs.append(&mut e);
+                    continue;
+                }
+            }
+        }
+        let mut e = collect(&[root], 18, 2_000_000);
+        fs.append(&mut e);
+    }
+    for (name, path, is_dir) in fs {
         let lower = name.to_lowercase();
         // .bat/.cmd/.ps1 are launch-intent like .exe — rank them above generic deep files
         let kind = if is_dir {

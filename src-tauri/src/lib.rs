@@ -8,6 +8,8 @@ mod pty;
 mod notebridge; // 笔记 ops 桥(CLI ⇄ 活笔记 collection 的文件命令队列)
 mod record_cmd; // AI 会话录像 (P1)
 mod search;
+#[cfg(windows)]
+mod mft; // NTFS MFT/USN 全盘枚举(Everything 级范围), search 用; 非 NTFS/未提权时回退游走
 mod snapshot;
 // live-inspector 洞察 capability (ported from waiela)
 #[cfg(windows)]
