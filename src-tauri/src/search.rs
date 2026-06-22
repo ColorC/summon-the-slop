@@ -35,9 +35,11 @@ fn user_roots() -> Vec<PathBuf> {
         }
     }
     // primary work roots (where the user actually keeps projects). D:/P4/main itself
-    // is a huge Perforce branch, so index the specific AIWorkSpace dir, not the parent;
+    // is a huge Perforce branch, so index specific sub-dirs, not the parent:
+    //  · AIWorkSpace  — agent workspace
+    //  · Excel        — igame 配表 xlsm 真源(如 LineQuest.xlsm), 高频工作目录
     // broader roots go in poof-roots.txt below.
-    for p in ["E:/WindowsWorkspace", "D:/P4/main/AIWorkSpace"] {
+    for p in ["E:/WindowsWorkspace", "D:/P4/main/AIWorkSpace", "D:/P4/main/Excel"] {
         v.push(PathBuf::from(p));
     }
     // user-extendable roots: %TEMP%/poof-roots.txt, one absolute path per line
