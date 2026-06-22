@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   PenLine,
   FolderKanban,
   CheckSquare,
   Camera,
   ScanEye,
+  MonitorPlay,
   Video,
   Film,
   Bell,
@@ -107,6 +109,19 @@ export default function App() {
     invoke("show_record").catch(() => {});
     hide();
   }, [hide]);
+
+  // 录屏：hide poof, summon the snap overlay in 录制模式 (框选窗口/区域 → 关键帧+OCR). No hotkey
+  // (low-frequency) — invoked from this 快捷面板. Stop via the rec bar's ■ 停止.
+  const startScreenRecord = useCallback(() => {
+    invoke("show_snap_record").catch(() => {});
+    hide();
+  }, [hide]);
+
+  // Ctrl+Alt+N (Rust) shows main + emits open-notes → open the fullscreen 笔记 workspace.
+  useEffect(() => {
+    const un = listen("open-notes", () => openPanel("notes"));
+    return () => { un.then((f) => f()).catch(() => {}); };
+  }, [openPanel]);
 
   // 回放：open the replay window to watch a recorded session.
   const startReplay = useCallback(() => {
@@ -221,7 +236,10 @@ export default function App() {
           <button className="pf-btn" onClick={startInspect} title="圈选 / 洞察（系统级 · 指哪看哪 · 点击抓取元素 → 带信息的截图给 AI · Esc 退出）">
             <ScanEye size={17} />
           </button>
-          <button className="pf-btn" onClick={startRecord} title="录制（rrweb 会话录像 → 给 AI 看的语义事件流，非视频）">
+          <button className="pf-btn" onClick={startScreenRecord} title="录屏（框选窗口 / 区域 → 定时画面快照 + OCR 文字 + 焦点，给 AI 读 · 录制条上 ■ 停止）">
+            <MonitorPlay size={17} />
+          </button>
+          <button className="pf-btn" onClick={startRecord} title="录制（rrweb 网页会话录像 → 给 AI 看的语义事件流，非视频）">
             <Video size={17} />
           </button>
           <button className="pf-btn" onClick={startReplay} title="回放（看录制的会话）">

@@ -200,8 +200,8 @@ fn list_windows() -> Vec<region_rec::WinInfo> {
 
 #[cfg(windows)]
 mod hook {
-    use super::{log_line, now_ms};
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use super::log_line;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::Sender;
     use std::sync::OnceLock;
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -212,34 +212,32 @@ mod hook {
 
     /// What the hook asks the UI thread to do.
     pub enum Sig {
-        Summon,       // hold Ctrl + double-tap Alt → toggle the overlay
-        Snap,         // Ctrl+Alt+A → jump straight into 截图
-        RecordToggle, // Ctrl+Alt+R → 区域录制: not recording → snap in record-mode; recording → stop
+        Snap,    // Ctrl+Alt+A → 截图
+        Notes,   // Ctrl+Alt+N → 全屏笔记
+        CtrlTap, // one clean Ctrl tap; the rx loop times taps → 2=快捷菜单(min others) / 3=+all floats
     }
 
-    // Summon gesture = HOLD Ctrl + double-tap Alt. "held" is read from the real-time
-    // physical key state (GetAsyncKeyState) so a missed key-up can never wedge it.
-    static LAST_ALT_UP: AtomicU64 = AtomicU64::new(0);
     static SNAP_DOWN: AtomicBool = AtomicBool::new(false); // de-dupe Ctrl+Alt+A auto-repeat
-    static REC_DOWN: AtomicBool = AtomicBool::new(false); // de-dupe Ctrl+Alt+R auto-repeat
+    static NOTES_DOWN: AtomicBool = AtomicBool::new(false); // de-dupe Ctrl+Alt+N auto-repeat
+    // clean-Ctrl-tap state: a "tap" = Ctrl down→up with NO other key pressed in between.
+    static CTRL_HELD: AtomicBool = AtomicBool::new(false);
+    static DIRTY: AtomicBool = AtomicBool::new(false); // another key was pressed during this Ctrl hold
     pub static TX: OnceLock<Sender<Sig>> = OnceLock::new();
 
     const WM_KEYDOWN: usize = 0x0100;
     const WM_KEYUP: usize = 0x0101;
     const WM_SYSKEYDOWN: usize = 0x0104;
     const WM_SYSKEYUP: usize = 0x0105;
-    const VK_CONTROL: i32 = 0x11; // generic Ctrl (L or R)
+    const VK_CONTROL: i32 = 0x11; // generic Ctrl, for GetAsyncKeyState
     const VK_MENU_STATE: i32 = 0x12; // generic Alt, for GetAsyncKeyState
-    const VK_LMENU: u32 = 0xA4; // left Alt
-    const VK_RMENU: u32 = 0xA5; // right Alt
-    const VK_MENU: u32 = 0x12; // generic Alt (injected)
+    const VK_LCONTROL: u32 = 0xA2;
+    const VK_RCONTROL: u32 = 0xA3;
     const VK_A: u32 = 0x41;
-    const VK_R: u32 = 0x52;
-    const DOUBLE_MS: u64 = 450;
+    const VK_N: u32 = 0x4E;
 
     #[inline]
-    fn is_alt(vk: u32) -> bool {
-        vk == VK_LMENU || vk == VK_RMENU || vk == VK_MENU
+    fn is_ctrl(vk: u32) -> bool {
+        vk == VK_LCONTROL || vk == VK_RCONTROL
     }
     #[inline]
     unsafe fn held(vk: i32) -> bool {
@@ -249,47 +247,40 @@ mod hook {
     unsafe extern "system" fn keyboard_proc(code: i32, wparam: usize, lparam: isize) -> isize {
         if code >= 0 {
             let kb = &*(lparam as *const KBDLLHOOKSTRUCT);
-            // Ctrl+Alt+A → 截图. Swallow the 'A' (return 1) so it isn't typed into apps.
-            if (wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN) && kb.vkCode == VK_A {
-                if held(VK_CONTROL) && held(VK_MENU_STATE) {
-                    if !SNAP_DOWN.swap(true, Ordering::SeqCst) {
-                        if let Some(tx) = TX.get() {
-                            let _ = tx.send(Sig::Snap);
-                        }
-                    }
-                    return 1;
+            let vk = kb.vkCode;
+            let down = wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN;
+            let up = wparam == WM_KEYUP || wparam == WM_SYSKEYUP;
+
+            // Ctrl+Alt+A → 截图. Swallow the 'A' so it isn't typed.
+            if down && vk == VK_A && held(VK_CONTROL) && held(VK_MENU_STATE) {
+                if !SNAP_DOWN.swap(true, Ordering::SeqCst) {
+                    if let Some(tx) = TX.get() { let _ = tx.send(Sig::Snap); }
                 }
+                return 1;
             }
-            if (wparam == WM_KEYUP || wparam == WM_SYSKEYUP) && kb.vkCode == VK_A {
-                SNAP_DOWN.store(false, Ordering::SeqCst);
-            }
-            // Ctrl+Alt+R → 区域录制 toggle. Swallow the 'R' (return 1) so it isn't typed.
-            if (wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN) && kb.vkCode == VK_R {
-                if held(VK_CONTROL) && held(VK_MENU_STATE) {
-                    if !REC_DOWN.swap(true, Ordering::SeqCst) {
-                        if let Some(tx) = TX.get() {
-                            let _ = tx.send(Sig::RecordToggle);
-                        }
-                    }
-                    return 1;
+            if up && vk == VK_A { SNAP_DOWN.store(false, Ordering::SeqCst); }
+
+            // Ctrl+Alt+N → 全屏笔记. Swallow the 'N'.
+            if down && vk == VK_N && held(VK_CONTROL) && held(VK_MENU_STATE) {
+                if !NOTES_DOWN.swap(true, Ordering::SeqCst) {
+                    if let Some(tx) = TX.get() { let _ = tx.send(Sig::Notes); }
                 }
+                return 1;
             }
-            if (wparam == WM_KEYUP || wparam == WM_SYSKEYUP) && kb.vkCode == VK_R {
-                REC_DOWN.store(false, Ordering::SeqCst);
-            }
-            // hold Ctrl + double-tap Alt → toggle the overlay
-            if (wparam == WM_KEYUP || wparam == WM_SYSKEYUP) && is_alt(kb.vkCode) {
-                if held(VK_CONTROL) {
-                    let now = now_ms();
-                    let last = LAST_ALT_UP.swap(now, Ordering::SeqCst);
-                    if last != 0 && now.saturating_sub(last) < DOUBLE_MS {
-                        LAST_ALT_UP.store(0, Ordering::SeqCst);
-                        if let Some(tx) = TX.get() {
-                            let _ = tx.send(Sig::Summon);
-                        }
-                    }
+            if up && vk == VK_N { NOTES_DOWN.store(false, Ordering::SeqCst); }
+
+            // clean Ctrl-tap detection (double/triple-tap Ctrl = 召出快捷菜单). A Ctrl press is only
+            // a "tap" if no other key was pressed while it was held — so Ctrl+C, Ctrl+Alt+A etc. don't count.
+            if down {
+                if is_ctrl(vk) {
+                    if !CTRL_HELD.swap(true, Ordering::SeqCst) { DIRTY.store(false, Ordering::SeqCst); }
                 } else {
-                    LAST_ALT_UP.store(0, Ordering::SeqCst);
+                    DIRTY.store(true, Ordering::SeqCst);
+                }
+            } else if up && is_ctrl(vk) {
+                CTRL_HELD.store(false, Ordering::SeqCst);
+                if !DIRTY.load(Ordering::SeqCst) {
+                    if let Some(tx) = TX.get() { let _ = tx.send(Sig::CtrlTap); }
                 }
             }
         }
@@ -304,7 +295,7 @@ mod hook {
                 log_line("ERROR SetWindowsHookExW failed (EDR may block low-level keyboard hook)");
                 return;
             }
-            log_line("hook installed ok (Ctrl+2xAlt summon · Ctrl+Alt+A 截图)");
+            log_line("hook installed ok (2xCtrl 菜单 · 3xCtrl 菜单+悬浮窗 · Ctrl+Alt+A 截图 · Ctrl+Alt+N 笔记)");
             let mut msg: MSG = std::mem::zeroed();
             while GetMessageW(&mut msg, 0, 0, 0) != 0 {}
         });
@@ -434,6 +425,69 @@ fn start_inspect() -> Result<(), String> {
 /// and the snap window would show without keyboard focus — Esc wouldn't reach it and the
 /// user would be trapped (only Alt+F4 closes an unfocused window). The snap content is
 /// transparent at this point, so the capture (kicked by snap-summon) stays clean.
+/// Make a window invisible to screen capture (DXGI/WGC) while still visible on the monitor.
+/// Needs Win10 2004+ (this box is 19045). Used for the 截图 overlay + the 录制条.
+#[cfg(windows)]
+fn exclude_from_capture(window: &tauri::WebviewWindow) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::SetWindowDisplayAffinity;
+    const WDA_EXCLUDEFROMCAPTURE: u32 = 0x11;
+    if let Ok(h) = window.hwnd() {
+        unsafe {
+            SetWindowDisplayAffinity(h.0 as isize, WDA_EXCLUDEFROMCAPTURE);
+        }
+    }
+}
+
+/// The "floating" windows = everything except the main overlay + the transient capture tools.
+#[cfg(windows)]
+fn float_windows(app: &tauri::AppHandle) -> Vec<tauri::WebviewWindow> {
+    use tauri::Manager;
+    app.webview_windows()
+        .into_iter()
+        .filter(|(l, _)| !matches!(l.as_str(), "main" | "snap" | "recbar"))
+        .map(|(_, w)| w)
+        .collect()
+}
+
+/// 双击 Ctrl → show 快捷菜单+搜索 (main overlay), minimizing the other floating windows. 三击 Ctrl
+/// (restore_floats=true) → show main AND bring back every floating window.
+#[cfg(windows)]
+fn summon_main(app: &tauri::AppHandle, restore_floats: bool) {
+    use tauri::{Emitter, Manager};
+    let Some(main) = app.get_webview_window("main") else { return };
+    if main.is_visible().unwrap_or(false) && !restore_floats {
+        let _ = main.hide(); // double-tap while it's already up → tuck it away
+        return;
+    }
+    let _ = main.unminimize();
+    let _ = main.show();
+    let _ = main.set_always_on_top(true);
+    let _ = main.set_focus();
+    let _ = app.emit("summon", ());
+    for w in float_windows(app) {
+        if restore_floats {
+            let _ = w.unminimize();
+            let _ = w.show();
+        } else {
+            let _ = w.minimize();
+        }
+    }
+}
+
+/// Ctrl+Alt+N → show the main overlay and open the fullscreen 笔记 workspace.
+#[cfg(windows)]
+fn open_notes(app: &tauri::AppHandle) {
+    use tauri::{Emitter, Manager};
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.unminimize();
+        let _ = main.show();
+        let _ = main.set_always_on_top(true);
+        let _ = main.set_focus();
+        let _ = app.emit("summon", ());
+        let _ = app.emit("open-notes", ());
+    }
+}
+
 #[cfg(windows)]
 fn summon_snap(app: &tauri::AppHandle, record: bool) {
     use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize};
@@ -457,6 +511,18 @@ fn summon_snap(app: &tauri::AppHandle, record: bool) {
 fn show_snap(app: tauri::AppHandle) -> Result<(), String> {
     summon_snap(&app, false);
     Ok(())
+}
+/// 录屏入口(低频,不设热键,走快捷面板按钮): summon the snap overlay in 录制模式.
+#[cfg(windows)]
+#[tauri::command]
+fn show_snap_record(app: tauri::AppHandle) -> Result<(), String> {
+    summon_snap(&app, true);
+    Ok(())
+}
+#[cfg(not(windows))]
+#[tauri::command]
+fn show_snap_record() -> Result<(), String> {
+    Err("windows only".into())
 }
 #[cfg(windows)]
 #[tauri::command]
@@ -590,6 +656,15 @@ pub fn run() {
                         let _ = w.set_position(tauri::PhysicalPosition::new(0, 0));
                     }
                 }
+                // Exclude poof's OWN capture tooling from screen capture: a 截图 must never grab
+                // the snap chrome, and a 录屏 must never grab the rec bar. WDA_EXCLUDEFROMCAPTURE
+                // keeps them visible on-screen but invisible to capture. The MAIN overlay is NOT
+                // excluded — you should be able to screenshot poof's own panels.
+                for label in ["snap", "recbar"] {
+                    if let Some(w) = app.get_webview_window(label) {
+                        exclude_from_capture(&w);
+                    }
+                }
                 // record + replay: a close (titlebar X / Alt+F4) HIDES instead of destroying,
                 // so they stay re-summonable; closing the record window also stops + saves the
                 // active session so it's never orphaned.
@@ -612,36 +687,32 @@ pub fn run() {
                 let (tx, rx) = channel::<hook::Sig>();
                 let _ = hook::TX.set(tx);
                 hook::install();
+                // Ctrl-tap accumulator: count clean Ctrl taps, then after a short quiet window decide
+                // 2=快捷菜单(min other floats) / 3=快捷菜单+所有悬浮窗. Snap/Notes fire immediately.
                 std::thread::spawn(move || {
-                    for sig in rx {
-                        let h = handle.clone();
-                        let _ = handle.run_on_main_thread(move || match sig {
-                            hook::Sig::Snap => summon_snap(&h, false),
-                            hook::Sig::RecordToggle => {
-                                if region_rec::is_recording() {
-                                    region_rec::stop();
-                                    hide_recbar(&h);
-                                } else {
-                                    summon_snap(&h, true); // select a window/region, then 录
+                    use std::sync::mpsc::RecvTimeoutError;
+                    let mut taps: u32 = 0;
+                    loop {
+                        match rx.recv_timeout(std::time::Duration::from_millis(340)) {
+                            Ok(hook::Sig::Snap) => { let h = handle.clone(); let _ = handle.run_on_main_thread(move || summon_snap(&h, false)); }
+                            Ok(hook::Sig::Notes) => { let h = handle.clone(); let _ = handle.run_on_main_thread(move || open_notes(&h)); }
+                            Ok(hook::Sig::CtrlTap) => {
+                                taps += 1;
+                                if taps >= 3 {
+                                    taps = 0;
+                                    let h = handle.clone();
+                                    let _ = handle.run_on_main_thread(move || summon_main(&h, true));
                                 }
                             }
-                            hook::Sig::Summon => {
-                                if let Some(w) = h.get_webview_window("main") {
-                                    let visible = w.is_visible().unwrap_or(false);
-                                    if visible {
-                                        let _ = w.hide();
-                                        log_line("toggle hide");
-                                    } else {
-                                        let _ = w.unminimize();
-                                        let _ = w.show();
-                                        let _ = w.set_always_on_top(true);
-                                        let _ = w.set_focus();
-                                        let _ = h.emit("summon", ());
-                                        log_line("toggle show");
-                                    }
+                            Err(RecvTimeoutError::Timeout) => {
+                                if taps == 2 {
+                                    let h = handle.clone();
+                                    let _ = handle.run_on_main_thread(move || summon_main(&h, false));
                                 }
+                                taps = 0;
                             }
-                        });
+                            Err(RecvTimeoutError::Disconnected) => break,
+                        }
                     }
                 });
             }
@@ -693,7 +764,8 @@ pub fn run() {
             region_record_start,
             region_record_stop,
             region_is_recording,
-            list_windows
+            list_windows,
+            show_snap_record
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
