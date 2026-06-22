@@ -26,7 +26,7 @@ import {
 import { TerminalView } from "./Terminal";
 import { copyText } from "../lib";
 import { insertAiBlock, AiBlockSpec, AiBlockSchema } from "../blocks/aiblock";
-import { FileSearchConfig, localizeSlashMenu } from "../editorConfig";
+import { FileSearchConfig, localizeSlashMenu, installChromeTranslator } from "../editorConfig";
 import * as Y from "yjs";
 import "@toeverything/theme/style.css";
 import { Schema, DocCollection, Job, type Doc } from "@blocksuite/store";
@@ -58,8 +58,21 @@ function registerEffects() {
 
 // ONE persistent, IndexedDB-backed collection for all notes (survives summons/restarts).
 let collection: DocCollection | null = null;
+// #6 把 poof:aiblock 注册进活的 collection 的 schema —— Schema.register 只是往 Map 里加, 可在
+// collection 创建后再调。即使旧会话(热更新前建的 collection 没这个 flavour), 也能即时补上,
+// 不用整页重载就能加 AI 块。
+function ensureAiSchema(c: DocCollection) {
+  try {
+    (c as any).schema?.register?.([AiBlockSchema]);
+  } catch {
+    /* ignore */
+  }
+}
 export function getCollection(): DocCollection {
-  if (collection) return collection;
+  if (collection) {
+    ensureAiSchema(collection);
+    return collection;
+  }
   registerEffects();
   const schema = new Schema().register([...AffineSchemas, AiBlockSchema]);
   collection = new DocCollection({
@@ -357,7 +370,8 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
     host.current.innerHTML = "";
     host.current.appendChild(editor);
     editorRef.current = editor;
-    localizeSlashMenu(editor); // #8 slash 菜单中文化
+    localizeSlashMenu(editor); // #8 slash 菜单中文(config)
+    installChromeTranslator(); // #8 全量中文(格式条/工具条/tooltip/链接卡片, DOM 级)
     return () => {
       backfills.forEach((t) => clearTimeout(t));
       clearInterval(snapTimer);

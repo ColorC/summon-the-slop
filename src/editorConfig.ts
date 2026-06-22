@@ -124,6 +124,130 @@ function translateItems(items: any[]): any[] {
   });
 }
 
+// 全量中文(格式条/元素工具条/连线工具条/工具提示/链接卡片…无 config 钩子, 只能改 DOM)。
+// MutationObserver 扫 BlockSuite "外壳"元素(弹层/工具条/tooltip), 把里面精确匹配到的英文词
+// 换成中文。幂等(换完再触发也匹配不到), 不碰可编辑正文。
+const UI_ZH: Record<string, string> = {
+  ...SLASH_ZH,
+  Bold: "加粗",
+  Italic: "斜体",
+  Underline: "下划线",
+  Strikethrough: "删除线",
+  Strike: "删除线",
+  "Inline code": "行内代码",
+  "Background color": "背景色",
+  "Text color": "文字颜色",
+  Color: "颜色",
+  Highlight: "高亮",
+  Comment: "评论",
+  Conditions: "条件",
+  "Turn into": "转换为",
+  "Add frame": "加画框",
+  "Add group": "成组",
+  Group: "成组",
+  Ungroup: "取消成组",
+  "Release from group": "移出组",
+  "Add note": "加便签",
+  Note: "便签",
+  Lock: "锁定",
+  Unlock: "解锁",
+  More: "更多",
+  Align: "对齐",
+  "Align left": "左对齐",
+  "Align right": "右对齐",
+  "Align center": "居中对齐",
+  Distribute: "分布",
+  Switch: "切换",
+  Shadow: "阴影",
+  "Bring to front": "置于顶层",
+  "Bring forward": "上移一层",
+  "Send backward": "下移一层",
+  "Send to back": "置于底层",
+  Connector: "连线",
+  Pen: "画笔",
+  Shape: "形状",
+  Eraser: "橡皮",
+  Hand: "抓手",
+  Select: "选择",
+  "Fit to screen": "适应屏幕",
+  Present: "演示",
+  "Mind Map": "思维导图",
+  Template: "模板",
+  Open: "打开",
+  "Open in new tab": "在新标签打开",
+  "Open this doc": "打开此文档",
+  "Open doc": "打开文档",
+  Edit: "编辑",
+  Cancel: "取消",
+  Confirm: "确认",
+  Reset: "重置",
+  Caption: "说明",
+  Reload: "重新加载",
+  Download: "下载",
+  Rename: "重命名",
+  "Copy link": "复制链接",
+  Embed: "嵌入",
+  Bookmark: "书签",
+  Card: "卡片",
+  "Search file or anything": "搜索文件 / 任何东西…",
+  "Link to Doc": "链接文档",
+  "New Doc": "新建文档",
+  "Add tag": "加标签",
+};
+
+const CHROME_SEL = [
+  "affine-slash-menu",
+  "inner-slash-menu",
+  ".slash-menu",
+  "editor-toolbar",
+  "affine-format-bar-widget",
+  ".affine-format-bar-widget",
+  "edgeless-toolbar",
+  "edgeless-element-toolbar",
+  "affine-tooltip",
+  ".affine-tooltip",
+  ".blocksuite-portal",
+  "affine-linked-doc-popover",
+  ".affine-link-popover",
+  ".affine-embed-card-toolbar",
+  ".bookmark-card",
+].join(",");
+
+function translateEl(el: Element): void {
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  const texts: Text[] = [];
+  let cur: Node | null;
+  while ((cur = walker.nextNode())) texts.push(cur as Text);
+  for (const tn of texts) {
+    const raw = tn.nodeValue || "";
+    const t = raw.trim();
+    if (t && UI_ZH[t]) tn.nodeValue = raw.replace(t, UI_ZH[t]);
+  }
+  el.querySelectorAll<HTMLElement>("[aria-label],[data-tooltip]").forEach((e) => {
+    const a = e.getAttribute("aria-label");
+    if (a && UI_ZH[a.trim()]) e.setAttribute("aria-label", UI_ZH[a.trim()]);
+    const d = e.getAttribute("data-tooltip");
+    if (d && UI_ZH[d.trim()]) e.setAttribute("data-tooltip", UI_ZH[d.trim()]);
+  });
+}
+
+let translatorOn = false;
+export function installChromeTranslator(): void {
+  if (translatorOn || typeof document === "undefined") return;
+  translatorOn = true;
+  let scheduled = false;
+  const sweep = () => {
+    scheduled = false;
+    document.querySelectorAll(CHROME_SEL).forEach(translateEl);
+  };
+  const obs = new MutationObserver(() => {
+    if (scheduled) return;
+    scheduled = true;
+    requestAnimationFrame(sweep);
+  });
+  obs.observe(document.body, { childList: true, subtree: true, characterData: true });
+}
+
 /** 编辑器挂载后调用: 把当前活动根上的 slash 菜单 config 改成中文。带重试(widget 异步挂载)。 */
 export function localizeSlashMenu(editor: any): void {
   let tries = 0;
