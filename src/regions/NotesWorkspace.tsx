@@ -20,14 +20,13 @@ import {
   Save,
   SquareTerminal,
   Link2,
-  FileText,
   LayoutGrid,
-  FileSearch,
   Bot,
 } from "lucide-react";
 import { TerminalView } from "./Terminal";
-import { copyText, search, openPath, type SearchHit } from "../lib";
+import { copyText } from "../lib";
 import { insertAiBlock, AiBlockSpec, AiBlockSchema } from "../blocks/aiblock";
+import { FileSearchConfig, localizeSlashMenu } from "../editorConfig";
 import * as Y from "yjs";
 import "@toeverything/theme/style.css";
 import { Schema, DocCollection, Job, type Doc } from "@blocksuite/store";
@@ -40,14 +39,13 @@ import { signal } from "@preact/signals-core";
 import { effects as blocksEffects } from "@blocksuite/blocks/effects";
 import { effects as presetsEffects } from "@blocksuite/presets/effects";
 
-// LIGHT theme: dark text on light surfaces everywhere — including the slash menu / format-bar
-// popovers (so菜单/正文不再深底深字看不见). The paper tint (米色) is done in CSS by declaring the
-// bg var directly on the painting elements (affine-editor-container/page-editor/edgeless-editor),
-// because an inherited var can't override the theme's value declared on that same element.
-const LIGHT = signal("light" as any);
-const LIGHT_THEME = OverrideThemeExtension({
-  getAppTheme: () => LIGHT,
-  getEdgelessTheme: () => LIGHT,
+// DARK theme everywhere (canvas + 弹层/菜单都深底浅字, 跟 poof 的暗色玻璃悬浮层哲学一致)。
+// 唯独"笔记方框(affine-note)"在 CSS 里被改成米色纸 + 深字 —— 只改方框, 不动主题/画布。
+// (slash 菜单等弹层挂在 document.body 上, 不在 affine-note 子树, 所以方框作用域的深字覆盖不会染到它们。)
+const THEME = signal("dark" as any);
+const DARK_THEME = OverrideThemeExtension({
+  getAppTheme: () => THEME,
+  getEdgelessTheme: () => THEME,
 });
 
 let registered = false;
@@ -124,11 +122,29 @@ async function duplicateDoc(c: DocCollection, id: string): Promise<string | null
 
 // remember the last-opened note so re-summoning lands you back where you were (#4)
 const LAST_KEY = "poof-notes-last";
-// 文档(page) vs 画布(edgeless)。默认 page = 像记事本一样写, 不会冒出一堆浮动框 (#3)
+// 默认 = 画布(edgeless): 半透明暗色玻璃板 + 一张米色文档方框。page 是"展开写作"的可选模式。
 const MODE_KEY = "poof-notes-mode";
 type EditorMode = "page" | "edgeless";
 function loadMode(): EditorMode {
-  return localStorage.getItem(MODE_KEY) === "edgeless" ? "edgeless" : "page";
+  return localStorage.getItem(MODE_KEY) === "page" ? "page" : "edgeless";
+}
+
+// #3 非全屏窗口的位置+尺寸(自定义拖动/八向缩放, 因为 CSS resize 只能右下角且不能移动)
+const GEOM_KEY = "poof-notes-geom";
+interface Geom {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+function loadGeom(): Geom {
+  try {
+    const g = JSON.parse(localStorage.getItem(GEOM_KEY) || "");
+    if (g && typeof g.x === "number") return g;
+  } catch {
+    /* ignore */
+  }
+  return { x: 96, y: 92, w: 840, h: 560 };
 }
 
 // lightweight tags store (BlockSuite's tag schema is heavy; we keep our own)
@@ -168,11 +184,6 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
   const [termOpen, setTermOpen] = useState(false); // #7 笔记里的 powershell 右侧栏
   const [mode, setMode] = useState<EditorMode>(loadMode); // #3 文档/画布
   const editorRef = useRef<AffineEditorContainer | null>(null);
-  // #1 核心搜索: 在笔记里搜本机文件并插入引用
-  const [findOpen, setFindOpen] = useState(false);
-  const [fq, setFq] = useState("");
-  const [fhits, setFhits] = useState<SearchHit[]>([]);
-  const [fbusy, setFbusy] = useState(false);
   const [view, setView] = useState<View>("notes");
   const [sort, setSort] = useState<Sort>("updated");
   const [tags, setTags] = useState<TagMap>(loadTags);
@@ -180,6 +191,49 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
   const [verOpen, setVerOpen] = useState(false);
   const [versions, setVersions] = useState<NoteVersion[]>([]);
   const seeded = useRef(false);
+  const [geom, setGeom] = useState<Geom>(loadGeom);
+
+  // #3 拖动(move) / 八向缩放(n/s/e/w/ne/nw/se/sw)。指针事件挂 window, 拖出元素也跟手。
+  useEffect(() => {
+    if (!full) localStorage.setItem(GEOM_KEY, JSON.stringify(geom));
+  }, [geom, full]);
+  function startDrag(e: React.PointerEvent, dir: string) {
+    if (full) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const sx = e.clientX;
+    const sy = e.clientY;
+    const g0 = { ...geom };
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const onMove = (ev: PointerEvent) => {
+      const dx = ev.clientX - sx;
+      const dy = ev.clientY - sy;
+      let { x, y, w, h } = g0;
+      if (dir === "move") {
+        x = Math.min(Math.max(0, g0.x + dx), vw - 120);
+        y = Math.min(Math.max(0, g0.y + dy), vh - 56);
+      } else {
+        if (dir.includes("e")) w = Math.max(360, g0.w + dx);
+        if (dir.includes("s")) h = Math.max(240, g0.h + dy);
+        if (dir.includes("w")) {
+          w = Math.max(360, g0.w - dx);
+          x = g0.x + (g0.w - w);
+        }
+        if (dir.includes("n")) {
+          h = Math.max(240, g0.h - dy);
+          y = g0.y + (g0.h - h);
+        }
+      }
+      setGeom({ x, y, w, h });
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }
 
   function readMetas(): Meta[] {
     return c.meta.docMetas.map((m: any) => ({
@@ -296,13 +350,14 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
     }, 180000);
 
     const editor = new AffineEditorContainer();
-    editor.edgelessSpecs = [...editor.edgelessSpecs, LIGHT_THEME, ...AiBlockSpec];
-    editor.pageSpecs = [...editor.pageSpecs, LIGHT_THEME, ...AiBlockSpec];
+    editor.edgelessSpecs = [...editor.edgelessSpecs, DARK_THEME, ...AiBlockSpec, FileSearchConfig];
+    editor.pageSpecs = [...editor.pageSpecs, DARK_THEME, ...AiBlockSpec, FileSearchConfig];
     editor.doc = doc;
-    editor.mode = loadMode() as any; // #3 文档/画布(默认文档)
+    editor.mode = loadMode() as any; // 默认画布
     host.current.innerHTML = "";
     host.current.appendChild(editor);
     editorRef.current = editor;
+    localizeSlashMenu(editor); // #8 slash 菜单中文化
     return () => {
       backfills.forEach((t) => clearTimeout(t));
       clearInterval(snapTimer);
@@ -330,25 +385,6 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
     }
   }, [mode]);
 
-  // #1 核心搜索: 在笔记里搜本机文件(走 SearchBar 同款 search())
-  useEffect(() => {
-    if (!findOpen || !fq.trim()) {
-      setFhits([]);
-      return;
-    }
-    let alive = true;
-    setFbusy(true);
-    const t = setTimeout(() => {
-      search(fq, 24)
-        .then((r) => alive && setFhits(r))
-        .catch(() => alive && setFhits([]))
-        .finally(() => alive && setFbusy(false));
-    }, 130);
-    return () => {
-      alive = false;
-      clearTimeout(t);
-    };
-  }, [findOpen, fq]);
 
   // ---- actions ----
   function createNote() {
@@ -356,33 +392,7 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
     setActiveId(d.id);
     setView("notes");
   }
-  // #1 把搜到的文件作为书签卡片插进当前笔记
-  function noteParent(doc: any): string | undefined {
-    const n = doc.getBlocksByFlavour?.("affine:note")?.[0];
-    return (n?.model?.id ?? n?.id) || doc.root?.id;
-  }
-  function insertFile(hit: SearchHit) {
-    const doc = c.getDoc(activeId);
-    if (!doc) return;
-    doc.load();
-    const url = /^https?:\/\//.test(hit.path)
-      ? hit.path
-      : "file:///" + hit.path.replace(/\\/g, "/");
-    try {
-      doc.addBlock(
-        "affine:bookmark",
-        { url, title: hit.name, description: hit.path } as any,
-        noteParent(doc)
-      );
-    } catch {
-      /* ignore */
-    }
-    c.setDocMeta(activeId, { updatedDate: Date.now() } as any);
-    setFindOpen(false);
-    setFq("");
-    setFhits([]);
-  }
-  // #2 在画布上放一个 AI 块(=绑定到本笔记的持续 AI 对话, 关→关, 再开→resume)
+  // 在画布上放一个 AI 块(=绑定到本笔记的持续 AI 对话, 关→关, 再开→resume)
   function addAiBlock() {
     const doc = c.getDoc(activeId);
     if (!doc) return;
@@ -504,10 +514,27 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
   const activeTitle = metas.find((m) => m.id === activeId)?.title || "未命名笔记";
 
   return (
-    <div className={"notes-ws " + mode + (full ? " full" : "")}>
+    <div
+      className={"notes-ws " + mode + (full ? " full" : "")}
+      style={full ? undefined : { left: geom.x, top: geom.y, width: geom.w, height: geom.h }}
+    >
       <div className="notespace" ref={host} />
 
-      <div className="notes-bar">
+      {!full && (
+        <>
+          {["n", "s", "e", "w", "ne", "nw", "se", "sw"].map((d) => (
+            <div key={d} className={"nws-rz " + d} onPointerDown={(e) => startDrag(e, d)} />
+          ))}
+        </>
+      )}
+
+      <div
+        className="notes-bar"
+        onPointerDown={(e) => {
+          if (!full && !(e.target as HTMLElement).closest("button,input")) startDrag(e, "move");
+        }}
+        title={full ? undefined : "拖这里移动窗口"}
+      >
         <button
           className={"notes-bar-btn" + (libOpen ? " on" : "")}
           title="笔记库"
@@ -520,29 +547,13 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
         </button>
         <button
           className="notes-bar-btn"
-          title={mode === "page" ? "切到画布（无限画布 · 放 AI 块）" : "切到文档（像记事本一样写）"}
+          title={mode === "page" ? "回到画布" : "展开写作（把这张文档铺成全幅写作）"}
           onClick={() => setMode((m) => (m === "page" ? "edgeless" : "page"))}
         >
-          {mode === "page" ? <LayoutGrid size={15} /> : <FileText size={15} />}
+          {mode === "page" ? <LayoutGrid size={15} /> : <Maximize2 size={15} />}
         </button>
         <span className="notes-bar-title">{activeTitle}</span>
         <span className="notes-bar-spacer" />
-        <button
-          className={"notes-bar-btn" + (findOpen ? " on" : "")}
-          title="插入文件（核心搜索本机文件 → 作为卡片嵌进笔记）"
-          disabled={!activeId}
-          onClick={() => setFindOpen((o) => !o)}
-        >
-          <FileSearch size={15} />
-        </button>
-        <button
-          className="notes-bar-btn"
-          title="放一个 AI 块（绑定本笔记的持续对话 · 关笔记=关对话 · 再开=resume 续上）"
-          disabled={!activeId}
-          onClick={addAiBlock}
-        >
-          <Bot size={15} />
-        </button>
         <button
           className={"notes-bar-btn" + (verOpen ? " on" : "")}
           title="版本历史"
@@ -578,45 +589,11 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
         </button>
       </div>
 
-      {findOpen && (
-        <div className="notes-find">
-          <div className="notes-find-head">
-            <FileSearch size={14} />
-            <input
-              autoFocus
-              value={fq}
-              onChange={(e) => setFq(e.target.value)}
-              placeholder="核心搜索本机文件 / 文件夹 / 应用…"
-              spellCheck={false}
-            />
-            {fbusy && <Loader2 size={14} className="spin" />}
-            <button className="notes-lib-x" onClick={() => setFindOpen(false)} title="收起">
-              <X size={14} />
-            </button>
-          </div>
-          <div className="notes-find-list">
-            {fq.trim() && !fbusy && fhits.length === 0 && (
-              <div className="notes-empty">没找到匹配的文件</div>
-            )}
-            {fhits.map((h) => (
-              <div className="notes-find-item" key={h.path} onClick={() => insertFile(h)} title={"插入引用卡片：" + h.path}>
-                <FileText size={14} />
-                <span className="ff-name">{h.name}</span>
-                <span className="ff-path">{h.path}</span>
-                <button
-                  className="ff-open"
-                  title="打开文件（系统默认程序）"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void openPath(h.path);
-                  }}
-                >
-                  打开
-                </button>
-              </div>
-            ))}
-          </div>
-        </div>
+      {/* #6 AI 块入口放在画布"底部工具栏"区(底部中央), 不在上面的工具条 */}
+      {mode === "edgeless" && (
+        <button className="notes-aibtn" title="加一个 AI 块（绑定本笔记的持续对话 · 关=关 · 再开=resume）" onClick={addAiBlock}>
+          <Bot size={15} /> AI 块
+        </button>
       )}
 
       {termOpen && (
