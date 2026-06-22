@@ -969,6 +969,70 @@ body,
   width: 4px;
 }
 
+/* #1 核心搜索插文件 弹层 */
+.notes-find {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 4;
+  width: 540px;
+  max-width: calc(100% - 140px);
+  background: rgba(18, 19, 25, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(10px);
+  overflow: hidden;
+}
+.notes-find-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  color: #aeb4c2;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.notes-find-head input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #e6e8ee;
+  font-size: 14px;
+}
+.notes-find-list {
+  max-height: 360px;
+  overflow-y: auto;
+  padding: 4px;
+}
+.notes-find-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border-radius: 7px;
+  cursor: pointer;
+  color: #c3c6cf;
+}
+.notes-find-item:hover {
+  background: rgba(45, 108, 246, 0.18);
+  color: #fff;
+}
+.notes-find-item .ff-name {
+  font-size: 13px;
+  white-space: nowrap;
+}
+.notes-find-item .ff-path {
+  font-size: 11px;
+  color: #7b8194;
+  margin-left: auto;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* toggleable library window (笔记库) — previous panel style, not a permanent rail */
 .notes-lib {
   position: absolute;
@@ -1341,22 +1405,40 @@ body,
 .notespace {
   position: absolute;
   inset: 0;
-  /* 默认笔记矩形(note card): 深色主题里 --affine-note-background-white 原本是 rgba(0,0,0,1)=纯黑,
-     改成深灰板。自定义属性会穿透 shadow DOM 级联到 affine-note 元素上(它用 var() 上色)。 */
-  --affine-note-background-white: #20222b !important;
-  --affine-note-background-grey: #2a2c34 !important;
 }
 .notespace affine-editor-container,
 .notespace edgeless-editor {
   display: block;
   height: 100%;
 }
-/* canvas: 实心深灰画布 + 淡灰点阵（弱化，非白），不是纯黑也不是透出桌面 */
-.notespace affine-edgeless-viewport,
-.notespace .edgeless-editor-container,
-.notespace edgeless-editor {
+
+/* ===== #3 米色记事本观感（自定义属性穿透 shadow DOM 级联到块上）===== */
+/* 文档(page)模式: 整面米色纸 + 深字, 像记事本页(线性文档, 不会冒一堆浮动框) */
+.notes-ws.page .notespace,
+.notes-ws.page .notespace affine-editor-container,
+.notes-ws.page .notespace affine-page-root,
+.notes-ws.page .notespace .affine-page-root-block-container {
+  --affine-background-primary-color: #ece3cf !important; /* 米色纸 */
+  --affine-text-primary-color: #2c2a26 !important; /* 深字 */
+  --affine-text-secondary-color: #6b6557 !important;
+  --affine-placeholder-color: #b3a98f !important;
+  --affine-icon-color: #6b6557 !important;
+  --affine-divider-color: rgba(0, 0, 0, 0.1) !important;
+}
+/* 画布(edgeless)模式: 深灰画布 + 淡点阵 */
+.notes-ws.edgeless .notespace affine-edgeless-viewport,
+.notes-ws.edgeless .notespace .edgeless-editor-container,
+.notes-ws.edgeless .notespace edgeless-editor {
   --affine-background-primary-color: #16171c !important;
   --affine-edgeless-grid-color: rgba(165, 171, 186, 0.09) !important;
+}
+/* 画布上的便签(note card): 米色纸 + 深字, 不再是纯黑矩形 */
+.notes-ws.edgeless .notespace affine-note {
+  --affine-note-background-white: #ece3cf !important;
+  --affine-note-background-grey: #ddd3bb !important;
+  --affine-text-primary-color: #2c2a26 !important;
+  --affine-text-secondary-color: #6b6557 !important;
+  --affine-placeholder-color: #b3a98f !important;
 }
 
 /* ===== 圈选 / 检视 element inspector ===== */

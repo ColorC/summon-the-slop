@@ -20,9 +20,14 @@ import {
   Save,
   SquareTerminal,
   Link2,
+  FileText,
+  LayoutGrid,
+  FileSearch,
+  Bot,
 } from "lucide-react";
 import { TerminalView } from "./Terminal";
-import { copyText } from "../lib";
+import { copyText, search, type SearchHit } from "../lib";
+import { insertAiBlock, AiBlockSpec, AiBlockSchema } from "../blocks/aiblock";
 import * as Y from "yjs";
 import "@toeverything/theme/style.css";
 import { Schema, DocCollection, Job, type Doc } from "@blocksuite/store";
@@ -55,7 +60,7 @@ let collection: DocCollection | null = null;
 export function getCollection(): DocCollection {
   if (collection) return collection;
   registerEffects();
-  const schema = new Schema().register(AffineSchemas);
+  const schema = new Schema().register([...AffineSchemas, AiBlockSchema]);
   collection = new DocCollection({
     id: "poof-notes",
     schema,
@@ -71,8 +76,8 @@ function seedDoc(c: DocCollection): Doc {
   doc.load(() => {
     const rootId = doc.addBlock("affine:page", {});
     doc.addBlock("affine:surface", {}, rootId);
-    // a real document block (sized note with a heading + body), not an empty rectangle
-    const noteId = doc.addBlock("affine:note", { xywh: "[0,0,540,360]" }, rootId);
+    // 一块"笔记本页"样的文档块: 竖向(高>宽), 米色纸感(底色由 CSS 给), 含标题+正文
+    const noteId = doc.addBlock("affine:note", { xywh: "[0,0,440,620]" }, rootId);
     doc.addBlock("affine:paragraph", { type: "h1" as any }, noteId);
     doc.addBlock("affine:paragraph", {}, noteId);
   });
@@ -116,6 +121,12 @@ async function duplicateDoc(c: DocCollection, id: string): Promise<string | null
 
 // remember the last-opened note so re-summoning lands you back where you were (#4)
 const LAST_KEY = "poof-notes-last";
+// 文档(page) vs 画布(edgeless)。默认 page = 像记事本一样写, 不会冒出一堆浮动框 (#3)
+const MODE_KEY = "poof-notes-mode";
+type EditorMode = "page" | "edgeless";
+function loadMode(): EditorMode {
+  return localStorage.getItem(MODE_KEY) === "edgeless" ? "edgeless" : "page";
+}
 
 // lightweight tags store (BlockSuite's tag schema is heavy; we keep our own)
 const TAGS_KEY = "poof-notes-tags";
@@ -152,6 +163,13 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
   const [full, setFull] = useState(true); // #6 默认全屏, 用户想退全屏再说
   const [libOpen, setLibOpen] = useState(false);
   const [termOpen, setTermOpen] = useState(false); // #7 笔记里的 powershell 右侧栏
+  const [mode, setMode] = useState<EditorMode>(loadMode); // #3 文档/画布
+  const editorRef = useRef<AffineEditorContainer | null>(null);
+  // #1 核心搜索: 在笔记里搜本机文件并插入引用
+  const [findOpen, setFindOpen] = useState(false);
+  const [fq, setFq] = useState("");
+  const [fhits, setFhits] = useState<SearchHit[]>([]);
+  const [fbusy, setFbusy] = useState(false);
   const [view, setView] = useState<View>("notes");
   const [sort, setSort] = useState<Sort>("updated");
   const [tags, setTags] = useState<TagMap>(loadTags);
@@ -275,18 +293,20 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
     }, 180000);
 
     const editor = new AffineEditorContainer();
-    editor.edgelessSpecs = [...editor.edgelessSpecs, DARK_THEME];
-    editor.pageSpecs = [...editor.pageSpecs, DARK_THEME];
+    editor.edgelessSpecs = [...editor.edgelessSpecs, DARK_THEME, ...AiBlockSpec];
+    editor.pageSpecs = [...editor.pageSpecs, DARK_THEME, ...AiBlockSpec];
     editor.doc = doc;
-    editor.mode = "edgeless" as any;
+    editor.mode = loadMode() as any; // #3 文档/画布(默认文档)
     host.current.innerHTML = "";
     host.current.appendChild(editor);
+    editorRef.current = editor;
     return () => {
       backfills.forEach((t) => clearTimeout(t));
       clearInterval(snapTimer);
       if (dirty) snap("自动"); // capture the latest edits on close
       offTitle();
       offBlock();
+      editorRef.current = null;
       try {
         editor.remove();
       } catch {
@@ -295,11 +315,77 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
     };
   }, [activeId, c]);
 
+  // #3 文档/画布切换: 不重挂编辑器, 直接切 mode + 记住
+  useEffect(() => {
+    localStorage.setItem(MODE_KEY, mode);
+    if (editorRef.current) {
+      try {
+        editorRef.current.mode = mode as any;
+      } catch {
+        /* ignore */
+      }
+    }
+  }, [mode]);
+
+  // #1 核心搜索: 在笔记里搜本机文件(走 SearchBar 同款 search())
+  useEffect(() => {
+    if (!findOpen || !fq.trim()) {
+      setFhits([]);
+      return;
+    }
+    let alive = true;
+    setFbusy(true);
+    const t = setTimeout(() => {
+      search(fq, 24)
+        .then((r) => alive && setFhits(r))
+        .catch(() => alive && setFhits([]))
+        .finally(() => alive && setFbusy(false));
+    }, 130);
+    return () => {
+      alive = false;
+      clearTimeout(t);
+    };
+  }, [findOpen, fq]);
+
   // ---- actions ----
   function createNote() {
     const d = seedDoc(c);
     setActiveId(d.id);
     setView("notes");
+  }
+  // #1 把搜到的文件作为书签卡片插进当前笔记
+  function noteParent(doc: any): string | undefined {
+    const n = doc.getBlocksByFlavour?.("affine:note")?.[0];
+    return (n?.model?.id ?? n?.id) || doc.root?.id;
+  }
+  function insertFile(hit: SearchHit) {
+    const doc = c.getDoc(activeId);
+    if (!doc) return;
+    doc.load();
+    const url = /^https?:\/\//.test(hit.path)
+      ? hit.path
+      : "file:///" + hit.path.replace(/\\/g, "/");
+    try {
+      doc.addBlock(
+        "affine:bookmark",
+        { url, title: hit.name, description: hit.path } as any,
+        noteParent(doc)
+      );
+    } catch {
+      /* ignore */
+    }
+    c.setDocMeta(activeId, { updatedDate: Date.now() } as any);
+    setFindOpen(false);
+    setFq("");
+    setFhits([]);
+  }
+  // #2 在画布上放一个 AI 块(=绑定到本笔记的持续 AI 对话, 关→关, 再开→resume)
+  function addAiBlock() {
+    const doc = c.getDoc(activeId);
+    if (!doc) return;
+    doc.load();
+    if (mode !== "edgeless") setMode("edgeless"); // AI 块活在画布上
+    insertAiBlock(doc, activeId);
   }
   function setFlag(id: string, flag: Partial<Record<"archived" | "trashed" | "favorite", boolean>>) {
     c.setDocMeta(id, { ...flag, updatedDate: Date.now() } as any);
@@ -415,7 +501,7 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
   const activeTitle = metas.find((m) => m.id === activeId)?.title || "未命名笔记";
 
   return (
-    <div className={"notes-ws" + (full ? " full" : "")}>
+    <div className={"notes-ws " + mode + (full ? " full" : "")}>
       <div className="notespace" ref={host} />
 
       <div className="notes-bar">
@@ -429,8 +515,31 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
         <button className="notes-bar-btn" title="新建笔记" onClick={createNote}>
           <Plus size={15} />
         </button>
+        <button
+          className="notes-bar-btn"
+          title={mode === "page" ? "切到画布（无限画布 · 放 AI 块）" : "切到文档（像记事本一样写）"}
+          onClick={() => setMode((m) => (m === "page" ? "edgeless" : "page"))}
+        >
+          {mode === "page" ? <LayoutGrid size={15} /> : <FileText size={15} />}
+        </button>
         <span className="notes-bar-title">{activeTitle}</span>
         <span className="notes-bar-spacer" />
+        <button
+          className={"notes-bar-btn" + (findOpen ? " on" : "")}
+          title="插入文件（核心搜索本机文件 → 作为卡片嵌进笔记）"
+          disabled={!activeId}
+          onClick={() => setFindOpen((o) => !o)}
+        >
+          <FileSearch size={15} />
+        </button>
+        <button
+          className="notes-bar-btn"
+          title="放一个 AI 块（绑定本笔记的持续对话 · 关笔记=关对话 · 再开=resume 续上）"
+          disabled={!activeId}
+          onClick={addAiBlock}
+        >
+          <Bot size={15} />
+        </button>
         <button
           className={"notes-bar-btn" + (verOpen ? " on" : "")}
           title="版本历史"
@@ -465,6 +574,37 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
           <X size={15} />
         </button>
       </div>
+
+      {findOpen && (
+        <div className="notes-find">
+          <div className="notes-find-head">
+            <FileSearch size={14} />
+            <input
+              autoFocus
+              value={fq}
+              onChange={(e) => setFq(e.target.value)}
+              placeholder="核心搜索本机文件 / 文件夹 / 应用…"
+              spellCheck={false}
+            />
+            {fbusy && <Loader2 size={14} className="spin" />}
+            <button className="notes-lib-x" onClick={() => setFindOpen(false)} title="收起">
+              <X size={14} />
+            </button>
+          </div>
+          <div className="notes-find-list">
+            {fq.trim() && !fbusy && fhits.length === 0 && (
+              <div className="notes-empty">没找到匹配的文件</div>
+            )}
+            {fhits.map((h) => (
+              <div className="notes-find-item" key={h.path} onClick={() => insertFile(h)} title={"插入：" + h.path}>
+                <FileText size={14} />
+                <span className="ff-name">{h.name}</span>
+                <span className="ff-path">{h.path}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {termOpen && (
         <div className="notes-term">
