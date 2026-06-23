@@ -25,7 +25,7 @@ import {
 } from "lucide-react";
 import { TerminalView } from "./Terminal";
 import { copyText } from "../lib";
-import { insertAiBlock, AiBlockSpec, AiBlockSchema } from "../blocks/aiblock";
+import { insertAiBlock, AiBlockSpec, AiBlockSchema, aiBlockSchemas } from "../blocks/aiblock";
 import { FileSearchConfig, localizeSlashMenu, installChromeTranslator } from "../editorConfig";
 import * as Y from "yjs";
 import "@toeverything/theme/style.css";
@@ -58,12 +58,15 @@ function registerEffects() {
 
 // ONE persistent, IndexedDB-backed collection for all notes (survives summons/restarts).
 let collection: DocCollection | null = null;
-// #6 把 poof:aiblock 注册进活的 collection 的 schema —— Schema.register 只是往 Map 里加, 可在
-// collection 创建后再调。即使旧会话(热更新前建的 collection 没这个 flavour), 也能即时补上,
-// 不用整页重载就能加 AI 块。
+// #6 让活的 collection 能加 AI 块: 注册 poof:aiblock + 把它加进 affine:surface 的 children 白名单
+// (否则 addBlock 到 surface 会被 schema 拒)。注意 children 在 schema.model 上, 不是 schema.metadata。
 function ensureAiSchema(c: DocCollection) {
   try {
-    (c as any).schema?.register?.([AiBlockSchema]);
+    const sm = (c as any).schema?.flavourSchemaMap;
+    if (sm && !sm.get("poof:aiblock")) (c as any).schema.register([AiBlockSchema]);
+    const surf = sm?.get("affine:surface");
+    const kids = surf?.model?.children;
+    if (Array.isArray(kids) && !kids.includes("poof:aiblock")) kids.push("poof:aiblock");
   } catch {
     /* ignore */
   }
@@ -74,7 +77,8 @@ export function getCollection(): DocCollection {
     return collection;
   }
   registerEffects();
-  const schema = new Schema().register([...AffineSchemas, AiBlockSchema]);
+  // aiBlockSchemas: 复制放宽 surface 的 children 白名单 + 追加 AiBlockSchema(见 blocks/aiblock)
+  const schema = new Schema().register(aiBlockSchemas(AffineSchemas as any));
   collection = new DocCollection({
     id: "poof-notes",
     schema,

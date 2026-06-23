@@ -1586,18 +1586,31 @@ body,
   --affine-background-primary-color: rgba(22, 23, 28, 0.5) !important;
   --affine-edgeless-grid-color: rgba(165, 171, 186, 0.1) !important;
 }
-/* 笔记方框 = 米色纸 + 深字, 不再纯黑(变量直接铆在 affine-note 上才盖得住主题在该元素上的声明) */
-.notes-ws .notespace affine-note {
+/* 笔记方框 = 米色纸 + 深字, 不再纯黑。
+   关键: 画布上的笔记元素 tag 是 affine-edgeless-note(不是 affine-note!)——这是黑了 4 次的真因。
+   背景色变量声明在它(及 page 模式的 affine-note)上, 内部那层 backgroundStyle 的 var() 才取到米色。 */
+.notes-ws .notespace affine-note,
+.notes-ws .notespace affine-edgeless-note {
   --affine-note-background-white: #efe7d6 !important; /* 米色纸 */
   --affine-note-background-grey: #e2d8c2 !important;
+  --affine-note-background-yellow: #efe7d6 !important;
   --affine-text-primary-color: #2b2a26 !important; /* 方框内深字 */
   --affine-text-secondary-color: #6b6557 !important;
   --affine-placeholder-color: #a89f88 !important;
   --affine-link-color: #9a6a2f !important;
 }
-/* 方框更像一张文档纸(舒服写字): 内边距 + 纸张阴影 */
-.notes-ws .notespace affine-note .affine-note-block-container {
-  padding: 18px 26px !important;
+/* 方框内文字: 正文颜色不是走 --affine-text-primary-color(它走别的/字面值), 所以直接上 color。
+   作用域只在笔记方框内(弹层挂 body 上不受影响)。 */
+.notes-ws .notespace affine-note,
+.notes-ws .notespace affine-note *,
+.notes-ws .notespace affine-edgeless-note,
+.notes-ws .notespace affine-edgeless-note * {
+  color: #2b2a26 !important;
+}
+/* 方框更像一张文档纸: 内边距 */
+.notes-ws .notespace affine-note .affine-note-block-container,
+.notes-ws .notespace affine-edgeless-note .affine-note-block-container {
+  padding: 16px 24px !important;
 }
 
 /* ===== 圈选 / 检视 element inspector ===== */

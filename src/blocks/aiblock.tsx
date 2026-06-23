@@ -176,6 +176,26 @@ export const AiBlockSpec: ExtensionType[] = [
   ),
 ];
 
+// affine:surface 的 children 是固定白名单(frame/image/bookmark/attachment/embed-*/edgeless-text),
+// 不含 poof:aiblock → 直接 addBlock 到 surface 会被 schema 拒("Block cannot have parent: affine:surface")。
+// 那些 schema 对象是冻结的(push 不进去), 所以这里"不可变重建": 复制一份 surface schema、把
+// poof:aiblock 加进它的 children, 连同 AiBlockSchema 一起返回。register 按 flavour 入 Map,
+// 后者覆盖前者 → 用我们这份放宽过的 surface。
+export function aiBlockSchemas(affineSchemas: any[]): any[] {
+  const out = affineSchemas.map((s) => {
+    if (s?.model?.flavour === "affine:surface") {
+      // 注意: defineBlockSchema 把 role/parent/children 摊进 schema.model(不是 schema.metadata)。
+      const kids = s.model?.children || [];
+      if (!kids.includes("poof:aiblock")) {
+        return { ...s, model: { ...s.model, children: [...kids, "poof:aiblock"] } };
+      }
+    }
+    return s;
+  });
+  out.push(AiBlockSchema);
+  return out;
+}
+
 // ---- 往画布(surface)放一个 AI 块 ----
 export function insertAiBlock(doc: any, _noteId: string): string | null {
   try {
