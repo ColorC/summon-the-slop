@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import {
   PenLine,
   FolderKanban,
+  Target,
   CheckSquare,
   Camera,
   ScanEye,
@@ -23,6 +24,7 @@ import { ConvBar } from "./regions/ConvBar";
 import { ProjectSurface, ReviewSurface } from "./surfaces";
 import { NotesWorkspace } from "./regions/NotesWorkspace";
 import { DockStage, type PanelKind } from "./panels";
+import GoalsSurface from "./goalsSurface";
 import { pushChatIntent } from "./chatIntents";
 import { sendToController, OMNI_WEB_URL } from "./controller";
 import { startNoteBridge } from "./noteOps";
@@ -165,7 +167,9 @@ export default function App() {
   function panelContent(k: PanelKind) {
     if (k === "chat") return <TerminalBar />;
     return (
-      <div className="pf-scroll">{k === "project" ? <ProjectSurface /> : <ReviewSurface />}</div>
+      <div className="pf-scroll">
+        {k === "project" ? <ProjectSurface /> : k === "goals" ? <GoalsSurface /> : <ReviewSurface />}
+      </div>
     );
   }
 
@@ -230,6 +234,13 @@ export default function App() {
             title="项目"
           >
             <FolderKanban size={17} />
+          </button>
+          <button
+            className={"pf-btn" + (isOpen("goals") ? " on" : "")}
+            onClick={() => togglePanel("goals")}
+            title="目标 / 任务（whatnow · 北极星/主线/支线 + 进度）"
+          >
+            <Target size={17} />
           </button>
           <button
             className={"pf-btn" + (isOpen("review") ? " on" : "")}

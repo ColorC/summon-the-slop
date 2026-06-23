@@ -1,7 +1,7 @@
 import { Fragment, useRef, useState, type ReactNode, type PointerEvent as RPE } from "react";
 import { Pin, PinOff, X, PanelLeft, PanelRight, PictureInPicture2, PanelBottomClose } from "lucide-react";
 
-export type PanelKind = "chat" | "project" | "review" | "notes";
+export type PanelKind = "chat" | "project" | "review" | "notes" | "goals";
 export type DockSide = "left" | "right";
 
 export const PANEL_TITLES: Record<PanelKind, string> = {
@@ -9,6 +9,7 @@ export const PANEL_TITLES: Record<PanelKind, string> = {
   project: "项目",
   review: "审阅台",
   notes: "笔记空间",
+  goals: "目标 / 任务",
 };
 
 const MIN_DOCK = 240; // a dock column never narrower than this
@@ -40,6 +41,7 @@ function loadGeo(k: PanelKind, i = 0): Geo {
 const DEFAULT_SIDE: Record<PanelKind, DockSide> = {
   project: "left",
   review: "left",
+  goals: "left",
   chat: "right",
   notes: "right",
 };
