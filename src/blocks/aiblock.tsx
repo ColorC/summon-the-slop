@@ -88,7 +88,7 @@ class AiBlockComponent extends BlockComponent<AiBlockModel, AiBlockService> {
     >
       <div
         class="poof-aiblock-bar"
-        style="flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:4px 8px;font-size:11px;color:#9aa3b5;background:rgba(255,255,255,0.04);border-bottom:1px solid rgba(255,255,255,0.08);"
+        style="flex:0 0 auto;display:flex;align-items:center;gap:6px;padding:4px 8px;font-size:13px;color:#9aa3b5;background:rgba(255,255,255,0.04);border-bottom:1px solid rgba(255,255,255,0.08);"
       >
         ⌁ AI · ${this.model.provider || "claude"}
       </div>

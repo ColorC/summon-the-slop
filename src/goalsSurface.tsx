@@ -16,7 +16,7 @@ const STATUS: Record<string, string> = { done: "#3fb950", in_progress: "#d9b25a"
 function TaskLine({ t }: { t: Task }) {
   return (
     <div style={{ padding: "3px 0", borderTop: "1px solid #1a222b" }}>
-      <div style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12 }}>
+      <div style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 13 }}>
         <span style={{ width: 7, height: 7, borderRadius: 4, background: STATUS[t.status] || "#8b97a4", flexShrink: 0 }} />
         <span style={{ color: "#dfe6ee", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.title}</span>
         <span style={{ color: "#6f7681", marginLeft: "auto", flexShrink: 0 }}>{t.completion}%</span>
@@ -45,28 +45,28 @@ export default function GoalsSurface() {
     setMsg(""); load();
   };
 
-  if (err) return <div style={{ padding: 12, color: "#ff8a80", fontSize: 12.5, lineHeight: 1.6 }}>连不上 whatnow（:8230）：{err}<br />启动：<code>whatnowd.exe</code></div>;
-  if (!board) return <div style={{ padding: 12, color: "#8b97a4", fontSize: 12.5 }}>加载目标…</div>;
+  if (err) return <div style={{ padding: 12, color: "#ff8a80", fontSize: 13, lineHeight: 1.6 }}>连不上 whatnow（:8230）：{err}<br />启动：<code>whatnowd.exe</code></div>;
+  if (!board) return <div style={{ padding: 12, color: "#8b97a4", fontSize: 13 }}>加载目标…</div>;
 
   return (
-    <div style={{ padding: "8px 10px 24px", color: "#e6edf3", fontSize: 12.5 }}>
+    <div style={{ padding: "8px 10px 24px", color: "#e6edf3", fontSize: 13 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
         <b style={{ color: "#f0e6cf" }}>目标 / 任务</b>
-        <span style={{ color: "#9a8f78", fontSize: 11.5 }}>{board.counts.goals} 目标 / {board.counts.tasks} 计划</span>
-        <button onClick={sync} style={{ marginLeft: "auto", fontSize: 11.5, color: "#d9b25a", background: "#15120a", border: "1px solid #8a7437", borderRadius: 4, padding: "2px 7px", cursor: "pointer" }}>拉取 {msg}</button>
+        <span style={{ color: "#9a8f78", fontSize: 13 }}>{board.counts.goals} 目标 / {board.counts.tasks} 计划</span>
+        <button onClick={sync} style={{ marginLeft: "auto", fontSize: 13, color: "#d9b25a", background: "#15120a", border: "1px solid #8a7437", borderRadius: 4, padding: "2px 7px", cursor: "pointer" }}>拉取 {msg}</button>
       </div>
       {board.focus.length > 0 && (
-        <div style={{ marginBottom: 6, color: "#d9b25a", fontSize: 11.5 }}>★ 专注：{board.focus.map((f) => f.title || f.task_id).join(" · ")}</div>
+        <div style={{ marginBottom: 6, color: "#d9b25a", fontSize: 13 }}>★ 专注：{board.focus.map((f) => f.title || f.task_id).join(" · ")}</div>
       )}
       {board.clusters.map((c) => (
         <div key={c.id} style={{ marginBottom: 8 }}>
-          <div style={{ color: "#d9b25a", fontWeight: 700, fontSize: 12.5, margin: "6px 0 2px" }}>{c.title}</div>
+          <div style={{ color: "#d9b25a", fontWeight: 700, fontSize: 13, margin: "6px 0 2px" }}>{c.title}</div>
           {c.goals.map((g) => (
             <div key={g.id} style={{ borderLeft: `3px solid ${g.line === "main" ? "#d9b25a" : "#3a4654"}`, paddingLeft: 7, margin: "4px 0" }}>
               <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                <span style={{ fontSize: 10, fontWeight: 800, color: g.line === "main" ? "#1a140a" : "#0c0f13", background: g.line === "main" ? "#d9b25a" : "#aab4bf", borderRadius: 3, padding: "0 4px" }}>{g.line === "main" ? "主线" : "支线"}</span>
+                <span style={{ fontSize: 13, fontWeight: 800, color: g.line === "main" ? "#1a140a" : "#0c0f13", background: g.line === "main" ? "#d9b25a" : "#aab4bf", borderRadius: 3, padding: "0 4px" }}>{g.line === "main" ? "主线" : "支线"}</span>
                 <span style={{ color: "#fff", fontWeight: 600 }}>{g.title}</span>
-                <span style={{ color: "#6f7681", marginLeft: "auto", fontSize: 11 }}>{g.tasks.length}</span>
+                <span style={{ color: "#6f7681", marginLeft: "auto", fontSize: 13 }}>{g.tasks.length}</span>
               </div>
               {g.tasks.slice(0, 6).map((t) => <TaskLine key={t.id} t={t} />)}
             </div>
@@ -74,7 +74,7 @@ export default function GoalsSurface() {
         </div>
       ))}
       {board.loose_tasks.length > 0 && (
-        <div style={{ marginTop: 8, color: "#79c0ff", fontSize: 11.5 }}>外部收件箱（meego/multica，统一身份去重后）：{board.loose_tasks.length} 条待归入主线/支线</div>
+        <div style={{ marginTop: 8, color: "#79c0ff", fontSize: 13 }}>外部收件箱（meego/multica，统一身份去重后）：{board.loose_tasks.length} 条待归入主线/支线</div>
       )}
     </div>
   );

@@ -33,3 +33,7 @@ vendor/
 *.njsproj
 *.sln
 *.sw?
+
+# local launcher (machine-specific node path) — not for git
+start-poof.cmd
+start-poof.sh

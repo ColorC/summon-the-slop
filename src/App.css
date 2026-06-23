@@ -158,7 +158,7 @@ body,
 }
 .sr-path {
   color: #7d818c;
-  font-size: 12px;
+  font-size: 13px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -167,7 +167,7 @@ body,
 
 /* ================= notifications ================= */
 .region-h {
-  font-size: 12px;
+  font-size: 13px;
   color: #8a8d98;
   font-weight: 600;
   margin-bottom: 8px;
@@ -187,7 +187,7 @@ body,
   gap: 8px;
   padding: 7px 2px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-  font-size: 12.5px;
+  font-size: 13px;
 }
 .notif-dot {
   width: 6px;
@@ -204,7 +204,7 @@ body,
 }
 .notif-when {
   color: #6f727c;
-  font-size: 11px;
+  font-size: 13px;
 }
 
 /* ================= terminal (TerminalWindow) ================= */
@@ -222,7 +222,7 @@ body,
   flex-wrap: wrap;
 }
 .termbar-label {
-  font-size: 12px;
+  font-size: 13px;
   color: #8a8d98;
   margin-right: 6px;
 }
@@ -235,7 +235,7 @@ body,
   color: #c3c6cf;
   border-radius: 7px 7px 0 0;
   padding: 5px 10px;
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
 }
 .term-tab.on {
@@ -255,7 +255,7 @@ body,
   color: #9aa0ad;
   border-radius: 7px;
   padding: 4px 9px;
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
 }
 .term-new.claude {
@@ -309,7 +309,7 @@ body,
   flex-wrap: wrap;
 }
 .chip {
-  font-size: 11px;
+  font-size: 13px;
   background: rgba(99, 102, 241, 0.25);
   border-radius: 6px;
   padding: 1px 7px;
@@ -318,7 +318,7 @@ body,
   background: rgba(255, 255, 255, 0.08);
 }
 .card-desc {
-  font-size: 12px;
+  font-size: 13px;
   color: #9aa0ad;
   line-height: 1.5;
 }
@@ -354,7 +354,7 @@ body,
 }
 .find-desc {
   color: #888c96;
-  font-size: 12px;
+  font-size: 13px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -397,7 +397,7 @@ body,
 }
 .dispatch button {
   padding: 5px 12px;
-  font-size: 12px;
+  font-size: 13px;
 }
 .review-h {
   font-weight: 700;
@@ -1032,7 +1032,7 @@ body,
   align-items: center;
   gap: 5px;
   padding: 6px 11px;
-  font-size: 12px;
+  font-size: 13px;
   color: #e6e8ee;
   background: rgba(18, 19, 25, 0.9);
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -1173,7 +1173,7 @@ body,
   white-space: nowrap;
 }
 .notes-find-item .ff-path {
-  font-size: 11px;
+  font-size: 13px;
   color: #7b8194;
   margin-left: auto;
   max-width: 280px;
@@ -1185,7 +1185,7 @@ body,
   flex: 0 0 auto;
   margin-left: 8px;
   padding: 2px 8px;
-  font-size: 11px;
+  font-size: 13px;
   color: #c3c6cf;
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.14);
@@ -1232,7 +1232,7 @@ body,
   cursor: pointer;
   padding: 5px 10px;
   border-radius: 7px;
-  font-size: 12.5px;
+  font-size: 13px;
 }
 .notes-views button:hover {
   background: rgba(255, 255, 255, 0.06);
@@ -1265,7 +1265,7 @@ body,
   cursor: pointer;
   padding: 6px 9px;
   border-radius: 8px;
-  font-size: 12px;
+  font-size: 13px;
   white-space: nowrap;
 }
 .notes-sort:hover {
@@ -1339,11 +1339,11 @@ body,
 }
 .notes-ver-when {
   flex: 1;
-  font-size: 12px;
+  font-size: 13px;
   color: #c7cad3;
 }
 .notes-ver-tag {
-  font-size: 11px;
+  font-size: 13px;
   color: #8a90a0;
   background: rgba(255, 255, 255, 0.07);
   padding: 1px 6px;
@@ -1363,7 +1363,7 @@ body,
   cursor: pointer;
   padding: 4px 8px;
   border-radius: 7px;
-  font-size: 11px;
+  font-size: 13px;
 }
 .notes-ver-restore:hover {
   background: rgba(45, 108, 246, 0.3);
@@ -1394,7 +1394,7 @@ body,
   color: #e3e5ea;
 }
 .dash-down-s {
-  font-size: 12px;
+  font-size: 13px;
   color: #7a8092;
   font-family: monospace;
 }
@@ -1467,7 +1467,7 @@ body,
 }
 .notes-empty {
   color: #80838d;
-  font-size: 12px;
+  font-size: 13px;
   padding: 14px;
   display: flex;
   align-items: center;
@@ -1502,7 +1502,7 @@ body,
   margin-top: 4px;
 }
 .notes-tag {
-  font-size: 11px;
+  font-size: 13px;
   background: rgba(255, 255, 255, 0.08);
   color: #aeb4c2;
   padding: 1px 6px;
@@ -1657,7 +1657,7 @@ body,
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 8px;
   padding: 7px 11px;
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.5);
 }
@@ -1740,7 +1740,7 @@ body,
   background: rgba(99, 102, 241, 0.32);
 }
 .conv-count {
-  font-size: 11px;
+  font-size: 13px;
   color: #9aa0ad;
   min-width: 14px;
   text-align: center;
@@ -1767,7 +1767,7 @@ body,
   justify-content: space-between;
   padding: 10px 12px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-  font-size: 12px;
+  font-size: 13px;
   color: #8a8d98;
   font-weight: 600;
 }
@@ -1795,7 +1795,7 @@ body,
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-size: 12.5px;
+  font-size: 13px;
   color: #aeb4c2;
   margin-right: auto;
 }
@@ -1805,7 +1805,7 @@ body,
   color: #d6d9e0;
   border-radius: 7px;
   padding: 5px 10px;
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
 }
 .conv-new-row button:hover {
@@ -1819,7 +1819,7 @@ body,
 }
 .conv-empty {
   color: #80838d;
-  font-size: 12.5px;
+  font-size: 13px;
   padding: 16px 12px;
 }
 .conv-row {
@@ -1857,14 +1857,14 @@ body,
   flex: 1;
 }
 .conv-row-id {
-  font-size: 12.5px;
+  font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .conv-row-task {
-  font-size: 11.5px;
+  font-size: 13px;
   color: #8a90a0;
   white-space: nowrap;
   overflow: hidden;
@@ -1919,7 +1919,7 @@ body,
   color: #c7c9ff;
   border-radius: 6px;
   padding: 2px 7px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
 }
 .conv-name.poof {
@@ -1936,7 +1936,7 @@ body,
 .conv-row-task {
   flex: 1;
   min-width: 0;
-  font-size: 11.5px;
+  font-size: 13px;
   color: #9aa0ad;
   white-space: nowrap;
   overflow: hidden;
@@ -1984,7 +1984,7 @@ body,
   gap: 6px;
   padding: 8px 10px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-  font-size: 12.5px;
+  font-size: 13px;
   color: #aeb4c2;
 }
 .notes-term-body {
