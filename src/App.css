@@ -1579,12 +1579,23 @@ body,
 /* ===== 暗色玻璃画布(半透明, 桌面透出) + 唯一米色文档方框 =====
    主题保持 DARK(画布/菜单/弹层都深底浅字)。只把"笔记方框 affine-note"改成米色纸 + 深字——
    弹层(slash 菜单等)挂在 document.body 上、不在 affine-note 子树, 所以方框作用域的覆盖染不到它们。 */
-/* 画布: 半透明深底(透出桌面, 跟悬浮层哲学一致) + 淡点阵 */
-.notes-ws.edgeless .notespace affine-edgeless-viewport,
-.notes-ws.edgeless .notespace .edgeless-editor-container,
-.notes-ws.edgeless .notespace edgeless-editor {
-  --affine-background-primary-color: rgba(22, 23, 28, 0.5) !important;
+/* 画布: 半透明深底(透出桌面) + 淡点阵。直接给那唯一一层(edgeless-background)上半透明色
+   (走 var 会被主题在更近元素上的声明盖成不透明 rgb(20,20,20)), 其余几层透明, 避免叠加变不透明。 */
+.notes-ws.edgeless .notespace {
   --affine-edgeless-grid-color: rgba(165, 171, 186, 0.1) !important;
+}
+.notes-ws.edgeless .notespace .edgeless-background {
+  /* 原 background-image 的"点之间"填的是不透明 primary 色(把整片刷成不透明) → 整张图换成
+     "点 + 透明间隙", 这样只剩 background-color 的 0.5 半透明, 桌面才透得出来。 */
+  background-color: rgba(22, 23, 28, 0.5) !important;
+  background-image: radial-gradient(rgba(170, 176, 190, 0.13) 1px, transparent 1px) !important;
+}
+.notes-ws.edgeless .notespace .edgeless-editor-container,
+.notes-ws.edgeless .notespace affine-edgeless-viewport,
+.notes-ws.edgeless .notespace edgeless-editor,
+.notes-ws.edgeless .notespace affine-edgeless-root,
+.notes-ws.edgeless .notespace affine-editor-container {
+  background-color: transparent !important;
 }
 /* 笔记方框 = 米色纸 + 深字, 不再纯黑。
    关键: 画布上的笔记元素 tag 是 affine-edgeless-note(不是 affine-note!)——这是黑了 4 次的真因。
