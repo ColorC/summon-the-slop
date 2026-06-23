@@ -1597,6 +1597,14 @@ body,
 .notes-ws.edgeless .notespace affine-editor-container {
   background-color: transparent !important;
 }
+/* 文档(page/展开写作)模式: 实心米色纸(否则 .notes-ws 透明 + 主题不画底 = 全透明, 深字看不见,
+   就是用户说的"写作时背景全透明")。直接给画底的元素上米色, 配 affine-note 的深字 → 像纸上写字。 */
+.notes-ws.page .notespace affine-editor-container,
+.notes-ws.page .notespace page-editor,
+.notes-ws.page .notespace affine-page-root,
+.notes-ws.page .notespace .affine-page-root-block-container {
+  background-color: #efe7d6 !important;
+}
 /* 笔记方框 = 米色纸 + 深字, 不再纯黑。
    关键: 画布上的笔记元素 tag 是 affine-edgeless-note(不是 affine-note!)——这是黑了 4 次的真因。
    背景色变量声明在它(及 page 模式的 affine-note)上, 内部那层 backgroundStyle 的 var() 才取到米色。 */

@@ -51,10 +51,10 @@ const editor = new AffineEditorContainer();
 editor.edgelessSpecs = [...editor.edgelessSpecs, DARK_THEME, ...AiBlockSpec, FileSearchConfig];
 editor.pageSpecs = [...editor.pageSpecs, DARK_THEME, ...AiBlockSpec, FileSearchConfig];
 editor.doc = doc;
-editor.mode = "edgeless" as any;
-
+const pageMode = location.search.includes("page");
+editor.mode = (pageMode ? "page" : "edgeless") as any;
 const app = document.getElementById("app")!;
-app.className = "notes-ws edgeless full";
+app.className = "notes-ws " + (pageMode ? "page" : "edgeless") + " full";
 const space = document.createElement("div");
 space.className = "notespace";
 space.appendChild(editor);
