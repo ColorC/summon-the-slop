@@ -21,23 +21,19 @@ import {
   SquareTerminal,
   Link2,
   LayoutGrid,
-  Bot,
 } from "lucide-react";
 import { TerminalView } from "./Terminal";
 import { copyText } from "../lib";
-import { insertAiBlock, AiBlockSpec, AiBlockSchema, aiBlockSchemas } from "../blocks/aiblock";
+import { insertAiBlock, AiBlockSpec, mountAiToolbarButton } from "../blocks/aiblock";
 import { FileSearchConfig, localizeSlashMenu, installChromeTranslator } from "../editorConfig";
 import * as Y from "yjs";
 import "@toeverything/theme/style.css";
-import { Schema, DocCollection, Job, type Doc } from "@blocksuite/store";
+import { DocCollection, Job, type Doc } from "@blocksuite/store";
 import { listVersions, saveVersion, deleteVersionsFor, type NoteVersion } from "./noteVersions";
-import { AffineSchemas } from "@blocksuite/blocks";
 import { AffineEditorContainer } from "@blocksuite/presets";
-import { IndexedDBDocSource } from "@blocksuite/sync";
 import { OverrideThemeExtension } from "@blocksuite/affine-shared/services";
 import { signal } from "@preact/signals-core";
-import { effects as blocksEffects } from "@blocksuite/blocks/effects";
-import { effects as presetsEffects } from "@blocksuite/presets/effects";
+import { getCollection } from "./notesCollection";
 
 // DARK theme everywhere (canvas + 弹层/菜单都深底浅字, 跟 poof 的暗色玻璃悬浮层哲学一致)。
 // 唯独"笔记方框(affine-note)"在 CSS 里被改成米色纸 + 深字 —— 只改方框, 不动主题/画布。
@@ -48,46 +44,6 @@ const DARK_THEME = OverrideThemeExtension({
   getEdgelessTheme: () => THEME,
 });
 
-let registered = false;
-function registerEffects() {
-  if (registered) return;
-  registered = true;
-  blocksEffects();
-  presetsEffects();
-}
-
-// ONE persistent, IndexedDB-backed collection for all notes (survives summons/restarts).
-let collection: DocCollection | null = null;
-// #6 让活的 collection 能加 AI 块: 注册 poof:aiblock + 把它加进 affine:surface 的 children 白名单
-// (否则 addBlock 到 surface 会被 schema 拒)。注意 children 在 schema.model 上, 不是 schema.metadata。
-function ensureAiSchema(c: DocCollection) {
-  try {
-    const sm = (c as any).schema?.flavourSchemaMap;
-    if (sm && !sm.get("poof:aiblock")) (c as any).schema.register([AiBlockSchema]);
-    const surf = sm?.get("affine:surface");
-    const kids = surf?.model?.children;
-    if (Array.isArray(kids) && !kids.includes("poof:aiblock")) kids.push("poof:aiblock");
-  } catch {
-    /* ignore */
-  }
-}
-export function getCollection(): DocCollection {
-  if (collection) {
-    ensureAiSchema(collection);
-    return collection;
-  }
-  registerEffects();
-  // aiBlockSchemas: 复制放宽 surface 的 children 白名单 + 追加 AiBlockSchema(见 blocks/aiblock)
-  const schema = new Schema().register(aiBlockSchemas(AffineSchemas as any));
-  collection = new DocCollection({
-    id: "poof-notes",
-    schema,
-    docSources: { main: new IndexedDBDocSource("poof-notes") },
-  });
-  collection.meta.initialize();
-  collection.start();
-  return collection;
-}
 
 function seedDoc(c: DocCollection): Doc {
   const doc = c.createDoc();
@@ -376,9 +332,18 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
     editorRef.current = editor;
     localizeSlashMenu(editor); // #8 slash 菜单中文(config)
     installChromeTranslator(); // #8 全量中文(格式条/工具条/tooltip/链接卡片, DOM 级)
+    // #6 AI 块按钮注入原生底部工具栏(统一实现), 点了在画布上放一个 AI 块
+    const cleanupAiBtn = mountAiToolbarButton(() => {
+      try {
+        insertAiBlock(doc, activeId);
+      } catch {
+        /* ignore */
+      }
+    });
     return () => {
       backfills.forEach((t) => clearTimeout(t));
       clearInterval(snapTimer);
+      cleanupAiBtn();
       if (dirty) snap("自动"); // capture the latest edits on close
       offTitle();
       offBlock();
@@ -409,14 +374,6 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
     const d = seedDoc(c);
     setActiveId(d.id);
     setView("notes");
-  }
-  // 在画布上放一个 AI 块(=绑定到本笔记的持续 AI 对话, 关→关, 再开→resume)
-  function addAiBlock() {
-    const doc = c.getDoc(activeId);
-    if (!doc) return;
-    doc.load();
-    if (mode !== "edgeless") setMode("edgeless"); // AI 块活在画布上
-    insertAiBlock(doc, activeId);
   }
   function setFlag(id: string, flag: Partial<Record<"archived" | "trashed" | "favorite", boolean>>) {
     c.setDocMeta(id, { ...flag, updatedDate: Date.now() } as any);
@@ -616,13 +573,6 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
           </>
         )}
       </button>
-
-      {/* #6 AI 块入口放在画布"底部工具栏"区(右下角), 不在上面的工具条 */}
-      {mode === "edgeless" && (
-        <button className="notes-aibtn" title="加一个 AI 块（绑定本笔记的持续对话 · 关=关 · 再开=resume）" onClick={addAiBlock}>
-          <Bot size={15} /> AI 块
-        </button>
-      )}
 
       {termOpen && (
         <div className="notes-term">

@@ -196,6 +196,42 @@ export function aiBlockSchemas(affineSchemas: any[]): any[] {
   return out;
 }
 
+// #6 把"AI 块"按钮注入到原生 edgeless 底部工具栏(edgeless-toolbar-widget 的 shadow root 里的
+// .edgeless-toolbar-container), 跟 note/shape 等工具并排 = 统一实现, 不是外挂浮钮。Lit 重渲染
+// 实测不会清掉它(点画布后仍在); 仍加个轻量定时器兜底重注入(模式切换等大重渲染时补回)。
+export function mountAiToolbarButton(onPlace: () => void): () => void {
+  const findContainer = (): Element | null => {
+    let tb: any = null;
+    const walk = (r: any) =>
+      r.querySelectorAll?.("*").forEach((e: any) => {
+        if (e.tagName?.toLowerCase() === "edgeless-toolbar-widget") tb = e;
+        if (e.shadowRoot) walk(e.shadowRoot);
+      });
+    walk(document);
+    return tb?.shadowRoot?.querySelector(".edgeless-toolbar-container") ?? null;
+  };
+  const ensure = () => {
+    const c = findContainer();
+    if (!c || c.querySelector(".poof-ai-tool")) return;
+    const btn = document.createElement("button");
+    btn.className = "poof-ai-tool";
+    btn.title = "加 AI 块（绑定本笔记的持续对话 · 关=关 · 再开=resume）";
+    btn.innerHTML = `<span style="font-size:15px;line-height:1">⌁</span> AI`;
+    btn.style.cssText =
+      "display:inline-flex;align-items:center;gap:4px;height:54px;padding:0 13px;margin:0 1px;background:transparent;border:none;color:#c3c6cf;cursor:pointer;font-size:13px;";
+    btn.addEventListener("mouseenter", () => (btn.style.color = "#fff"));
+    btn.addEventListener("mouseleave", () => (btn.style.color = "#c3c6cf"));
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      onPlace();
+    });
+    c.appendChild(btn);
+  };
+  ensure();
+  const iv = window.setInterval(ensure, 1000);
+  return () => window.clearInterval(iv);
+}
+
 // ---- 往画布(surface)放一个 AI 块 ----
 export function insertAiBlock(doc: any, _noteId: string): string | null {
   try {

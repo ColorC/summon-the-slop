@@ -2,7 +2,7 @@
 // 全是定向 op(查/加/删/改单元素), 不整 doc 替换 → 不损坏笔记。给 `omni notes` CLI(codex 总控)用。
 import { invoke } from "@tauri-apps/api/core";
 import { Text } from "@blocksuite/store";
-import { getCollection } from "./regions/NotesWorkspace";
+import { getCollection } from "./regions/notesCollection";
 
 let activeEditor: { setEditor?: unknown } | any = null;
 export function setActiveEditor(ed: unknown): void {

@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <title>notes preview (离屏验证)</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+      }
+      /* 模拟桌面背景: 彩色, 好看出半透明画布是否透出 + 方框是不是米色 */
+      body {
+        background: linear-gradient(135deg, #2b4a7a 0%, #7a2b5a 50%, #2b7a55 100%);
+      }
+    </style>
+  </head>
+  <!-- 内联在 body 上(属性优先级高于 App.css 的 body{background:transparent}), 模拟桌面 -->
+  <body style="background: linear-gradient(135deg, #2b4a7a 0%, #7a2b5a 50%, #2b7a55 100%) !important">
+    <div id="app"></div>
+    <script type="module" src="/src/notes-preview.tsx"></script>
+  </body>
+</html>
