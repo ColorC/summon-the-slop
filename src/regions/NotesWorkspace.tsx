@@ -24,7 +24,7 @@ import {
 } from "lucide-react";
 import { TerminalView } from "./Terminal";
 import { copyText } from "../lib";
-import { insertAiBlock, AiBlockSpec, mountAiToolbarButton } from "../blocks/aiblock";
+import { insertAiBlock, AiBlockSpec, mountAiToolbarButton, killAllAiTerminals } from "../blocks/aiblock";
 import {
   FileSearchConfig,
   localizeSlashMenu,
@@ -352,6 +352,7 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
       clearInterval(snapTimer);
       cleanupAiBtn();
       cleanupExpandBtn();
+      killAllAiTerminals(); // 关笔记/切笔记才真关 AI 终端; 模式切换不走这里, 所以不重载
       if (dirty) snap("自动"); // capture the latest edits on close
       offTitle();
       offBlock();

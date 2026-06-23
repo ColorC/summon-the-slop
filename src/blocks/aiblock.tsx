@@ -76,10 +76,24 @@ export class AiBlockService extends BlockService {
 // ---- page 视图(也被 edgeless 复用为内容)----
 const STARTED_PREFIX = "poof-aiblock-started-";
 
+// 按块 id 保活的终端注册表: xterm + pty 装在一个独立 host div 里, 不随块元素生死。
+// 展开写作(page)↔ 画布(edgeless)切换会销毁/重建块元素, 但终端只是 detach → re-attach(搬家),
+// 不卸载不重起 → 不会重载。只有 killAllAiTerminals(关笔记时)才真卸载(TerminalView 清理里 ptyKill)。
+const aiTerminals = new Map<string, { host: HTMLDivElement; root: Root }>();
+
+export function killAllAiTerminals(): void {
+  for (const { root } of aiTerminals.values()) {
+    try {
+      root.unmount();
+    } catch {
+      /* ignore */
+    }
+  }
+  aiTerminals.clear();
+}
+
 class AiBlockComponent extends BlockComponent<AiBlockModel, AiBlockService> {
   private hostRef = createRef<HTMLDivElement>();
-  private _root: Root | null = null;
-  private _mounted = false;
 
   override renderBlock() {
     return html`<div
@@ -101,15 +115,24 @@ class AiBlockComponent extends BlockComponent<AiBlockModel, AiBlockService> {
   }
 
   private async _mount() {
-    if (this._mounted) return;
-    const host = this.hostRef.value;
-    if (!host) return;
-    this._mounted = true;
+    const slot = this.hostRef.value;
+    if (!slot) return;
     const blockId = this.model.id;
+    // 复用: 模式切回来时把保活的终端搬进新元素的槽里, 不重起
+    const existing = aiTerminals.get(blockId);
+    if (existing) {
+      slot.appendChild(existing.host);
+      return;
+    }
+    // 首建: 终端装在独立 host div(放进注册表保活), append 到块的槽
+    const host = document.createElement("div");
+    host.style.cssText = "width:100%;height:100%;";
+    const root = createRoot(host);
+    aiTerminals.set(blockId, { host, root }); // 先占位防并发重复创建
+    slot.appendChild(host);
     const cwd = AI_HOME + "\\" + blockId;
-    // 确保该块的独立对话目录存在(pty cwd 必须是已存在目录)
     try {
-      await runShell(`if not exist "${cwd}" mkdir "${cwd}"`);
+      await runShell(`if not exist "${cwd}" mkdir "${cwd}"`); // pty cwd 必须已存在
     } catch {
       /* ignore */
     }
@@ -124,26 +147,13 @@ class AiBlockComponent extends BlockComponent<AiBlockModel, AiBlockService> {
         ? "claude --continue --dangerously-skip-permissions"
         : "claude --dangerously-skip-permissions";
     localStorage.setItem(key, "1");
-    this._root = createRoot(host);
-    this._root.render(createElement(TerminalView, { id: "ai-" + blockId, startCommand, cwd }));
-  }
-
-  private _unmount() {
-    if (this._root) {
-      try {
-        this._root.unmount();
-      } catch {
-        /* ignore */
-      }
-      this._root = null;
-    }
-    this._mounted = false;
+    root.render(createElement(TerminalView, { id: "ai-" + blockId, startCommand, cwd }));
   }
 
   override disconnectedCallback() {
     super.disconnectedCallback();
-    // 关笔记/删块 = 卸载 = 关对话(TerminalView 清理里会 ptyKill)
-    this._unmount();
+    // 故意不杀: 模式切换会销毁/重建本元素, 但终端要保活(host 仍在注册表里, 等 re-attach)。
+    // 真正关闭走 killAllAiTerminals(关笔记时调)。
   }
 }
 if (!customElements.get("poof-aiblock")) {
