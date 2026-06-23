@@ -25,7 +25,12 @@ import {
 import { TerminalView } from "./Terminal";
 import { copyText } from "../lib";
 import { insertAiBlock, AiBlockSpec, mountAiToolbarButton } from "../blocks/aiblock";
-import { FileSearchConfig, localizeSlashMenu, installChromeTranslator } from "../editorConfig";
+import {
+  FileSearchConfig,
+  localizeSlashMenu,
+  installChromeTranslator,
+  mountNoteExpandButton,
+} from "../editorConfig";
 import * as Y from "yjs";
 import "@toeverything/theme/style.css";
 import { DocCollection, Job, type Doc } from "@blocksuite/store";
@@ -340,10 +345,13 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
         /* ignore */
       }
     });
+    // #2 "展开写作"按钮注入"选中笔记时"的元素工具条 → 从那个块自身切到文档全幅写作
+    const cleanupExpandBtn = mountNoteExpandButton(() => setMode("page"));
     return () => {
       backfills.forEach((t) => clearTimeout(t));
       clearInterval(snapTimer);
       cleanupAiBtn();
+      cleanupExpandBtn();
       if (dirty) snap("自动"); // capture the latest edits on close
       offTitle();
       offBlock();
@@ -557,22 +565,13 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
         </button>
       </div>
 
-      {/* #2 从这篇文档展开/收起写作: 浮在文档右上角, 不在文件工具条里 */}
-      <button
-        className="notes-expand"
-        title={mode === "page" ? "回到画布" : "展开写作（把这篇文档铺成全幅）"}
-        onClick={() => setMode((m) => (m === "page" ? "edgeless" : "page"))}
-      >
-        {mode === "page" ? (
-          <>
-            <LayoutGrid size={14} /> 画布
-          </>
-        ) : (
-          <>
-            <Maximize2 size={14} /> 展开写作
-          </>
-        )}
-      </button>
+      {/* #2 展开写作=从笔记块的元素工具条触发(见 mountNoteExpandButton)。这里只在"已展开(page)"时
+          给一个回到画布的出口(page 模式没有画布元素工具条)。 */}
+      {mode === "page" && (
+        <button className="notes-expand" title="回到画布" onClick={() => setMode("edgeless")}>
+          <LayoutGrid size={14} /> 回到画布
+        </button>
+      )}
 
       {termOpen && (
         <div className="notes-term">

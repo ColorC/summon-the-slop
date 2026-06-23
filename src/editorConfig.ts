@@ -231,6 +231,49 @@ function translateEl(el: Element): void {
   });
 }
 
+// #2 "展开写作"从笔记块自身触发: 把按钮注入到"选中笔记时"才出现的原生元素工具条
+// (edgeless-element-toolbar-widget → editor-toolbar, 含 edgeless-change-note-button=选中的是笔记)。
+// 这样切到文档写作模式是从那个块交互的, 不是外挂浮钮。
+export function mountNoteExpandButton(onExpand: () => void): () => void {
+  const findToolbar = (): Element | null => {
+    let tb: any = null;
+    const walk = (r: any) =>
+      r.querySelectorAll?.("*").forEach((e: any) => {
+        if (e.tagName?.toLowerCase() === "edgeless-element-toolbar-widget") tb = e;
+        if (e.shadowRoot) walk(e.shadowRoot);
+      });
+    walk(document);
+    return tb?.shadowRoot?.querySelector("editor-toolbar") ?? null;
+  };
+  const ensure = () => {
+    const tb = findToolbar();
+    if (!tb) return;
+    const isNote = !!tb.querySelector("edgeless-change-note-button");
+    const existing = tb.querySelector(".poof-expand-btn");
+    if (!isNote) {
+      existing?.remove();
+      return;
+    }
+    if (existing) return;
+    const btn = document.createElement("button");
+    btn.className = "poof-expand-btn";
+    btn.title = "展开写作（把这篇文档铺成全幅）";
+    btn.innerHTML = "⤢ 展开写作";
+    btn.style.cssText =
+      "display:inline-flex;align-items:center;gap:3px;height:28px;padding:0 10px;margin-right:2px;background:transparent;border:none;color:#c3c6cf;cursor:pointer;font-size:13px;border-radius:6px;white-space:nowrap;";
+    btn.addEventListener("mouseenter", () => (btn.style.background = "rgba(255,255,255,0.1)"));
+    btn.addEventListener("mouseleave", () => (btn.style.background = "transparent"));
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      onExpand();
+    });
+    tb.insertBefore(btn, tb.firstChild);
+  };
+  ensure();
+  const iv = window.setInterval(ensure, 700);
+  return () => window.clearInterval(iv);
+}
+
 let translatorOn = false;
 export function installChromeTranslator(): void {
   if (translatorOn || typeof document === "undefined") return;

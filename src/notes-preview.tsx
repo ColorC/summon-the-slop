@@ -21,7 +21,12 @@ import { signal } from "@preact/signals-core";
 import { effects as blocksEffects } from "@blocksuite/blocks/effects";
 import { effects as presetsEffects } from "@blocksuite/presets/effects";
 import { AiBlockSpec, insertAiBlock, aiBlockSchemas, mountAiToolbarButton } from "./blocks/aiblock";
-import { FileSearchConfig, installChromeTranslator, localizeSlashMenu } from "./editorConfig";
+import {
+  FileSearchConfig,
+  installChromeTranslator,
+  localizeSlashMenu,
+  mountNoteExpandButton,
+} from "./editorConfig";
 
 blocksEffects();
 presetsEffects();
@@ -64,6 +69,11 @@ installChromeTranslator();
 localizeSlashMenu(editor);
 // #6 同真机: 把 AI 块按钮注入原生底部工具栏
 mountAiToolbarButton(() => insertAiBlock(doc, ""));
+// #2 展开写作注入笔记元素工具条
+mountNoteExpandButton(() => {
+  editor.mode = "page" as any;
+  app.className = "notes-ws page full";
+});
 
 (window as any).__doc = doc;
 (window as any).__editor = editor;
