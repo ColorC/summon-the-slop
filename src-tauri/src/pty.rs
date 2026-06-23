@@ -37,10 +37,15 @@ pub fn pty_spawn(
 
     let mut cmd = CommandBuilder::new("powershell.exe");
     cmd.args(["-NoLogo"]);
-    // cwd: 优先用调用方给的工作目录(工作 agent 进对应项目主文件夹, 别把脏文件落在用户 home);
-    // 给的目录不存在或没给 → 退回 USERPROFILE。
+    // cwd: 用调用方给的工作目录(如 AI 块的 ai-blocks/<id>)。不存在就**创建**它(别退回 home —
+    // 退回 home 会让 claude 在 C:\Users\... 里跑, 既弹"trust 此目录"又找不到该块的对话)。
     let dir = cwd
-        .filter(|d| !d.is_empty() && std::path::Path::new(d).is_dir())
+        .filter(|d| !d.is_empty())
+        .map(|d| {
+            let _ = std::fs::create_dir_all(&d); // 确保存在
+            d
+        })
+        .filter(|d| std::path::Path::new(d).is_dir())
         .or_else(|| std::env::var("USERPROFILE").ok());
     if let Some(d) = dir {
         cmd.cwd(d);

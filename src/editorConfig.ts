@@ -6,7 +6,10 @@
 //     实例改它的 config.items 的 name/groupName(MIT 工程, 这是干净的运行时改法, 非改 node_modules)。
 import { html } from "lit";
 import { ConfigExtension } from "@blocksuite/block-std";
+import { Job } from "@blocksuite/store";
+import { EdgelessTemplatePanel } from "@blocksuite/blocks";
 import { search } from "./lib";
+import { getCollection } from "./regions/notesCollection";
 
 const FILE_ICON = html`<span style="font-size:14px;line-height:1">📄</span>`;
 
@@ -58,6 +61,75 @@ export const FileSearchConfig = ConfigExtension("affine:page", {
     },
   },
 });
+
+// #5(真) —— 工具栏最右"模板"按钮弹出的 "Search file or anything"(EdgelessTemplatePanel)其实搜的是
+// 模板, 不是文件。这才是用户点的那个。把它的数据源换成 poof 核心搜索(MFT/Everything), 选中即往画布插
+// 一个文件书签卡片。content 用 BlockSuite 自己的序列化器生成一次(保证 DocSnapshot schema 正确)再按文件改 url/标题。
+let baseBookmarkSnap: any = null;
+function genBaseBookmarkSnap(): any {
+  if (baseBookmarkSnap) return baseBookmarkSnap;
+  try {
+    const c: any = getCollection();
+    const doc: any = c.createDoc();
+    doc.load(() => {
+      const root = doc.addBlock("affine:page", {});
+      const surface = doc.addBlock("affine:surface", {}, root);
+      doc.addBlock(
+        "affine:bookmark",
+        { url: "file:///x", title: "x", description: "x", xywh: "[0,0,360,114]" },
+        surface
+      );
+    });
+    const job = new Job({ collection: c });
+    baseBookmarkSnap = (job as any).docToSnapshot(doc);
+    c.removeDoc(doc.id); // 用完即删, 别污染笔记列表
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.error("genBaseBookmarkSnap", e);
+  }
+  return baseBookmarkSnap;
+}
+function patchBookmark(snap: any, url: string, title: string, desc: string): any {
+  const s = JSON.parse(JSON.stringify(snap));
+  const walk = (b: any) => {
+    if (!b) return;
+    if (b.flavour === "affine:bookmark" && b.props) {
+      b.props.url = url;
+      b.props.title = title;
+      b.props.description = desc;
+    }
+    (b.children || []).forEach(walk);
+  };
+  walk(s.blocks);
+  return s;
+}
+let fileTemplatesInstalled = false;
+export function installFileTemplateSearch(): void {
+  if (fileTemplatesInstalled) return;
+  fileTemplatesInstalled = true;
+  (EdgelessTemplatePanel as any).templates = {
+    categories: () => [],
+    list: () => [],
+    search: async (keyword: string) => {
+      const q = (keyword || "").trim();
+      if (!q) return [];
+      let hits: Array<{ name: string; path: string }> = [];
+      try {
+        hits = await search(q, 12);
+      } catch {
+        hits = [];
+      }
+      const base = genBaseBookmarkSnap();
+      if (!base) return [];
+      return hits.map((h) => {
+        const url = /^https?:\/\//.test(h.path)
+          ? h.path
+          : "file:///" + String(h.path).replace(/\\/g, "/");
+        return { name: h.name, type: "template", content: patchBookmark(base, url, h.name, h.path) };
+      });
+    },
+  };
+}
 
 // #8 —— slash 菜单中文(运行时改 widget.config)
 const SLASH_ZH: Record<string, string> = {

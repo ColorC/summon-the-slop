@@ -30,6 +30,7 @@ import {
   localizeSlashMenu,
   installChromeTranslator,
   mountNoteExpandButton,
+  installFileTemplateSearch,
 } from "../editorConfig";
 import * as Y from "yjs";
 import "@toeverything/theme/style.css";
@@ -337,6 +338,7 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
     editorRef.current = editor;
     localizeSlashMenu(editor); // #8 slash 菜单中文(config)
     installChromeTranslator(); // #8 全量中文(格式条/工具条/tooltip/链接卡片, DOM 级)
+    installFileTemplateSearch(); // #5 工具栏"Search file or anything"(模板面板)→ 搜本机文件(Everything)
     // #6 AI 块按钮注入原生底部工具栏(统一实现), 点了在画布上放一个 AI 块
     const cleanupAiBtn = mountAiToolbarButton(() => {
       try {

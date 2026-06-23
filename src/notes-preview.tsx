@@ -13,23 +13,20 @@
 };
 import "@toeverything/theme/style.css";
 import "./App.css";
-import { Schema, DocCollection, Text } from "@blocksuite/store";
-import { AffineSchemas } from "@blocksuite/blocks";
+import { Text } from "@blocksuite/store";
+import { EdgelessTemplatePanel } from "@blocksuite/blocks";
 import { AffineEditorContainer } from "@blocksuite/presets";
 import { OverrideThemeExtension } from "@blocksuite/affine-shared/services";
 import { signal } from "@preact/signals-core";
-import { effects as blocksEffects } from "@blocksuite/blocks/effects";
-import { effects as presetsEffects } from "@blocksuite/presets/effects";
-import { AiBlockSpec, insertAiBlock, aiBlockSchemas, mountAiToolbarButton } from "./blocks/aiblock";
+import { AiBlockSpec, insertAiBlock, mountAiToolbarButton } from "./blocks/aiblock";
+import { getCollection } from "./regions/notesCollection";
 import {
   FileSearchConfig,
   installChromeTranslator,
   localizeSlashMenu,
   mountNoteExpandButton,
+  installFileTemplateSearch,
 } from "./editorConfig";
-
-blocksEffects();
-presetsEffects();
 
 const THEME = signal("dark" as any);
 const DARK_THEME = OverrideThemeExtension({
@@ -37,11 +34,9 @@ const DARK_THEME = OverrideThemeExtension({
   getEdgelessTheme: () => THEME,
 });
 
-const schema = new Schema().register(aiBlockSchemas(AffineSchemas as any));
-const collection = new DocCollection({ id: "preview", schema });
-collection.meta.initialize();
-collection.start();
-
+// 用和真机一样的 getCollection(effects + schema 都在里头注册, 单例), 这样 genBaseBookmarkSnap
+// 复用同一个 collection, 不会重复 define custom element(那是离屏台之前的假阳性报错)。
+const collection = getCollection();
 const doc = collection.createDoc();
 doc.load(() => {
   const root = doc.addBlock("affine:page", { title: new Text("预览笔记") });
@@ -66,6 +61,7 @@ space.appendChild(editor);
 app.appendChild(space);
 
 installChromeTranslator();
+installFileTemplateSearch();
 localizeSlashMenu(editor);
 // #6 同真机: 把 AI 块按钮注入原生底部工具栏
 mountAiToolbarButton(() => insertAiBlock(doc, ""));
@@ -77,8 +73,5 @@ mountNoteExpandButton(() => {
 
 (window as any).__doc = doc;
 (window as any).__editor = editor;
-(window as any).__affineFlavours = (AffineSchemas as any[]).map((s) => s?.model?.flavour);
-(window as any).__surfaceChildren = () =>
-  (collection as any).schema?.flavourSchemaMap?.get("affine:surface")?.metadata?.children;
-(window as any).__aiSchema = () =>
-  (collection as any).schema?.flavourSchemaMap?.get("poof:aiblock")?.metadata;
+(window as any).__tmplSearch = (q: string) =>
+  (EdgelessTemplatePanel as any).templates.search(q);

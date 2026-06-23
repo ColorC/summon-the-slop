@@ -74,7 +74,6 @@ export class AiBlockService extends BlockService {
 }
 
 // ---- page 视图(也被 edgeless 复用为内容)----
-const STARTED_PREFIX = "poof-aiblock-started-";
 
 // 按块 id 保活的终端注册表: xterm + pty 装在一个独立 host div 里, 不随块元素生死。
 // 展开写作(page)↔ 画布(edgeless)切换会销毁/重建块元素, 但终端只是 detach → re-attach(搬家),
@@ -130,23 +129,28 @@ class AiBlockComponent extends BlockComponent<AiBlockModel, AiBlockService> {
     const root = createRoot(host);
     aiTerminals.set(blockId, { host, root }); // 先占位防并发重复创建
     slot.appendChild(host);
+    // cwd = ai-blocks/<块id>。pty.rs 会创建它; 它在受信任的 E:\WindowsWorkspace 下 → claude 不弹
+    // "trust 此目录"(实测 claude 从受信任祖先继承信任)。
     const cwd = AI_HOME + "\\" + blockId;
+    // 这个块以前有没有 claude 对话? 有→--continue 续上; 没有→开新。交互式 claude 的 --continue 在
+    // 无对话时会报 "No conversation found to continue" 并退出, 所以必须先查(实测过)。claude 的会话
+    // 目录名内含 cwd(含块id), 在 ~/.claude/projects 下 findstr 块id 即可。
+    let hasSession = false;
     try {
-      await runShell(`if not exist "${cwd}" mkdir "${cwd}"`); // pty cwd 必须已存在
+      const r = await runShell(
+        `dir /b "%USERPROFILE%\\.claude\\projects" 2>nul | findstr /i "${blockId}"`
+      );
+      hasSession = !!(r.stdout || "").trim();
     } catch {
       /* ignore */
     }
-    const key = STARTED_PREFIX + blockId;
-    const started = localStorage.getItem(key) === "1";
     const provider = this.model.provider || "claude";
-    // 首次 = 开新对话; 之后 = --continue 续上该目录里的上次对话(=resume)
     const startCommand =
       provider === "codex"
         ? "codex --dangerously-bypass-approvals-and-sandbox"
-        : started
+        : hasSession
         ? "claude --continue --dangerously-skip-permissions"
         : "claude --dangerously-skip-permissions";
-    localStorage.setItem(key, "1");
     root.render(createElement(TerminalView, { id: "ai-" + blockId, startCommand, cwd }));
   }
 
