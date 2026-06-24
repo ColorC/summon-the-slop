@@ -50,7 +50,6 @@ const physToCssRect = (w: WinInfo): Rect =>
 const esc = (s: string) => (s || "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]!));
 const clampX = (x: number) => Math.max(0, Math.min(x, window.innerWidth));
 const clampY = (y: number) => Math.max(0, Math.min(y, window.innerHeight));
-const nextFrame = () => new Promise<void>((res) => requestAnimationFrame(() => requestAnimationFrame(() => res())));
 const norm = (a: { x: number; y: number }, b: { x: number; y: number }): Rect =>
   ({ l: Math.min(a.x, b.x), t: Math.min(a.y, b.y), r: Math.max(a.x, b.x), b: Math.max(a.y, b.y) });
 
@@ -69,8 +68,8 @@ function clearForCapture() {
 async function doCapture() {
   try {
     clearForCapture();
-    await nextFrame(); // let the transparent frame composite before grabbing the desktop
-    const raw = await invoke<ArrayBuffer>("capture_screen");
+    // 帧已由 summon_snap 在显示 snap 之前抓好(take_capture 取它)。不再"显示 snap 后再抓"=避免黑屏。
+    const raw = await invoke<ArrayBuffer>("take_capture");
     const dv = new DataView(raw);
     const w = dv.getInt32(0, true), h = dv.getInt32(4, true);
     cap = { width: w, height: h, x: dv.getInt32(8, true), y: dv.getInt32(12, true), scale: dv.getFloat32(16, true) };
@@ -447,7 +446,11 @@ async function doAction(act: string) {
       let hits: (PointAt | null)[] = shapes.map(() => null);
       try {
         const pts = shapes.map(resolvePointScreen);
-        hits = await invoke<(PointAt | null)[]>("resolve_points_at", { points: pts });
+        // 超时兜底: UIA 遍历最多等 1.5s, 超时就降级成无「指向」—— 绝不让解析卡住截图复制/关闭。
+        hits = await Promise.race([
+          invoke<(PointAt | null)[]>("resolve_points_at", { points: pts }),
+          new Promise<(PointAt | null)[]>((res) => setTimeout(() => res(shapes.map(() => null)), 1500)),
+        ]);
       } catch {}
       const md = buildMarkdown(path, shapes, ox, oy, cw, ch, hits);
       try { await invoke("save_markdown", { md, pngPath: path }); } catch {}

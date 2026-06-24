@@ -45,6 +45,7 @@ import { installFileWriteback, installMdPreviewToggle, insertFileIntoNote } from
 import { flushNotesStore } from "./fileNotesStore";
 import { scheduleNoteExport, rebuildNotesIndex, backfillExports } from "./noteExport";
 import { installMarkdownPaste } from "./markdownPaste";
+import { installOmniRefJump } from "./omniLink";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 
 // DARK theme everywhere (canvas + 弹层/菜单都深底浅字, 跟 poof 的暗色玻璃悬浮层哲学一致)。
@@ -382,6 +383,7 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
     const cleanupWriteback = installFileWriteback(doc); // 活文件块: 笔记里改文本块 → 防抖写回源文件
     const cleanupMdToggle = installMdPreviewToggle(doc); // md 活文件块: 源码 ⇄ 渲染预览 切换钮
     const cleanupMdPaste = installMarkdownPaste(editor); // 粘贴 markdown 智能转(Shift=纯文本)
+    const cleanupOmniJump = installOmniRefJump(editor); // @omni 引用点击 → 跳 vscode/看板
     // #6 AI 块按钮注入原生底部工具栏(统一实现), 点了在画布上放一个 AI 块
     const cleanupAiBtn = mountAiToolbarButton(() => {
       try {
@@ -400,6 +402,7 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
       cleanupWriteback(); // 卸载写回观察者 + 落盘未保存改动
       cleanupMdToggle();
       cleanupMdPaste();
+      cleanupOmniJump();
       killAllAiTerminals(); // 关笔记/切笔记才真关 AI 终端; 模式切换不走这里, 所以不重载
       if (dirty) snap("自动"); // capture the latest edits on close
       offTitle();

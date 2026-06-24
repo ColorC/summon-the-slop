@@ -29,6 +29,8 @@ export const search = (query: string, limit = 30) =>
 export const openPath = (path: string) => invoke<void>("open_path", { path });
 
 export const revealPath = (path: string) => invoke<void>("reveal_path", { path });
+/** 聚焦匹配 query(项目名/cwd basename)的已开窗口(如 vscode), 并隐藏 poof。返回是否命中。 */
+export const focusWindow = (query: string) => invoke<boolean>("focus_window", { query });
 
 // ---- ranking overrides / important folders / 空 query 常用面板 (M3/M4/M5) ----
 /** level: 2=置顶 Pin / -1=降权 Demote / -2=隐藏 Hide / 0=清除 */

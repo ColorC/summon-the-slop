@@ -9,6 +9,7 @@ import { ConfigExtension } from "@blocksuite/block-std";
 import { EdgelessTemplatePanel } from "@blocksuite/blocks";
 import { search } from "./lib";
 import { insertFileIntoNote } from "./regions/fileInsert";
+import { omniMenuGroups } from "./regions/omniLink";
 
 const FILE_ICON = html`<span style="font-size:14px;line-height:1">📄</span>`;
 
@@ -18,31 +19,45 @@ export const FileSearchConfig = ConfigExtension("affine:page", {
     triggerKeys: ["@", "[[", "【【"],
     convertTriggerKey: true,
     ignoreBlockTypes: ["affine:code"],
-    getMenus: async (query: string, abort: () => void, editorHost: any) => {
+    getMenus: async (
+      query: string,
+      abort: () => void,
+      editorHost: any,
+      inlineEditor: any
+    ) => {
       const q = (query || "").trim();
-      if (!q) return [];
-      let hits: Array<{ name: string; path: string }> = [];
+      const groups: any[] = [];
+      // omni 项目/计划(内联引用 @项目, 点了跳 vscode/看板)
       try {
-        hits = await search(q, 12);
+        groups.push(...(await omniMenuGroups(query, abort, inlineEditor)));
       } catch {
-        hits = [];
+        /* ignore */
       }
-      const doc = editorHost?.doc;
-      return [
-        {
-          name: "文件 · Everything",
-          maxDisplay: 12,
-          items: hits.map((h) => ({
-            key: h.path,
-            name: h.name,
-            icon: FILE_ICON,
-            action: () => {
-              abort();
-              void insertFileIntoNote(doc, h.path, h.name);
-            },
-          })),
-        },
-      ];
+      // 文件(插入活文件块)—— 要有 query 才搜, 空 @ 只给 omni 列表
+      if (q) {
+        let hits: Array<{ name: string; path: string }> = [];
+        try {
+          hits = await search(q, 12);
+        } catch {
+          hits = [];
+        }
+        const doc = editorHost?.doc;
+        if (hits.length)
+          groups.push({
+            name: "文件 · Everything",
+            maxDisplay: 12,
+            items: hits.map((h) => ({
+              key: h.path,
+              name: h.name,
+              icon: FILE_ICON,
+              action: () => {
+                abort();
+                void insertFileIntoNote(doc, h.path, h.name);
+              },
+            })),
+          });
+      }
+      return groups;
     },
   },
 });

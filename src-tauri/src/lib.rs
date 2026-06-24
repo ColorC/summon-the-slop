@@ -558,19 +558,25 @@ fn open_notes(app: &tauri::AppHandle) {
 fn summon_snap(app: &tauri::AppHandle, record: bool) {
     use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize};
     let Some(snap) = app.get_webview_window("snap") else { return };
+    // 关键修复(黑屏):先抓帧、后显示覆盖层 —— 所有截图工具的标准做法。此刻 snap 还没出现, main 仍可见,
+    // 故抓到的是真实画面(含 poof 自身, 像 QQ 那样)且不黑屏。之前是反着来(先显示透明全屏 snap 再抓 →
+    // xcap 把它身后的透明 main 合成成黑帧)。snap.ts 用 take_capture 取这帧。
+    let _ = crate::snap_cmd::prime_capture();
     if let Ok(Some(m)) = snap.primary_monitor() {
         let p = m.position();
         let s = m.size();
         let _ = snap.set_position(PhysicalPosition::new(p.x, p.y));
         let _ = snap.set_size(PhysicalSize::new(s.width, s.height));
     }
-    // 必须在抓帧前隐藏主悬浮层: main 是「全屏透明 + 置顶」的覆盖层, 留它在屏上时 xcap 抓到的是黑帧
-    // (DWM/WebView2 无法干净地把一个置顶透明全屏层合成进截图), 且 snap 会被压在 main 之下 → 截图框点不到
-    // = "开着 poof 按无效"。所以截图与录制都先收起 main, 在冻结的干净桌面上标注。
     let _ = snap.show();
+    let _ = snap.set_always_on_top(true); // 确保压在 main 之上(否则两个置顶窗 z 序不定 → "按无效")
     let _ = snap.set_focus();
-    if let Some(main) = app.get_webview_window("main") {
-        let _ = main.hide();
+    // 截图(record=false): 不收起 main —— poof 已冻进帧里, 留着也被 snap 盖住; 用户明确要"截图不隐藏界面"。
+    // 录制(record=true): 仍收起 main, 录的是干净桌面而非 poof。
+    if record {
+        if let Some(main) = app.get_webview_window("main") {
+            let _ = main.hide();
+        }
     }
     // record=true → snap.ts enters 录制模式 (selection starts a recording instead of a copy)
     let _ = snap.emit("snap-summon", record);
@@ -668,6 +674,12 @@ fn take_chat_intents() -> Vec<(String, Option<String>)> {
 #[allow(unused_variables)]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 截图自检: poof.exe --test-capture → 抓一帧报亮度/存 PNG 后退出(验证抓帧不黑屏, 不用按热键)。
+    #[cfg(windows)]
+    if std::env::args().any(|a| a == "--test-capture") {
+        snap_cmd::test_capture();
+        std::process::exit(0);
+    }
     // 性能基准: poof.exe --bench-search → 逐字拼音搜索计时后退出(在单实例/Builder 之前, 不被单实例拦)。
     if std::env::args().any(|a| a == "--bench-search") {
         search::bench_search();
@@ -828,6 +840,7 @@ pub fn run() {
             present_snap,
             close_snap,
             snap_cmd::capture_screen,
+            snap_cmd::take_capture,
             snap_cmd::copy_image,
             snap_cmd::copy_image_file,
             snap_cmd::save_image,

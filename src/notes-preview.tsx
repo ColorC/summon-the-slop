@@ -17,6 +17,18 @@ const DOC_STORE: Record<string, string> = ((window as any).__docStore ??= {});
 const BLOB_STORE: Record<string, string> = ((window as any).__blobStore ??= {});
 (window as any).__TAURI_INTERNALS__ = {
   invoke: (cmd: string, args: any) => {
+    ((window as any).__invokeLog ??= []).push({ cmd, args });
+    if (cmd === "run_shell") {
+      const c = (args?.cmd as string) || "";
+      if (c.includes("omni project list"))
+        return Promise.resolve({ stdout: JSON.stringify({ projects: [
+          { id: "omnidashboard", name: "Omni Dashboard 驾驶舱", group: "omnicompany", roots: ["E:/WindowsWorkspace/omnicompany"] },
+          { id: "poof", name: "Poof 悬浮层", roots: ["E:/WindowsWorkspace/poof"] },
+        ] }), stderr: "", code: 0 });
+      if (c.includes("omni plan list"))
+        return Promise.resolve({ stdout: JSON.stringify([{ plan_id: "p1", title: "存储落地计划" }]), stderr: "", code: 0 });
+      return Promise.resolve({ stdout: "", stderr: "", code: 0 });
+    }
     if (cmd === "search")
       return Promise.resolve([
         { kind: "file", name: "report.md", path: "E:/report.md", score: 9 },
@@ -103,6 +115,8 @@ import { FileDocSource, FileBlobSource } from "./regions/fileNotesStore";
 import { exportNoteToMd, rebuildNotesIndex, backfillExports } from "./regions/noteExport";
 import { saveVersion, listVersions, deleteVersionsFor } from "./regions/noteVersions";
 import { PoofMarkdownAdapter, looksLikeMarkdown, installMarkdownPaste } from "./regions/markdownPaste";
+import { omniMenuGroups, jumpOmni, omniProjects } from "./regions/omniLink";
+(window as any).__omniTest = { omniMenuGroups, jumpOmni, omniProjects };
 import * as Y from "yjs";
 (window as any).__storeTest = {
   FileDocSource, FileBlobSource, Y, Job, exportNoteToMd, rebuildNotesIndex, backfillExports,

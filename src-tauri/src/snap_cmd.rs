@@ -30,11 +30,7 @@ fn ensure_in_shots(path: &str) -> Result<PathBuf, String> {
     }
 }
 
-/// Full primary-monitor frame as raw RGBA with a 20-byte header (w,h,x,y i32 LE, scale f32
-/// LE). The snap overlay putImageData's it — no PNG encode/decode on the summon path.
-#[tauri::command]
-pub fn capture_screen() -> Result<tauri::ipc::Response, String> {
-    let (rgba, w, h, x, y, scale) = crate::capture::capture_primary_raw()?;
+fn frame_to_response(rgba: Vec<u8>, w: u32, h: u32, x: i32, y: i32, scale: f32) -> tauri::ipc::Response {
     let mut buf = Vec::with_capacity(20 + rgba.len());
     buf.extend_from_slice(&(w as i32).to_le_bytes());
     buf.extend_from_slice(&(h as i32).to_le_bytes());
@@ -42,7 +38,77 @@ pub fn capture_screen() -> Result<tauri::ipc::Response, String> {
     buf.extend_from_slice(&y.to_le_bytes());
     buf.extend_from_slice(&scale.to_le_bytes());
     buf.extend_from_slice(&rgba);
-    Ok(tauri::ipc::Response::new(buf))
+    tauri::ipc::Response::new(buf)
+}
+
+/// Full primary-monitor frame as raw RGBA with a 20-byte header (w,h,x,y i32 LE, scale f32
+/// LE). The snap overlay putImageData's it — no PNG encode/decode on the summon path.
+#[tauri::command]
+pub fn capture_screen() -> Result<tauri::ipc::Response, String> {
+    let (rgba, w, h, x, y, scale) = crate::capture::capture_primary_raw()?;
+    Ok(frame_to_response(rgba, w, h, x, y, scale))
+}
+
+// 「先抓帧、后显示覆盖层」—— 所有截图工具(QQ/Snipaste/ShareX)的标准做法。summon_snap 在显示 snap
+// 之前调 prime_capture: 此刻 snap 还没出现, 抓到的是真实画面(含 poof 自身, 因为 main 仍可见)。之前是
+// 反着来(先显示 snap 再抓), 透明全屏 snap 在前 → xcap 把它身后的透明 main 合成成黑帧 = 黑屏 bug。
+static PRIMED: std::sync::Mutex<Option<(Vec<u8>, u32, u32, i32, i32, f32)>> =
+    std::sync::Mutex::new(None);
+
+/// 在显示 snap 覆盖层之前抓一帧, 存起来供 take_capture 取。
+pub fn prime_capture() -> Result<(), String> {
+    let frame = crate::capture::capture_primary_raw()?;
+    *PRIMED.lock().unwrap() = Some(frame);
+    Ok(())
+}
+
+/// snap.ts 取预抓的帧(没有则即时抓一张兜底)。与 capture_screen 同格式。
+#[tauri::command]
+pub fn take_capture() -> Result<tauri::ipc::Response, String> {
+    let frame = PRIMED.lock().unwrap().take();
+    let (rgba, w, h, x, y, scale) = match frame {
+        Some(f) => f,
+        None => crate::capture::capture_primary_raw()?,
+    };
+    Ok(frame_to_response(rgba, w, h, x, y, scale))
+}
+
+/// Headless 自检: `poof.exe --test-capture` —— 抓一帧, 存 PNG, 报平均亮度/非黑占比, 判定是否黑屏。
+/// 让我能在不按热键的情况下自己验证抓帧没坏(不黑屏), 而不是让用户去撞。
+pub fn test_capture() {
+    use std::io::Write;
+    match crate::capture::capture_primary_raw() {
+        Ok((rgba, w, h, x, y, scale)) => {
+            let n = (rgba.len() / 4).max(1);
+            let mut sum: u64 = 0;
+            let mut nonblack = 0u64;
+            for px in rgba.chunks_exact(4) {
+                let lum = px[0] as u64 + px[1] as u64 + px[2] as u64;
+                sum += lum;
+                if lum > 30 {
+                    nonblack += 1;
+                }
+            }
+            let avg = sum / n as u64;
+            println!(
+                "capture {}x{} @({},{}) scale {} : {} px, 平均亮度 {}/765, 非黑 {:.1}%",
+                w, h, x, y, scale, n, avg, nonblack as f64 / n as f64 * 100.0
+            );
+            if let Some(img) = image::RgbaImage::from_raw(w, h, rgba) {
+                let p = std::env::temp_dir().join("poof-test-capture.png");
+                if img.save(&p).is_ok() {
+                    println!("已存 {}", p.display());
+                }
+            }
+            if avg < 5 {
+                println!("  ✗ 疑似黑屏(平均亮度<5)");
+            } else {
+                println!("  ✓ 有内容, 非黑屏");
+            }
+        }
+        Err(e) => println!("capture failed: {}", e),
+    }
+    let _ = std::io::stdout().flush();
 }
 
 fn decode(b64: &str) -> Result<Vec<u8>, String> {
@@ -226,7 +292,8 @@ pub struct PointAt {
 /// hit-test would always return poof. A negative point (e.g. -1,-1) is a sentinel (mosaic) and
 /// is skipped so obscured regions never get resolved/leaked.
 #[tauri::command]
-pub fn resolve_points_at(app: tauri::AppHandle, points: Vec<(i32, i32)>) -> Vec<Option<PointAt>> {
+pub async fn resolve_points_at(app: tauri::AppHandle, points: Vec<(i32, i32)>) -> Vec<Option<PointAt>> {
+    let n = points.len();
     #[cfg(windows)]
     {
         use tauri::Manager;
@@ -237,39 +304,44 @@ pub fn resolve_points_at(app: tauri::AppHandle, points: Vec<(i32, i32)>) -> Vec<
                 skip.push(h.0 as isize);
             }
         }
-        let els = crate::uia::elements_excluding(&skip, 4000, 700);
-        points
-            .into_iter()
-            .map(|(x, y)| {
-                if x < 0 || y < 0 {
-                    return None; // 哨兵(mosaic): 不解析遮挡区
-                }
-                // 最小面积且包含该点、且有名字/类型的元素 = 最具体的目标
-                let mut best: Option<(usize, i64)> = None;
-                for (i, e) in els.iter().enumerate() {
-                    let [l, t, r, b] = e.rect;
-                    if x >= l
-                        && x < r
-                        && y >= t
-                        && y < b
-                        && (!e.name.is_empty() || !e.control_type.is_empty())
-                    {
-                        let area = (r - l) as i64 * (b - t) as i64;
-                        if best.map(|(_, a)| area < a).unwrap_or(true) {
-                            best = Some((i, area));
+        // UIA 遍历放到阻塞线程池跑, 绝不卡住 Tauri 事件循环(防止卡死阻断用户)。
+        tauri::async_runtime::spawn_blocking(move || {
+            let els = crate::uia::elements_excluding(&skip, 4000, 600);
+            points
+                .into_iter()
+                .map(|(x, y)| {
+                    if x < 0 || y < 0 {
+                        return None; // 哨兵(mosaic): 不解析遮挡区
+                    }
+                    // 最小面积且包含该点、且有名字/类型的元素 = 最具体的目标
+                    let mut best: Option<(usize, i64)> = None;
+                    for (i, e) in els.iter().enumerate() {
+                        let [l, t, r, b] = e.rect;
+                        if x >= l
+                            && x < r
+                            && y >= t
+                            && y < b
+                            && (!e.name.is_empty() || !e.control_type.is_empty())
+                        {
+                            let area = (r - l) as i64 * (b - t) as i64;
+                            if best.map(|(_, a)| area < a).unwrap_or(true) {
+                                best = Some((i, area));
+                            }
                         }
                     }
-                }
-                best.map(|(i, _)| PointAt {
-                    name: els[i].name.clone(),
-                    control_type: els[i].control_type.clone(),
-                    rect: els[i].rect,
+                    best.map(|(i, _)| PointAt {
+                        name: els[i].name.clone(),
+                        control_type: els[i].control_type.clone(),
+                        rect: els[i].rect,
+                    })
                 })
-            })
-            .collect()
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_else(|_| (0..n).map(|_| None).collect())
     }
     #[cfg(not(windows))]
     {
-        points.iter().map(|_| None).collect()
+        (0..n).map(|_| None).collect()
     }
 }
