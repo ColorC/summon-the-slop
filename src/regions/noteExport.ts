@@ -11,6 +11,7 @@
 import { Job } from "@blocksuite/store";
 import { MarkdownAdapter } from "@blocksuite/blocks";
 import { notesMdPut, notesIndexPut } from "../lib";
+import { recordNoteOmniLinks, omniLinksOf } from "./omniLink";
 
 /** 单条笔记 → docs/<id>.md。跳过根 doc(id==collectionId, 是 meta 容器不是笔记)。 */
 export async function exportNoteToMd(doc: any, collection: any): Promise<void> {
@@ -29,6 +30,7 @@ export async function exportNoteToMd(doc: any, collection: any): Promise<void> {
       assets: (job as any).assetsManager,
     });
     await notesMdPut(doc.id, result?.file ?? "");
+    recordNoteOmniLinks(doc); // 顺手记下这篇引用了哪些 omni 项目/计划(供 index 反向查)
   } catch (e) {
     // eslint-disable-next-line no-console
     console.error("[notes] 导出 md 失败", doc?.id, e);
@@ -54,6 +56,7 @@ export async function rebuildNotesIndex(collection: any): Promise<void> {
         createDate: m.createDate ?? null,
         updatedDate: m.updatedDate ?? null,
         tags: tagMap[m.id] ?? [],
+        links: omniLinksOf(m.id), // 关联的 omni 项目/计划(反向查: 哪些笔记挂了项目 X)
         ydoc: `docs/${m.id}.ydoc`,
         md: `docs/${m.id}.md`,
       }));

@@ -115,8 +115,8 @@ import { FileDocSource, FileBlobSource } from "./regions/fileNotesStore";
 import { exportNoteToMd, rebuildNotesIndex, backfillExports } from "./regions/noteExport";
 import { saveVersion, listVersions, deleteVersionsFor } from "./regions/noteVersions";
 import { PoofMarkdownAdapter, looksLikeMarkdown, installMarkdownPaste } from "./regions/markdownPaste";
-import { omniMenuGroups, jumpOmni, omniProjects } from "./regions/omniLink";
-(window as any).__omniTest = { omniMenuGroups, jumpOmni, omniProjects };
+import { omniMenuGroups, jumpOmni, omniProjects, scanOmniLinks, recordNoteOmniLinks } from "./regions/omniLink";
+(window as any).__omniTest = { omniMenuGroups, jumpOmni, omniProjects, scanOmniLinks, recordNoteOmniLinks };
 import * as Y from "yjs";
 (window as any).__storeTest = {
   FileDocSource, FileBlobSource, Y, Job, exportNoteToMd, rebuildNotesIndex, backfillExports,

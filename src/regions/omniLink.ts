@@ -137,6 +137,75 @@ export async function omniMenuGroups(
   return groups;
 }
 
+// ---- 反向(omni→笔记): 扫一篇笔记里的 @omni 引用, 落进 localStorage 映射, 供 index.json 带出 ----
+// omni 读 index.json 的每条 note.links 即知"哪些笔记关联了项目 X"(比给每个 @mention 记一条 decision 轻)。
+const LINKS_KEY = "poof-note-omnilinks"; // { noteId: [{kind,id,name}] }
+
+export interface OmniLink {
+  kind: "project" | "plan";
+  id: string;
+  name: string;
+}
+
+/** 扫 doc 所有文本块的 delta, 收集 reference 里 __omni: 前缀的引用。 */
+export function scanOmniLinks(doc: any): OmniLink[] {
+  const out: OmniLink[] = [];
+  const seen = new Set<string>();
+  const cache = loadCache();
+  try {
+    const blocks = doc.getBlocksByFlavour?.([
+      "affine:paragraph",
+      "affine:list",
+      "affine:code",
+    ]) || [];
+    for (const b of blocks) {
+      const model = b?.model ?? b;
+      const deltas = model?.text?.yText?.toDelta?.() ?? model?.text?.toDelta?.() ?? [];
+      for (const d of deltas) {
+        const pid = d?.attributes?.reference?.pageId;
+        if (typeof pid === "string" && pid.startsWith(OMNI_PREFIX) && !seen.has(pid)) {
+          seen.add(pid);
+          const e = cache[pid];
+          const m = pid.slice(OMNI_PREFIX.length).match(/^(project|plan):(.+)$/);
+          if (m) {
+            out.push({
+              kind: m[1] as "project" | "plan",
+              id: m[2],
+              name: e?.name || d.attributes.reference.title || m[2],
+            });
+          }
+        }
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return out;
+}
+
+/** 扫并把这篇笔记的 omni 关联落进映射(在导出/保存时调)。 */
+export function recordNoteOmniLinks(doc: any): void {
+  if (!doc?.id) return;
+  try {
+    const map = JSON.parse(localStorage.getItem(LINKS_KEY) || "{}");
+    const links = scanOmniLinks(doc);
+    if (links.length) map[doc.id] = links;
+    else delete map[doc.id];
+    localStorage.setItem(LINKS_KEY, JSON.stringify(map));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 读某笔记的 omni 关联(供 index.json 带出)。 */
+export function omniLinksOf(noteId: string): OmniLink[] {
+  try {
+    return JSON.parse(localStorage.getItem(LINKS_KEY) || "{}")[noteId] || [];
+  } catch {
+    return [];
+  }
+}
+
 // ---- 点引用跳转: 拦 docLinkClicked 的 __omni: 引用 ----
 export function jumpOmni(refIdStr: string): void {
   const e = loadCache()[refIdStr];
