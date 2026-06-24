@@ -11,7 +11,7 @@ import { AffineSchemas } from "@blocksuite/blocks";
 import { effects as blocksEffects } from "@blocksuite/blocks/effects";
 import { effects as presetsEffects } from "@blocksuite/presets/effects";
 import { AiBlockSchema, aiBlockSchemas } from "../blocks/aiblock";
-import { FileDocSource, FileBlobSource, ensureMigrated } from "./fileNotesStore";
+import { FileDocSource, FileBlobSource, ensureMigrated, healOrphanNotes } from "./fileNotesStore";
 
 // Lit/BlockSuite 的 customElements.define 全局只能注册一次;跨"模块再求值"(热更)用 globalThis
 // 兜底幂等,避免重复 define 抛 DOMException(BlockSuite 重新初始化时的一类致命错)。
@@ -60,5 +60,11 @@ export function getCollection(): DocCollection {
   collection.meta.initialize();
   collection.start();
   g.__poofNotesCollection = collection;
+  // 自愈: 等迁移 + 首轮 meta pull 落定后, 把磁盘上有 .ydoc 却没进 meta 的孤儿笔记加回列表。
+  // (迁移后 workspace meta 若被截断, 笔记内容还在 docs/<id>.ydoc, 这里把它们重新列出来。)
+  void ready
+    .then(() => new Promise((r) => setTimeout(r, 1500)))
+    .then(() => healOrphanNotes(collection))
+    .catch(() => {});
   return collection;
 }

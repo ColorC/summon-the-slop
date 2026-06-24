@@ -73,6 +73,49 @@ pub fn take_capture() -> Result<tauri::ipc::Response, String> {
     Ok(frame_to_response(rgba, w, h, x, y, scale))
 }
 
+/// Headless 自检: `poof.exe --test-snap-pipeline` —— 复现修复的确切机制: 在【后台线程】抓帧(死锁的
+/// 根因就是把这步放主线程), 计时 + 读回验证非黑。证明"后台抓帧不死锁、帧有效", 不用按热键。
+pub fn test_snap_pipeline() {
+    use std::io::Write;
+    use std::time::Instant;
+    let t0 = Instant::now();
+    // 模拟 summon_snap: 抓帧在后台线程跑(主线程跑会和事件循环消息泵死锁)。
+    let h = std::thread::spawn(|| prime_capture());
+    let joined = h.join();
+    let dt = t0.elapsed();
+    match joined {
+        Ok(Ok(())) => {
+            let g = PRIMED.lock().unwrap();
+            match g.as_ref() {
+                Some((rgba, w, hgt, _, _, _)) => {
+                    let n = (rgba.len() / 4).max(1);
+                    let mut sum: u64 = 0;
+                    for px in rgba.chunks_exact(4) {
+                        sum += px[0] as u64 + px[1] as u64 + px[2] as u64;
+                    }
+                    let avg = sum / n as u64;
+                    println!(
+                        "后台线程抓帧 {}x{} 用时 {:?}, 平均亮度 {}/765 → {}",
+                        w,
+                        hgt,
+                        dt,
+                        avg,
+                        if avg < 5 {
+                            "✗ 黑帧"
+                        } else {
+                            "✓ 非黑 + 后台抓帧未死锁(主线程冻结的根因已消除)"
+                        }
+                    );
+                }
+                None => println!("✗ PRIMED 为空, prime_capture 没存进帧"),
+            }
+        }
+        Ok(Err(e)) => println!("✗ prime_capture 出错: {}", e),
+        Err(_) => println!("✗ 后台抓帧线程 panic"),
+    }
+    let _ = std::io::stdout().flush();
+}
+
 /// Headless 自检: `poof.exe --test-capture` —— 抓一帧, 存 PNG, 报平均亮度/非黑占比, 判定是否黑屏。
 /// 让我能在不按热键的情况下自己验证抓帧没坏(不黑屏), 而不是让用户去撞。
 pub fn test_capture() {

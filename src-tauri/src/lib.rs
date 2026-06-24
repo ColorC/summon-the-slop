@@ -556,12 +556,12 @@ fn open_notes(app: &tauri::AppHandle) {
 
 #[cfg(windows)]
 fn summon_snap(app: &tauri::AppHandle, record: bool) {
+    // 原始稳定路径(从不卡/黑/崩): 收起 main → 显示透明 snap(WDA 排除截图) → snap.ts 用 capture_screen
+    // (异步命令, Tauri 运行时, 不卡主线程)抓干净桌面 → 在冻结帧上压暗/拉框/标注。
+    // 注: "把 poof 自己截进画面"试过 4 种实现(显示后抓=黑 / 主线程抓=卡 / 裸线程抓=崩 / Tauri 线程池
+    // 抓=仍卡), 与 poof 透明覆盖层 + xcap 架构冲突, 暂不做; 截 poof 自身用外部工具(QQ)。
     use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize};
     let Some(snap) = app.get_webview_window("snap") else { return };
-    // 关键修复(黑屏):先抓帧、后显示覆盖层 —— 所有截图工具的标准做法。此刻 snap 还没出现, main 仍可见,
-    // 故抓到的是真实画面(含 poof 自身, 像 QQ 那样)且不黑屏。之前是反着来(先显示透明全屏 snap 再抓 →
-    // xcap 把它身后的透明 main 合成成黑帧)。snap.ts 用 take_capture 取这帧。
-    let _ = crate::snap_cmd::prime_capture();
     if let Ok(Some(m)) = snap.primary_monitor() {
         let p = m.position();
         let s = m.size();
@@ -569,16 +569,10 @@ fn summon_snap(app: &tauri::AppHandle, record: bool) {
         let _ = snap.set_size(PhysicalSize::new(s.width, s.height));
     }
     let _ = snap.show();
-    let _ = snap.set_always_on_top(true); // 确保压在 main 之上(否则两个置顶窗 z 序不定 → "按无效")
     let _ = snap.set_focus();
-    // 截图(record=false): 不收起 main —— poof 已冻进帧里, 留着也被 snap 盖住; 用户明确要"截图不隐藏界面"。
-    // 录制(record=true): 仍收起 main, 录的是干净桌面而非 poof。
-    if record {
-        if let Some(main) = app.get_webview_window("main") {
-            let _ = main.hide();
-        }
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.hide();
     }
-    // record=true → snap.ts enters 录制模式 (selection starts a recording instead of a copy)
     let _ = snap.emit("snap-summon", record);
 }
 #[cfg(windows)]
@@ -678,6 +672,12 @@ pub fn run() {
     #[cfg(windows)]
     if std::env::args().any(|a| a == "--test-capture") {
         snap_cmd::test_capture();
+        std::process::exit(0);
+    }
+    // 截图管线自检: poof.exe --test-snap-pipeline → 后台线程抓帧(死锁根因)计时+验非黑后退出。
+    #[cfg(windows)]
+    if std::env::args().any(|a| a == "--test-snap-pipeline") {
+        snap_cmd::test_snap_pipeline();
         std::process::exit(0);
     }
     // 性能基准: poof.exe --bench-search → 逐字拼音搜索计时后退出(在单实例/Builder 之前, 不被单实例拦)。

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   Folder,
@@ -64,14 +64,47 @@ function KindIcon({ kind }: { kind: string }) {
   return <FileText size={16} />;
 }
 
-// 把浮层钳进视口内 —— 靠右/靠下点击时翻到光标另一侧, 绝不溢出屏幕(原来 left:clientX 会跑到屏外)。
-function clampPos(x: number, y: number, w: number, h: number) {
-  const pad = 8;
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  const left = x + w + pad > vw ? Math.max(pad, x - w) : x;
-  const top = y + h + pad > vh ? Math.max(pad, vh - h - pad) : y;
-  return { left: Math.max(pad, left), top };
+// 紧贴光标弹出的浮层(右键菜单/标签面板)。按"实测尺寸"翻转: 放不下时围绕光标向上/向左展开,
+// 而不是钉到视口边缘(旧 clampPos 用写死高度 470 + 钉底, 在浮层窗口里几乎每次都把菜单甩到远处)。
+// 测量前先 hidden, useLayoutEffect 在绘制前定位完, 无闪烁。
+function FloatingPanel({
+  x,
+  y,
+  className,
+  onBackdrop,
+  children,
+}: {
+  x: number;
+  y: number;
+  className: string;
+  onBackdrop: () => void;
+  children: React.ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number; visibility: "hidden" | "visible" }>({
+    left: x,
+    top: y,
+    visibility: "hidden",
+  });
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const pad = 8;
+    const r = el.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const left = x + r.width + pad > vw ? Math.max(pad, x - r.width) : x;
+    const top = y + r.height + pad > vh ? Math.max(pad, y - r.height) : y;
+    setPos({ left: Math.max(pad, left), top: Math.max(pad, top), visibility: "visible" });
+  }, [x, y]);
+  return (
+    <>
+      <div className="ctx-backdrop" onMouseDown={onBackdrop} />
+      <div ref={ref} className={className} style={pos}>
+        {children}
+      </div>
+    </>
+  );
 }
 
 type AiItem = { kind: "ai"; name: string; path: ""; score: 0; tags: []; pinned: false };
@@ -373,9 +406,7 @@ export function SearchBar({
       )}
 
       {menu && (
-        <>
-          <div className="ctx-backdrop" onMouseDown={() => setMenu(null)} />
-          <div className="ctx-menu" style={clampPos(menu.x, menu.y, 230, 470)}>
+        <FloatingPanel x={menu.x} y={menu.y} className="ctx-menu" onBackdrop={() => setMenu(null)}>
             <button onClick={() => { launch(menu.hit); setMenu(null); }}>
               <CornerDownLeft size={15} /> 打开
             </button>
@@ -414,14 +445,11 @@ export function SearchBar({
             <button onClick={() => { shellMenu(menu.hit.path, menu.x, menu.y); setMenu(null); }}>
               <Menu size={15} /> 属性（系统）
             </button>
-          </div>
-        </>
+        </FloatingPanel>
       )}
 
       {tagPanel && (
-        <>
-          <div className="ctx-backdrop" onMouseDown={() => setTagPanel(null)} />
-          <div className="tag-panel" style={clampPos(tagPanel.x, tagPanel.y, 280, 220)}>
+        <FloatingPanel x={tagPanel.x} y={tagPanel.y} className="tag-panel" onBackdrop={() => setTagPanel(null)}>
             <div className="tag-panel-h">
               <TagIcon size={13} /> 标签 · {tagPanel.hit.name}
             </div>
@@ -477,8 +505,7 @@ export function SearchBar({
                 </div>
               ) : null;
             })()}
-          </div>
-        </>
+        </FloatingPanel>
       )}
 
       {tagMgr !== false && (

@@ -220,3 +220,4 @@ pub fn notes_version_del_all(doc_id: String) -> Result<(), String> {
     let _ = std::fs::remove_dir_all(versions_dir(doc_id));
     Ok(())
 }
+

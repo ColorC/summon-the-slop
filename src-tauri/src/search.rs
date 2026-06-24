@@ -1191,8 +1191,11 @@ pub fn reveal_path(path: String) -> Result<(), String> {
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        // explorer 的 /select 必须与路径在同一参数里(分成两个 arg 会被忽略,
+        // 只打开默认的"此电脑"); 且只认反斜杠,顺手归一化正斜杠。
+        let win_path = path.replace('/', "\\");
         std::process::Command::new("explorer")
-            .args(["/select,", &path])
+            .arg(format!("/select,{}", win_path))
             .creation_flags(CREATE_NO_WINDOW)
             .spawn()
             .map_err(|e| e.to_string())?;

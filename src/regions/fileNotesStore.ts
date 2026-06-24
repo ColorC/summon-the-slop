@@ -4,11 +4,13 @@
 //  · FileBlobSource —— BlockSuite 的 BlobSource(图片/PDF 落 blobs/<sha>; 原来是 MemoryBlobSource 关即丢)。
 //  · ensureMigrated —— 首次切换时把旧 IndexedDB("poof-notes")里的 doc 一次性写成 .ydoc(零丢失, 旧库不删)。
 // 所有真正的磁盘读写在 Rust(notesstore.rs), 这里只做 Yjs 合并/diff + base64 编解码。
+import * as Y from "yjs";
 import { diffUpdate, encodeStateVectorFromUpdate, mergeUpdates } from "yjs";
 import { openDB } from "idb";
 import {
   notesDocGet,
   notesDocPut,
+  notesDocKeys,
   notesBlobGet,
   notesBlobPut,
   notesBlobDel,
@@ -177,6 +179,70 @@ export class FileBlobSource {
       return [];
     }
   }
+}
+
+// ---- 自愈: 把磁盘上有 .ydoc 但 meta 没列的"孤儿笔记"重新加回 meta(防迁移后"笔记看不见")----
+// 只读笔记内容拿标题 + 只往 meta 加条目(addDocMeta), 绝不碰笔记内容 .ydoc, 对笔记零风险。
+// 内容在用户打开该笔记时由 FileDocSource 懒加载。每次启动都跑 → 即便 meta 再被截断也能恢复。
+function titleFromBytes(bytes: Uint8Array): string {
+  try {
+    const ydoc = new Y.Doc();
+    Y.applyUpdate(ydoc, bytes);
+    const blocks = ydoc.getMap("blocks") as any;
+    let pageTitle = "";
+    let firstText = "";
+    blocks.forEach((b: any) => {
+      const fl = b?.get?.("sys:flavour");
+      if (fl === "affine:page") {
+        const t = b.get("prop:title");
+        if (t?.toString) pageTitle = t.toString().trim();
+      } else if ((fl === "affine:paragraph" || fl === "affine:list") && !firstText) {
+        const t = b.get("prop:text");
+        if (t?.toString) firstText = t.toString().trim();
+      }
+    });
+    return (pageTitle || firstText || "").slice(0, 80);
+  } catch {
+    return "";
+  }
+}
+
+export async function healOrphanNotes(collection: any): Promise<number> {
+  let keys: string[] = [];
+  try {
+    keys = await notesDocKeys();
+  } catch {
+    return 0;
+  }
+  let added = 0;
+  for (const id of keys) {
+    if (id === collection.id) continue; // workspace 根 doc(=collectionId), 不是笔记
+    // ⚠ 实时复查(不是开头快照): meta 是异步加载的, 延迟期间这条可能已自己进来了 → 实时查避免重复登记。
+    if ((collection?.meta?.docMetas || []).some((m: any) => m.id === id)) continue;
+    let title = "";
+    try {
+      const b64 = await notesDocGet(id);
+      if (b64) title = titleFromBytes(b64ToBytes(b64));
+    } catch {
+      /* ignore */
+    }
+    try {
+      collection.meta.addDocMeta({
+        id,
+        title: title || "未命名笔记",
+        createDate: Date.now(),
+        tags: [],
+      });
+      added++;
+    } catch {
+      /* 已存在/竞态, 跳过 */
+    }
+  }
+  if (added) {
+    // eslint-disable-next-line no-console
+    console.log(`[notes] 自愈: 把 ${added} 篇孤儿笔记加回了列表`);
+  }
+  return added;
 }
 
 // ---- 一次性迁移: 旧 IndexedDB("poof-notes") → 磁盘 .ydoc ----
