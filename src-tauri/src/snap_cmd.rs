@@ -317,7 +317,9 @@ pub fn save_markdown(md: String, png_path: String) -> Result<String, String> {
     let p = ensure_in_shots(&png_path)?; // png was just written by save_image → exists + in-folder
     let md_path = p.with_extension("md");
     std::fs::write(&md_path, md.as_bytes()).map_err(|e| e.to_string())?;
-    Ok(md_path.to_string_lossy().into_owned())
+    // 去掉 canonicalize 带的 \\?\ 前缀, 让 [[路径]] 干净。
+    let s = md_path.to_string_lossy().into_owned();
+    Ok(s.strip_prefix(r"\\?\").map(|x| x.to_string()).unwrap_or(s))
 }
 
 /// "这个标注指向哪个 UI 元素" 的解析结果。
@@ -340,11 +342,14 @@ pub async fn resolve_points_at(app: tauri::AppHandle, points: Vec<(i32, i32)>) -
     #[cfg(windows)]
     {
         use tauri::Manager;
-        // 收集 poof 所有窗口的 HWND 一并跳过(main/snap/recbar/pin/view…)
+        // 只跳过截图覆盖层本身(snap / recbar)—— 它盖在最上层, 不跳会"选中自己"。但 main 不跳:
+        // 这样标注落在 poof 自己 UI 上时, 能解析出 poof 的内容(用户要的"洞察 poof 内容")。
         let mut skip: Vec<isize> = Vec::new();
-        for (_label, w) in app.webview_windows() {
-            if let Ok(h) = w.hwnd() {
-                skip.push(h.0 as isize);
+        for (label, w) in app.webview_windows() {
+            if label == "snap" || label == "recbar" {
+                if let Ok(h) = w.hwnd() {
+                    skip.push(h.0 as isize);
+                }
             }
         }
         // UIA 遍历放到阻塞线程池跑, 绝不卡住 Tauri 事件循环(防止卡死阻断用户)。

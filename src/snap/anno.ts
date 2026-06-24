@@ -42,6 +42,36 @@ export class Annotator {
     return this.shapes.map((s) => ({ ...s, pts: s.pts.map((p) => ({ ...p })) }));
   }
 
+  /** 命中测试: 最上层【包围盒含该 CSS 点】的形状下标(-1=没有)。供"画完后像画板一样拖动"用。 */
+  hitTest(cssX: number, cssY: number): number {
+    const x = cssX * this.dpr, y = cssY * this.dpr;
+    const pad = Math.max(8, 6 * this.dpr); // 容差: 细线/文字也好点中
+    for (let i = this.shapes.length - 1; i >= 0; i--) {
+      const ps = this.shapes[i].pts;
+      let l = Infinity, r = -Infinity, t = Infinity, b = -Infinity;
+      for (const p of ps) {
+        if (p.x < l) l = p.x;
+        if (p.x > r) r = p.x;
+        if (p.y < t) t = p.y;
+        if (p.y > b) b = p.y;
+      }
+      if (x >= l - pad && x <= r + pad && y >= t - pad && y <= b + pad) return i;
+    }
+    return -1;
+  }
+
+  /** 把某形状整体平移(CSS 增量),并重绘。 */
+  moveShapeBy(idx: number, dCssX: number, dCssY: number) {
+    const s = this.shapes[idx];
+    if (!s) return;
+    const dx = dCssX * this.dpr, dy = dCssY * this.dpr;
+    for (const p of s.pts) {
+      p.x += dx;
+      p.y += dy;
+    }
+    this.redraw();
+  }
+
   private toCanvas(cssX: number, cssY: number): Pt {
     return { x: Math.round(cssX * this.dpr), y: Math.round(cssY * this.dpr) };
   }

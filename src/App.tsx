@@ -100,11 +100,11 @@ export default function App() {
     hide();
   }, [hide]);
 
-  // 截图：hide poof, summon the transparent snap window (freeze + annotate + copy/save/pin/OCR).
+  // 截图：summon the snap window. 不在这里 hide() —— summon_snap 会先抓帧(含 poof 自己)再收起 main,
+  // 关 snap 时把 poof 放回来。若在这里就 hide(), poof 会在抓帧前消失 = 截不到自己。
   const startSnap = useCallback(() => {
     invoke("show_snap").catch(() => {});
-    hide();
-  }, [hide]);
+  }, []);
 
   // 录屏：hide poof, summon the snap overlay in 录制模式 (框选窗口/区域 → 关键帧+OCR). No hotkey
   // (low-frequency) — invoked from this 快捷面板. Stop via the rec bar's ■ 停止.

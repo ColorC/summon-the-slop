@@ -554,12 +554,17 @@ fn open_notes(app: &tauri::AppHandle) {
     }
 }
 
+// 截图把 main 降级了 → 关 snap 时恢复它置顶(main 全程不隐藏, poof 一直在、也被抓进画面)。
+#[cfg(windows)]
+static RESTORE_TOPMOST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 #[cfg(windows)]
 fn summon_snap(app: &tauri::AppHandle, record: bool) {
-    // 原始稳定路径(从不卡/黑/崩): 收起 main → 显示透明 snap(WDA 排除截图) → snap.ts 用 capture_screen
-    // (异步命令, Tauri 运行时, 不卡主线程)抓干净桌面 → 在冻结帧上压暗/拉框/标注。
-    // 注: "把 poof 自己截进画面"试过 4 种实现(显示后抓=黑 / 主线程抓=卡 / 裸线程抓=崩 / Tauri 线程池
-    // 抓=仍卡), 与 poof 透明覆盖层 + xcap 架构冲突, 暂不做; 截 poof 自身用外部工具(QQ)。
+    // 截图: 不收起 main —— snap.ts 用 capture_screen(GDI, 异步命令跑在 Tauri 运行时, 不卡主线程)抓屏幕
+    // 合成像素时, 可见的 main(poof 自己)照常被抓进画面(用户要的"含自己")。但把 main 降为【非置顶】, 让
+    // 置顶的 snap 稳定盖在它上面 —— 否则两个置顶窗 z 序不定 = "点按钮 poof 关掉 / 按快捷键没反应(snap 压
+    // 在 main 后)"。main 全程可见、不隐藏。关 snap 时恢复 main 置顶(poof 回到最前)。
+    // 录制(record=true): 收起 main, 录干净桌面。
     use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize};
     let Some(snap) = app.get_webview_window("snap") else { return };
     if let Ok(Some(m)) = snap.primary_monitor() {
@@ -568,11 +573,17 @@ fn summon_snap(app: &tauri::AppHandle, record: bool) {
         let _ = snap.set_position(PhysicalPosition::new(p.x, p.y));
         let _ = snap.set_size(PhysicalSize::new(s.width, s.height));
     }
-    let _ = snap.show();
-    let _ = snap.set_focus();
     if let Some(main) = app.get_webview_window("main") {
-        let _ = main.hide();
+        if record {
+            let _ = main.hide();
+        } else if main.is_visible().unwrap_or(false) {
+            let _ = main.set_always_on_top(false); // 降级(不隐藏): snap 盖上去, main 仍被抓进画面
+            RESTORE_TOPMOST.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
     }
+    let _ = snap.show();
+    let _ = snap.set_always_on_top(true);
+    let _ = snap.set_focus();
     let _ = snap.emit("snap-summon", record);
 }
 #[cfg(windows)]
@@ -602,8 +613,17 @@ fn present_snap(window: tauri::WebviewWindow) -> Result<(), String> {
 }
 #[cfg(windows)]
 #[tauri::command]
-fn close_snap(window: tauri::WebviewWindow) -> Result<(), String> {
-    window.hide().map_err(|e| e.to_string())
+fn close_snap(app: tauri::AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
+    use tauri::Manager;
+    let _ = window.hide();
+    // 截图把 main 降过级 → 恢复置顶(poof 回到最前)。main 没被隐藏过, 不用 show。
+    if RESTORE_TOPMOST.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        if let Some(main) = app.get_webview_window("main") {
+            let _ = main.set_always_on_top(true);
+            let _ = main.set_focus();
+        }
+    }
+    Ok(())
 }
 #[cfg(not(windows))]
 #[tauri::command]
@@ -724,11 +744,11 @@ pub fn run() {
                 if let Some(w) = app.get_webview_window("main") {
                     fit_main(&w);
                 }
-                // Exclude poof's OWN capture tooling from screen capture: a 截图 must never grab
-                // the snap chrome, and a 录屏 must never grab the rec bar. WDA_EXCLUDEFROMCAPTURE
-                // keeps them visible on-screen but invisible to capture. The MAIN overlay is NOT
-                // excluded — you should be able to screenshot poof's own panels.
-                for label in ["snap", "recbar"] {
+                // Exclude only the 录屏 rec bar from capture (it's visible during recording and must
+                // not appear in the recorded frames). The snap overlay is NO LONGER excluded: an
+                // excluded fullscreen window made the GDI/xcap grab come back BLACK; its toolbar is
+                // hidden by snap.ts clearForCapture before the grab, so it's fully transparent then.
+                for label in ["recbar"] {
                     if let Some(w) = app.get_webview_window(label) {
                         exclude_from_capture(&w);
                     }

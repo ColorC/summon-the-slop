@@ -369,47 +369,89 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
       snap("自动");
     }, 180000);
 
-    const editor = new AffineEditorContainer();
-    editor.edgelessSpecs = [...editor.edgelessSpecs, DARK_THEME, ...AiBlockSpec, FileSearchConfig];
-    editor.pageSpecs = [...editor.pageSpecs, DARK_THEME, ...AiBlockSpec, FileSearchConfig];
-    editor.doc = doc;
-    editor.mode = loadMode() as any; // 默认画布
-    host.current.innerHTML = "";
-    host.current.appendChild(editor);
-    editorRef.current = editor;
-    localizeSlashMenu(editor); // #8 slash 菜单中文(config)
-    installChromeTranslator(); // #8 全量中文(格式条/工具条/tooltip/链接卡片, DOM 级)
-    installFileTemplateSearch(); // #5 工具栏"Search file or anything"(模板面板)→ 搜本机文件(Everything)
-    const cleanupWriteback = installFileWriteback(doc); // 活文件块: 笔记里改文本块 → 防抖写回源文件
-    const cleanupMdToggle = installMdPreviewToggle(doc); // md 活文件块: 源码 ⇄ 渲染预览 切换钮
-    const cleanupMdPaste = installMarkdownPaste(editor); // 粘贴 markdown 智能转(Shift=纯文本)
-    const cleanupOmniJump = installOmniRefJump(editor); // @omni 引用点击 → 跳 vscode/看板
-    // #6 AI 块按钮注入原生底部工具栏(统一实现), 点了在画布上放一个 AI 块
-    const cleanupAiBtn = mountAiToolbarButton(() => {
-      try {
-        insertAiBlock(doc, activeId);
-      } catch {
-        /* ignore */
+    // ⚠ 编辑器延迟挂载: 必须等 doc 可渲染(有 page 根 + surface)再挂。直接挂一个还没 pull 完 / 缺 surface /
+    // 块结构残缺的 doc, edgeless 会抛 "missing surface block" / "children undefined" 直接崩 WebView2(整窗 0xcfffffff)。
+    let editor: AffineEditorContainer | null = null;
+    let mounted = false;
+    let cancelled = false;
+    const hookCleanups: Array<() => void> = [];
+
+    const mountEditor = () => {
+      if (cancelled || mounted || !host.current) return;
+      mounted = true;
+      editor = new AffineEditorContainer();
+      editor.edgelessSpecs = [...editor.edgelessSpecs, DARK_THEME, ...AiBlockSpec, FileSearchConfig];
+      editor.pageSpecs = [...editor.pageSpecs, DARK_THEME, ...AiBlockSpec, FileSearchConfig];
+      editor.doc = doc;
+      editor.mode = loadMode() as any; // 默认画布
+      host.current.innerHTML = "";
+      host.current.appendChild(editor);
+      editorRef.current = editor;
+      localizeSlashMenu(editor); // #8 slash 菜单中文(config)
+      installChromeTranslator(); // #8 全量中文(格式条/工具条/tooltip/链接卡片, DOM 级)
+      installFileTemplateSearch(); // #5 工具栏"Search file or anything"(模板面板)→ 搜本机文件(Everything)
+      hookCleanups.push(installFileWriteback(doc)); // 活文件块: 改文本块 → 防抖写回源文件
+      hookCleanups.push(installMdPreviewToggle(doc)); // md 活文件块: 源码 ⇄ 渲染预览
+      hookCleanups.push(installMarkdownPaste(editor)); // 粘贴 markdown 智能转(Shift=纯文本)
+      hookCleanups.push(installOmniRefJump(editor)); // @omni 引用点击 → 跳 vscode/看板
+      hookCleanups.push(
+        mountAiToolbarButton(() => {
+          try {
+            insertAiBlock(doc, activeId);
+          } catch {
+            /* ignore */
+          }
+        })
+      );
+      hookCleanups.push(mountNoteExpandButton(() => setMode("page")));
+    };
+
+    // 轮询: doc 加载出 page 根就补 surface(若缺)再挂; 等够(~1.5s)仍无 page = 空/坏文档 → reseed 成有效空笔记再挂。
+    // 本地 pull 很快(<200ms), 1.5s 还没 page 基本就是真空文档, reseed 不会误伤慢加载的好笔记。
+    const tryMount = (attempt: number) => {
+      if (cancelled || mounted) return;
+      const r: any = doc.root;
+      if (r?.id) {
+        try {
+          if (!doc.getBlocksByFlavour(["affine:surface"]).length) doc.addBlock("affine:surface", {}, r.id);
+        } catch {
+          /* ignore */
+        }
+        mountEditor();
+      } else if (attempt >= 10) {
+        try {
+          const rootId = doc.addBlock("affine:page", {});
+          doc.addBlock("affine:surface", {}, rootId);
+          const nid = doc.addBlock("affine:note", { xywh: "[0,0,440,620]" }, rootId);
+          doc.addBlock("affine:paragraph", {}, nid);
+        } catch {
+          /* ignore */
+        }
+        mountEditor();
+      } else {
+        window.setTimeout(() => tryMount(attempt + 1), 150);
       }
-    });
-    // #2 "展开写作"按钮注入"选中笔记时"的元素工具条 → 从那个块自身切到文档全幅写作
-    const cleanupExpandBtn = mountNoteExpandButton(() => setMode("page"));
+    };
+    tryMount(0);
+
     return () => {
+      cancelled = true;
       backfills.forEach((t) => clearTimeout(t));
       clearInterval(snapTimer);
-      cleanupAiBtn();
-      cleanupExpandBtn();
-      cleanupWriteback(); // 卸载写回观察者 + 落盘未保存改动
-      cleanupMdToggle();
-      cleanupMdPaste();
-      cleanupOmniJump();
+      hookCleanups.forEach((fn) => {
+        try {
+          fn();
+        } catch {
+          /* ignore */
+        }
+      });
       killAllAiTerminals(); // 关笔记/切笔记才真关 AI 终端; 模式切换不走这里, 所以不重载
       if (dirty) snap("自动"); // capture the latest edits on close
       offTitle();
       offBlock();
       editorRef.current = null;
       try {
-        editor.remove();
+        editor?.remove();
       } catch {
         /* ignore */
       }

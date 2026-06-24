@@ -28,7 +28,8 @@ const annot = new Annotator(annoEl, scr);
 let cap: Capture | null = null;
 let dpr = 1;
 let mode: "idle" | "selected" = "idle";
-let action: "none" | "create" | "move" | "resize" | "draw" = "none";
+let action: "none" | "create" | "move" | "resize" | "draw" | "dragshape" = "none";
+let dragShapeIdx = -1; // 拖动已画形状时, 被拖的形状下标
 let resizeEdge = "";
 let tool: Tool | "move" = "move";
 let down: { x: number; y: number } | null = null;
@@ -220,6 +221,12 @@ function onDown(e: MouseEvent) {
     if (tgt.classList.contains("handle")) { action = "resize"; resizeEdge = tgt.dataset.dir || ""; origSel = { ...sel }; down = { x: e.clientX, y: e.clientY }; return; }
     const inside = e.clientX >= sel.l && e.clientX <= sel.r && e.clientY >= sel.t && e.clientY <= sel.b;
     if (inside) {
+      // 任何工具(文字除外)下: 点中已画形状(像素上/框上)→ 直接拖它, 不必切到移动模式。
+      // 移动模式只是没点中形状时移动选区框 = 更顺手, 但不是"想挪就必须切过去"。
+      if (tool !== "text") {
+        const hit = annot.hitTest(e.clientX, e.clientY);
+        if (hit >= 0) { action = "dragshape"; dragShapeIdx = hit; down = { x: e.clientX, y: e.clientY }; return; }
+      }
       if (tool === "text") { openTextInput(e.clientX, e.clientY); return; }
       if (tool === "move") { action = "move"; origSel = { ...sel }; down = { x: e.clientX, y: e.clientY }; return; }
       action = "draw"; annot.onDown(e.clientX, e.clientY); return;
@@ -256,6 +263,11 @@ function onMove(e: MouseEvent) {
     if (resizeEdge.includes("s")) r.b = clampY(y);
     sel = { l: Math.min(r.l, r.r), t: Math.min(r.t, r.b), r: Math.max(r.l, r.r), b: Math.max(r.t, r.b) };
     paintSel(); paintHandles(); paintHot(); positionToolbar();
+    return;
+  }
+  if (action === "dragshape" && down) {
+    annot.moveShapeBy(dragShapeIdx, x - down.x, y - down.y);
+    down = { x, y }; // 增量平移
     return;
   }
   if (action === "draw") { annot.onMove(x, y); return; }
@@ -374,18 +386,19 @@ function resolvePointScreen(s: Shape): [number, number] {
   else { px = (a.x + b.x) / 2; py = (a.y + b.y) / 2; } // rect / ellipse 中心
   return [Math.round(cap!.x + px), Math.round(cap!.y + py)];
 }
+// 详细 Markdown —— 存进 .md 文件(详情都在文件里); 剪贴板只放 [[该文件路径]], 粘贴时短。
+// 「指向」只在解析出【有名字】的真实元素时才附(否则全是没用的 [Group] (无名))。坐标 = 裁剪相对像素。
 function buildMarkdown(imgPath: string, shapes: Shape[], ox: number, oy: number, w: number, h: number, hits: (PointAt | null)[]): string {
-  const P = (p: Pt) => `(${p.x - ox},${p.y - oy})`; // 全帧坐标 → 裁剪相对像素
+  const P = (p: Pt) => `(${p.x - ox},${p.y - oy})`;
   const ts = (() => { try { return new Date().toISOString(); } catch { return ""; } })();
   const L: string[] = [];
   L.push("---");
   L.push("kind: annotated-screenshot");
   L.push(`image: ${imgPath}`);
-  L.push(`image_pixels: { w: ${w}, h: ${h} }`);
+  L.push(`size: ${w}x${h}`);
   L.push(`dpi_scale: ${cap!.scale}`);
   if (ts) L.push(`captured_at: ${ts}`);
-  L.push(`monitor_origin_xy: [${cap!.x}, ${cap!.y}]`);
-  L.push("coord_space: image-pixels   # 裁剪后图像像素, 原点左上, +x 右 / +y 下");
+  L.push("coord_space: image-pixels  # 裁剪后图像像素, 原点左上, +x 右 / +y 下");
   L.push("---");
   L.push("");
   L.push(`![标注截图](${imgPath})`);
@@ -393,32 +406,22 @@ function buildMarkdown(imgPath: string, shapes: Shape[], ox: number, oy: number,
   L.push(`## 标注（${shapes.length}）`);
   if (!shapes.length) L.push("_（无标注，仅截图）_");
   shapes.forEach((s, i) => {
-    const n = i + 1;
     const a = s.pts[0], b = s.pts[s.pts.length - 1];
     const name = TOOL_CN[s.tool] || s.tool;
-    if (s.tool === "arrow" || s.tool === "line") {
-      L.push(`${n}. **${name}** — 色 ${s.color}，粗 ${s.width}`);
-      L.push(`   - 从 ${P(a)} ${s.tool === "arrow" ? "指向" : "到"} ${P(b)}`);
-    } else if (s.tool === "rect" || s.tool === "ellipse" || s.tool === "mosaic") {
+    let geo: string;
+    if (s.tool === "rect" || s.tool === "ellipse" || s.tool === "mosaic") {
       const l = Math.min(a.x, b.x) - ox, t = Math.min(a.y, b.y) - oy;
       const ww = Math.abs(b.x - a.x), hh = Math.abs(b.y - a.y);
-      L.push(`${n}. **${name}** — 色 ${s.color}，粗 ${s.width}`);
-      L.push(`   - 区域 x=${l}, y=${t}, w=${ww}, h=${hh}（中心 ${Math.round(l + ww / 2)},${Math.round(t + hh / 2)}）`);
-      if (s.tool === "mosaic") L.push(`   - ⚠ 此区域已遮挡，内容不外泄`);
+      geo = `区域 (${l},${t}) ${ww}×${hh}，中心 (${Math.round(l + ww / 2)},${Math.round(t + hh / 2)})`;
+      if (s.tool === "mosaic") geo += "（已遮挡）";
     } else if (s.tool === "text") {
-      L.push(`${n}. **${name}** — 色 ${s.color}`);
-      L.push(`   - 锚点 ${P(a)}`);
-      L.push(`   - 内容："${(s.text || "").replace(/"/g, '\\"')}"`);
-    } else { // pen / highlight
-      L.push(`${n}. **${name}** — 色 ${s.color}，粗 ${s.width}，${s.pts.length} 个点`);
-      L.push(`   - 起 ${P(s.pts[0])} 止 ${P(s.pts[s.pts.length - 1])}`);
+      geo = `锚点 ${P(a)}，内容 "${(s.text || "").replace(/"/g, '\\"')}"`;
+    } else { // arrow / line / pen / highlight
+      geo = `${P(a)} → ${P(b)}，${s.pts.length} 点`;
     }
-    // 「指向」: 该标注下面是哪个真实 UI 元素(已跳过 poof 自身)
+    L.push(`${i + 1}. **${name}** ${s.color}，粗 ${s.width} — ${geo}`);
     const pa = hits[i];
-    if (pa && (pa.name || pa.control_type)) {
-      const ct = pa.control_type ? `[${pa.control_type}] ` : "";
-      L.push(`   - 指向: ${ct}${pa.name || "(无名)"}`);
-    }
+    if (pa && pa.name) L.push(`   - 指向: ${pa.control_type ? pa.control_type + " " : ""}"${pa.name}"`);
   });
   L.push("");
   return L.join("\n");
@@ -439,8 +442,8 @@ async function doAction(act: string) {
   const png = compositePng();
   try {
     if (act === "md") {
-      // 复制为 Markdown: 存 PNG → 解析每个标注指向的真实 UI 元素(跳过 poof 自身)→ 拼结构化
-      // Markdown(元信息 + 每个标注坐标/文字/指向 + 图片路径)→ 写 .md 旁挂 → 内容进剪贴板。
+      // 复制为 Markdown: 存 PNG → 解析每个标注指向的真实 UI 元素 → 拼【详细】Markdown → 写成 .md 文件;
+      // 剪贴板只放 [[该 .md 路径]](粘贴时短, 详情都在文件里, AI 顺链接读)。
       const path = await invoke<string>("save_image", { pngBase64: png });
       const { ox, oy, w: cw, h: ch } = cropMeta();
       const shapes = shapesInCrop(annot.getShapes(), ox, oy, cw, ch);
@@ -454,8 +457,9 @@ async function doAction(act: string) {
         ]);
       } catch {}
       const md = buildMarkdown(path, shapes, ox, oy, cw, ch, hits);
-      try { await invoke("save_markdown", { md, pngPath: path }); } catch {}
-      await invoke("copy_text", { text: md });
+      let mdPath = path.replace(/\.png$/i, ".md"); // fallback
+      try { mdPath = await invoke<string>("save_markdown", { md, pngPath: path }); } catch {}
+      await invoke("copy_text", { text: `[[${mdPath}]]` }); // 剪贴板 = 文件链接, 不是长内容
       await closeSnap();
     } else if (act === "copy") {
       await invoke("save_image", { pngBase64: png }); // persist to the history folder
@@ -554,9 +558,10 @@ toolbar.addEventListener("click", (e) => {
 });
 
 function onEscape() {
+  // 一次 Esc 直接退出。只有当前正开着浮层/文字输入时, Esc 先关那个(仍是一次一动作)。
+  // 重新框选改用"在选区外点一下"(onDown 会 enterIdle), 不再占用 Esc。
   if (!panel.classList.contains("hidden")) { panel.classList.add("hidden"); return; }
   if (!textIn.classList.contains("hidden")) { textIn.classList.add("hidden"); textAt = null; return; }
-  if (mode === "selected") { enterIdle(); return; }
   closeSnap();
 }
 
