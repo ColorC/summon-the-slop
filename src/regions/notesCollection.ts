@@ -8,10 +8,10 @@
 // 模块后,NotesWorkspace.tsx 只剩组件导出 → 恢复热更 → 不再整页重载,崩溃的触发源被根除。
 import { Schema, DocCollection } from "@blocksuite/store";
 import { AffineSchemas } from "@blocksuite/blocks";
-import { IndexedDBDocSource } from "@blocksuite/sync";
 import { effects as blocksEffects } from "@blocksuite/blocks/effects";
 import { effects as presetsEffects } from "@blocksuite/presets/effects";
 import { AiBlockSchema, aiBlockSchemas } from "../blocks/aiblock";
+import { FileDocSource, FileBlobSource, ensureMigrated } from "./fileNotesStore";
 
 // Lit/BlockSuite 的 customElements.define 全局只能注册一次;跨"模块再求值"(热更)用 globalThis
 // 兜底幂等,避免重复 define 抛 DOMException(BlockSuite 重新初始化时的一类致命错)。
@@ -48,10 +48,14 @@ export function getCollection(): DocCollection {
   registerEffects();
   // aiBlockSchemas: 复制放宽 surface 的 children 白名单 + 追加 AiBlockSchema(见 blocks/aiblock)
   const schema = new Schema().register(aiBlockSchemas(AffineSchemas as any));
+  // 落盘存储: 先跑一次性迁移(旧 IndexedDB → 磁盘), source 的 pull/push 会 await 这个 ready,
+  // 所以 collection 可同步创建, IO 自动等迁移完成。数据落 E:\WindowsWorkspace\poof-notes\。
+  const ready = ensureMigrated();
   const collection = new DocCollection({
     id: "poof-notes",
     schema,
-    docSources: { main: new IndexedDBDocSource("poof-notes") },
+    docSources: { main: new FileDocSource(ready) },
+    blobSources: { main: new FileBlobSource(ready) },
   });
   collection.meta.initialize();
   collection.start();

@@ -6,16 +6,11 @@
 //     实例改它的 config.items 的 name/groupName(MIT 工程, 这是干净的运行时改法, 非改 node_modules)。
 import { html } from "lit";
 import { ConfigExtension } from "@blocksuite/block-std";
-import { Job } from "@blocksuite/store";
 import { EdgelessTemplatePanel } from "@blocksuite/blocks";
 import { search } from "./lib";
-import { getCollection } from "./regions/notesCollection";
+import { insertFileIntoNote } from "./regions/fileInsert";
 
 const FILE_ICON = html`<span style="font-size:14px;line-height:1">📄</span>`;
-
-function fileUrl(p: string): string {
-  return /^https?:\/\//.test(p) ? p : "file:///" + String(p).replace(/\\/g, "/");
-}
 
 // #5 —— 内置搜索的数据源换成 Everything
 export const FileSearchConfig = ConfigExtension("affine:page", {
@@ -43,17 +38,7 @@ export const FileSearchConfig = ConfigExtension("affine:page", {
             icon: FILE_ICON,
             action: () => {
               abort();
-              try {
-                const note = doc?.getBlocksByFlavour?.("affine:note")?.[0];
-                const pid = note?.model?.id ?? note?.id ?? doc?.root?.id;
-                doc?.addBlock?.(
-                  "affine:bookmark",
-                  { url: fileUrl(h.path), title: h.name, description: h.path },
-                  pid
-                );
-              } catch {
-                /* ignore */
-              }
+              void insertFileIntoNote(doc, h.path, h.name);
             },
           })),
         },
@@ -62,46 +47,17 @@ export const FileSearchConfig = ConfigExtension("affine:page", {
   },
 });
 
-// #5(真) —— 工具栏最右"模板"按钮弹出的 "Search file or anything"(EdgelessTemplatePanel)其实搜的是
-// 模板, 不是文件。这才是用户点的那个。把它的数据源换成 poof 核心搜索(MFT/Everything), 选中即往画布插
-// 一个文件书签卡片。content 用 BlockSuite 自己的序列化器生成一次(保证 DocSnapshot schema 正确)再按文件改 url/标题。
-let baseBookmarkSnap: any = null;
-function genBaseBookmarkSnap(): any {
-  if (baseBookmarkSnap) return baseBookmarkSnap;
-  try {
-    const c: any = getCollection();
-    const doc: any = c.createDoc();
-    doc.load(() => {
-      const root = doc.addBlock("affine:page", {});
-      const surface = doc.addBlock("affine:surface", {}, root);
-      doc.addBlock(
-        "affine:bookmark",
-        { url: "file:///x", title: "x", description: "x", xywh: "[0,0,360,114]" },
-        surface
-      );
-    });
-    const job = new Job({ collection: c });
-    baseBookmarkSnap = (job as any).docToSnapshot(doc);
-    c.removeDoc(doc.id); // 用完即删, 别污染笔记列表
-  } catch (e) {
-    // eslint-disable-next-line no-console
-    console.error("genBaseBookmarkSnap", e);
-  }
-  return baseBookmarkSnap;
-}
-function patchBookmark(snap: any, url: string, title: string, desc: string): any {
-  const s = JSON.parse(JSON.stringify(snap));
-  const walk = (b: any) => {
-    if (!b) return;
-    if (b.flavour === "affine:bookmark" && b.props) {
-      b.props.url = url;
-      b.props.title = title;
-      b.props.description = desc;
-    }
-    (b.children || []).forEach(walk);
-  };
-  walk(s.blocks);
-  return s;
+// #5(真) —— 工具栏最右"模板"按钮弹出的 "Search file or anything"(EdgelessTemplatePanel)。把它的数据源
+// 换成 poof 核心搜索(MFT/Everything), 结果按文件给「图标 + 文件名」(不再是抓不到封面的破书签卡)。选中即
+// 用 insertFileIntoNote 直接插进当前笔记 —— 截下面板的 _insertTemplate, 文件结果绕开模板的 DocSnapshot
+// 拖拽路径(文件块要带 blob/写回, snapshot 反而是障碍)。
+function fileIconSvg(ext: string): string {
+  const label = (ext || "?").slice(0, 4).toUpperCase();
+  return `<svg width="44" height="44" viewBox="0 0 44 44" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M11 5h14l8 8v26a1 1 0 0 1-1 1H11a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z" fill="#2b2f3a" stroke="#586079" stroke-width="1.3"/>
+    <path d="M25 5v8h8" fill="#1f232c" stroke="#586079" stroke-width="1.3"/>
+    <text x="22" y="31" text-anchor="middle" font-size="7.5" fill="#aeb6c7" font-family="ui-monospace,monospace">${label}</text>
+  </svg>`;
 }
 let fileTemplatesInstalled = false;
 export function installFileTemplateSearch(): void {
@@ -119,16 +75,35 @@ export function installFileTemplateSearch(): void {
       } catch {
         hits = [];
       }
-      const base = genBaseBookmarkSnap();
-      if (!base) return [];
       return hits.map((h) => {
-        const url = /^https?:\/\//.test(h.path)
-          ? h.path
-          : "file:///" + String(h.path).replace(/\\/g, "/");
-        return { name: h.name, type: "template", content: patchBookmark(base, url, h.name, h.path) };
+        const ext = (h.name.split(".").pop() || "").toLowerCase();
+        return { name: h.name, type: "poof-file", path: h.path, preview: fileIconSvg(ext) };
       });
     },
   };
+  const Proto: any = (EdgelessTemplatePanel as any).prototype;
+  if (!Proto.__poofFilePatched) {
+    Proto.__poofFilePatched = true;
+    const orig = Proto._insertTemplate;
+    Proto._insertTemplate = async function (template: any, bound: any) {
+      if (template && template.type === "poof-file" && template.path) {
+        try {
+          const doc = this.edgeless?.doc ?? this.edgeless?.std?.doc ?? this.edgeless?.service?.doc;
+          await insertFileIntoNote(doc, template.path, template.name);
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.error("poof file insert", e);
+        }
+        try {
+          this.edgeless?.gfx?.tool?.setTool("default");
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
+      return orig.call(this, template, bound);
+    };
+  }
 }
 
 // #8 —— slash 菜单中文(运行时改 widget.config)

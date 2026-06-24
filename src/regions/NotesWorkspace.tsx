@@ -23,7 +23,8 @@ import {
   LayoutGrid,
 } from "lucide-react";
 import { TerminalView } from "./Terminal";
-import { copyText } from "../lib";
+import { copyText, notesDocDel, notesMdDel } from "../lib";
+import { TagChip } from "../lib/tagchip";
 import { insertAiBlock, AiBlockSpec, mountAiToolbarButton, killAllAiTerminals } from "../blocks/aiblock";
 import {
   FileSearchConfig,
@@ -40,6 +41,11 @@ import { AffineEditorContainer } from "@blocksuite/presets";
 import { OverrideThemeExtension } from "@blocksuite/affine-shared/services";
 import { signal } from "@preact/signals-core";
 import { getCollection } from "./notesCollection";
+import { installFileWriteback, installMdPreviewToggle, insertFileIntoNote } from "./fileInsert";
+import { flushNotesStore } from "./fileNotesStore";
+import { scheduleNoteExport, rebuildNotesIndex, backfillExports } from "./noteExport";
+import { installMarkdownPaste } from "./markdownPaste";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 
 // DARK theme everywhere (canvas + 弹层/菜单都深底浅字, 跟 poof 的暗色玻璃悬浮层哲学一致)。
 // 唯独"笔记方框(affine-note)"在 CSS 里被改成米色纸 + 深字 —— 只改方框, 不动主题/画布。
@@ -172,6 +178,38 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
   const seeded = useRef(false);
   const [geom, setGeom] = useState<Geom>(loadGeom);
 
+  // ⚠ 整页重载(Rust 重编重启 / 改入口文件 / 手动刷新)会把还挂着的 BlockSuite 编辑器暴力拆掉,
+  // 撞崩 WebView2 渲染进程 —— 实测 poof.exe exit 0xcfffffff 且无 Rust panic(就是这条整页重载,
+  // 不是搜索)。页面卸载/重载前主动、有序地 remove 编辑器, 让 Lit/Yjs 干净断开, 别让渲染进程在
+  // 混乱拆解里崩。pagehide/beforeunload 覆盖进程重启+手动刷新, vite:beforeFullReload 覆盖 HMR 整页重载。
+  useEffect(() => {
+    const dispose = () => {
+      void flushNotesStore(); // 先尽力把 ≤400ms 未落盘的改动写盘(防关窗/整页重载丢最后一段编辑)
+      try {
+        editorRef.current?.remove();
+      } catch {
+        /* ignore */
+      }
+      editorRef.current = null;
+    };
+    // ⚠ pagehide/beforeunload 里 flush 的异步 IPC 在"真关窗/真退进程"时来不及跑完(只救得到 HMR 重载)。
+    // 真正堵生产期丢数据的是这条: poof 常态"关闭"=隐藏(main.hide), 会触发 visibilitychange→hidden, 此刻
+    // WebView 仍活、IPC 还能往返 → 在这里 flush 才真落得了盘。
+    const onHide = () => {
+      if (document.hidden) void flushNotesStore();
+    };
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("pagehide", dispose);
+    window.addEventListener("beforeunload", dispose);
+    const hot = (import.meta as any).hot;
+    hot?.on?.("vite:beforeFullReload", dispose);
+    return () => {
+      document.removeEventListener("visibilitychange", onHide);
+      window.removeEventListener("pagehide", dispose);
+      window.removeEventListener("beforeunload", dispose);
+    };
+  }, []);
+
   // #3 拖动(move) / 八向缩放(n/s/e/w/ne/nw/se/sw)。指针事件挂 window, 拖出元素也跟手。
   useEffect(() => {
     if (!full) localStorage.setItem(GEOM_KEY, JSON.stringify(geom));
@@ -293,8 +331,10 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
     const onChange = () => {
       dirty = true;
       sync();
+      scheduleNoteExport(doc, c); // 编辑 → 防抖导出 .md + 重建 index.json(给 omni 读)
     };
     sync(); // backfill the title for older notes when opened
+    scheduleNoteExport(doc, c); // 打开即导一次这条笔记的 .md, 并刷新 index
     // blocks may materialize slightly after mount → retry the backfill a few times
     const backfills = [250, 700, 1500].map((ms) => window.setTimeout(sync, ms));
     let offTitle = () => {};
@@ -339,6 +379,9 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
     localizeSlashMenu(editor); // #8 slash 菜单中文(config)
     installChromeTranslator(); // #8 全量中文(格式条/工具条/tooltip/链接卡片, DOM 级)
     installFileTemplateSearch(); // #5 工具栏"Search file or anything"(模板面板)→ 搜本机文件(Everything)
+    const cleanupWriteback = installFileWriteback(doc); // 活文件块: 笔记里改文本块 → 防抖写回源文件
+    const cleanupMdToggle = installMdPreviewToggle(doc); // md 活文件块: 源码 ⇄ 渲染预览 切换钮
+    const cleanupMdPaste = installMarkdownPaste(editor); // 粘贴 markdown 智能转(Shift=纯文本)
     // #6 AI 块按钮注入原生底部工具栏(统一实现), 点了在画布上放一个 AI 块
     const cleanupAiBtn = mountAiToolbarButton(() => {
       try {
@@ -354,6 +397,9 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
       clearInterval(snapTimer);
       cleanupAiBtn();
       cleanupExpandBtn();
+      cleanupWriteback(); // 卸载写回观察者 + 落盘未保存改动
+      cleanupMdToggle();
+      cleanupMdPaste();
       killAllAiTerminals(); // 关笔记/切笔记才真关 AI 终端; 模式切换不走这里, 所以不重载
       if (dirty) snap("自动"); // capture the latest edits on close
       offTitle();
@@ -379,6 +425,37 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
     }
   }, [mode]);
 
+  // 从系统拖文件进笔记 → 直接插进当前笔记(只在笔记打开时挂监听)。Tauri 给的是真实磁盘路径,
+  // 正好喂给 insertFileIntoNote(文本→可编辑写回 / 图片PDF→预览 / 其它→文件卡)。
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let dead = false;
+    getCurrentWebview()
+      .onDragDropEvent((ev: any) => {
+        if (ev.payload?.type !== "drop" || !activeId) return;
+        const doc = c.getDoc(activeId);
+        if (!doc) return;
+        doc.load();
+        for (const p of ev.payload.paths || []) void insertFileIntoNote(doc, p);
+      })
+      .then((u) => {
+        if (dead) u();
+        else unlisten = u;
+      })
+      .catch(() => {
+        /* 非 Tauri 环境(离屏台)忽略 */
+      });
+    return () => {
+      dead = true;
+      unlisten?.();
+    };
+  }, [activeId, c]);
+
+  // 笔记库就绪后, 后台全量补导一次 .md(没打开过的老笔记也导)+ 刷 index。一次性(带 flag), 幂等。
+  useEffect(() => {
+    if (ready) void backfillExports(c);
+  }, [ready, c]);
+
 
   // ---- actions ----
   function createNote() {
@@ -389,6 +466,10 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
   function setFlag(id: string, flag: Partial<Record<"archived" | "trashed" | "favorite", boolean>>) {
     c.setDocMeta(id, { ...flag, updatedDate: Date.now() } as any);
     setMetas(readMetas());
+    // 归档/回收 → 删导出的 .md(真源 .ydoc 留着可恢复), 否则"已删/归档"笔记的 .md 还能被 omni 直接 cat 到。
+    if (flag.archived || flag.trashed) notesMdDel(id).catch(() => {});
+    // 进/出 index 的状态变了就重建 index(favorite 不影响 index, 不重建)。恢复时 .md 等下次打开懒导回来。
+    if (flag.archived !== undefined || flag.trashed !== undefined) rebuildNotesIndex(c).catch(() => {});
   }
   function toTrash(id: string) {
     setFlag(id, { trashed: true, archived: false });
@@ -401,6 +482,11 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
     if (!window.confirm("彻底删除这条笔记？不可恢复。")) return;
     c.removeDoc(id);
     deleteVersionsFor(id).catch(() => {});
+    // 删盘上的真源 + 导出物(否则 .ydoc/.md 成孤儿, 且"已删"笔记的 .md 还能被 omni 读到)。
+    // 不删 blobs(sha 内容寻址, 可能被别的笔记共享)。删完重建 index。
+    notesDocDel(id).catch(() => {});
+    notesMdDel(id).catch(() => {});
+    rebuildNotesIndex(c).catch(() => {});
     const t = { ...tags };
     delete t[id];
     saveTags(t);
@@ -437,6 +523,14 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
     const cur = tags[id] || [];
     if (cur.includes(v)) return;
     const next = { ...tags, [id]: [...cur, v] };
+    saveTags(next);
+    setTags(next);
+  }
+  function removeNoteTag(id: string, t: string) {
+    const cur = (tags[id] || []).filter((x) => x !== t);
+    const next = { ...tags } as TagMap;
+    if (cur.length) next[id] = cur;
+    else delete next[id];
     saveTags(next);
     setTags(next);
   }
@@ -658,11 +752,9 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
                   {m.title || "未命名笔记"}
                 </div>
                 {!!(tags[m.id] || []).length && (
-                  <div className="notes-item-tags">
+                  <div className="notes-item-tags" onClick={(e) => e.stopPropagation()}>
                     {(tags[m.id] || []).map((t) => (
-                      <span className="notes-tag" key={t}>
-                        {t}
-                      </span>
+                      <TagChip key={t} name={t} onRemove={() => removeNoteTag(m.id, t)} />
                     ))}
                   </div>
                 )}

@@ -118,6 +118,42 @@ pub fn ancestry(auto: &UIAutomation, x: i32, y: i32) -> Vec<(String, String)> {
     out
 }
 
+/// Walk every top-level window's UIA tree into a flat element list with bounds, SKIPPING the
+/// given HWNDs (poof's own overlay windows). Used to resolve screenshot-annotation points to
+/// "what UI element is here" WITHOUT element_from_point — the snap overlay sits on top, so a
+/// hit-test would always return poof itself ("selecting self"). UIA tree enumeration is
+/// occlusion-independent (covered windows still expose their tree), so this sees the real apps
+/// underneath. Budget-limited (a single UIA call can block on a busy target).
+pub fn elements_excluding(skip: &[isize], total: usize, budget_ms: u128) -> Vec<ElementInfo> {
+    let out: Mutex<Vec<ElementInfo>> = Mutex::new(Vec::new());
+    let auto = match UIAutomation::new() {
+        Ok(a) => a,
+        Err(_) => return Vec::new(),
+    };
+    let root = match auto.get_root_element() {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    let walker = match auto.get_control_view_walker() {
+        Ok(w) => w,
+        Err(_) => return Vec::new(),
+    };
+    let start = Instant::now();
+    let len = |o: &Mutex<Vec<ElementInfo>>| o.lock().map(|v| v.len()).unwrap_or(total);
+    let mut win = walker.get_first_child(&root).ok();
+    while let Some(w) = win {
+        if len(&out) >= total || start.elapsed().as_millis() > budget_ms {
+            break;
+        }
+        let hwnd: isize = w.get_native_window_handle().map(|h| h.into()).unwrap_or(0);
+        if !skip.contains(&hwnd) {
+            collect(&walker, &w, 0, &out, total, &start, budget_ms);
+        }
+        win = walker.get_next_sibling(&w).ok();
+    }
+    out.into_inner().unwrap_or_default()
+}
+
 /// Reuse an existing UIAutomation (for the live inspector's box-select, which already
 /// holds one) to list named/valued elements intersecting a rect.
 pub fn elements_in_rect_with(auto: &UIAutomation, l: i32, t: i32, r: i32, b: i32, max: usize) -> Vec<ElementInfo> {

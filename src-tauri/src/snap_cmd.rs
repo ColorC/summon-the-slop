@@ -199,3 +199,77 @@ pub fn ocr_region(png_base64: String) -> Result<String, String> {
     let bytes = decode(&png_base64)?;
     crate::ocr::ocr_png(&bytes)
 }
+
+/// Write the annotation Markdown sidecar next to its PNG in the shots folder (shares the
+/// stem: shot-<ns>.png → shot-<ns>.md). Returns the .md path. Keeps everything inside
+/// the history folder so the structured export lives beside the image it describes.
+#[tauri::command]
+pub fn save_markdown(md: String, png_path: String) -> Result<String, String> {
+    let p = ensure_in_shots(&png_path)?; // png was just written by save_image → exists + in-folder
+    let md_path = p.with_extension("md");
+    std::fs::write(&md_path, md.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(md_path.to_string_lossy().into_owned())
+}
+
+/// "这个标注指向哪个 UI 元素" 的解析结果。
+#[derive(serde::Serialize)]
+pub struct PointAt {
+    pub name: String,
+    pub control_type: String,
+    /// [left, top, right, bottom] 物理桌面坐标
+    pub rect: [i32; 4],
+}
+
+/// Resolve each (screen-physical) point to the smallest UI element under it, SKIPPING ALL of
+/// poof's own windows — so an annotation can never "point at" poof itself ("截图时选中内容不能
+/// 选中自己"). Uses a UIA tree walk, NOT element_from_point: the snap overlay sits on top, so a
+/// hit-test would always return poof. A negative point (e.g. -1,-1) is a sentinel (mosaic) and
+/// is skipped so obscured regions never get resolved/leaked.
+#[tauri::command]
+pub fn resolve_points_at(app: tauri::AppHandle, points: Vec<(i32, i32)>) -> Vec<Option<PointAt>> {
+    #[cfg(windows)]
+    {
+        use tauri::Manager;
+        // 收集 poof 所有窗口的 HWND 一并跳过(main/snap/recbar/pin/view…)
+        let mut skip: Vec<isize> = Vec::new();
+        for (_label, w) in app.webview_windows() {
+            if let Ok(h) = w.hwnd() {
+                skip.push(h.0 as isize);
+            }
+        }
+        let els = crate::uia::elements_excluding(&skip, 4000, 700);
+        points
+            .into_iter()
+            .map(|(x, y)| {
+                if x < 0 || y < 0 {
+                    return None; // 哨兵(mosaic): 不解析遮挡区
+                }
+                // 最小面积且包含该点、且有名字/类型的元素 = 最具体的目标
+                let mut best: Option<(usize, i64)> = None;
+                for (i, e) in els.iter().enumerate() {
+                    let [l, t, r, b] = e.rect;
+                    if x >= l
+                        && x < r
+                        && y >= t
+                        && y < b
+                        && (!e.name.is_empty() || !e.control_type.is_empty())
+                    {
+                        let area = (r - l) as i64 * (b - t) as i64;
+                        if best.map(|(_, a)| area < a).unwrap_or(true) {
+                            best = Some((i, area));
+                        }
+                    }
+                }
+                best.map(|(i, _)| PointAt {
+                    name: els[i].name.clone(),
+                    control_type: els[i].control_type.clone(),
+                    rect: els[i].rect,
+                })
+            })
+            .collect()
+    }
+    #[cfg(not(windows))]
+    {
+        points.iter().map(|_| None).collect()
+    }
+}

@@ -6,7 +6,7 @@
 // the foreground (see summon_snap in lib.rs), so keyboard always reaches it.
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Annotator, Tool } from "./anno";
+import { Annotator, Tool, type Shape, type Pt } from "./anno";
 
 interface Capture { width: number; height: number; x: number; y: number; scale: number; }
 interface Rect { l: number; t: number; r: number; b: number; }
@@ -350,13 +350,110 @@ function compositePng(): string {
   return c.toDataURL("image/png").split(",")[1];
 }
 
+// ---- 结构化 Markdown 导出 -------------------------------------------------
+// 把冻结图的元信息 + 每个标注形状(类型/坐标/颜色/文字)+ 图片路径拼成一份 Markdown,
+// 坐标是"裁剪后图像像素"(原点=裁剪框左上, 与导出的 PNG 一一对应), 便于 AI 直接读懂"箭头从哪到哪、
+// 框住哪块区域、写了什么字"。形状的 pts 是全帧画布坐标, 减去裁剪原点(ox,oy)得到裁剪相对坐标。
+interface PointAt { name: string; control_type: string; rect: [number, number, number, number]; }
+const TOOL_CN: Record<string, string> = {
+  rect: "矩形", ellipse: "椭圆", arrow: "箭头", line: "直线",
+  pen: "画笔", highlight: "荧光标记", mosaic: "马赛克遮挡", text: "文字",
+};
+// 裁剪原点(全帧画布坐标)+ 尺寸 —— shape 的 pts 减去 (ox,oy) 即裁剪相对像素。
+function cropMeta() {
+  const [pl, pt, pr, pb] = cropPhys();
+  return { ox: pl - cap!.x, oy: pt - cap!.y, w: pr - pl, h: pb - pt };
+}
+// 每个标注"指向"的解析点 → 屏幕物理坐标(全帧画布坐标 + 显示器原点)。mosaic 返回哨兵不解析。
+function resolvePointScreen(s: Shape): [number, number] {
+  if (s.tool === "mosaic") return [-1, -1];
+  const a = s.pts[0], b = s.pts[s.pts.length - 1];
+  let px: number, py: number;
+  if (s.tool === "arrow" || s.tool === "line" || s.tool === "pen" || s.tool === "highlight") { px = b.x; py = b.y; }
+  else if (s.tool === "text") { px = a.x; py = a.y; }
+  else { px = (a.x + b.x) / 2; py = (a.y + b.y) / 2; } // rect / ellipse 中心
+  return [Math.round(cap!.x + px), Math.round(cap!.y + py)];
+}
+function buildMarkdown(imgPath: string, shapes: Shape[], ox: number, oy: number, w: number, h: number, hits: (PointAt | null)[]): string {
+  const P = (p: Pt) => `(${p.x - ox},${p.y - oy})`; // 全帧坐标 → 裁剪相对像素
+  const ts = (() => { try { return new Date().toISOString(); } catch { return ""; } })();
+  const L: string[] = [];
+  L.push("---");
+  L.push("kind: annotated-screenshot");
+  L.push(`image: ${imgPath}`);
+  L.push(`image_pixels: { w: ${w}, h: ${h} }`);
+  L.push(`dpi_scale: ${cap!.scale}`);
+  if (ts) L.push(`captured_at: ${ts}`);
+  L.push(`monitor_origin_xy: [${cap!.x}, ${cap!.y}]`);
+  L.push("coord_space: image-pixels   # 裁剪后图像像素, 原点左上, +x 右 / +y 下");
+  L.push("---");
+  L.push("");
+  L.push(`![标注截图](${imgPath})`);
+  L.push("");
+  L.push(`## 标注（${shapes.length}）`);
+  if (!shapes.length) L.push("_（无标注，仅截图）_");
+  shapes.forEach((s, i) => {
+    const n = i + 1;
+    const a = s.pts[0], b = s.pts[s.pts.length - 1];
+    const name = TOOL_CN[s.tool] || s.tool;
+    if (s.tool === "arrow" || s.tool === "line") {
+      L.push(`${n}. **${name}** — 色 ${s.color}，粗 ${s.width}`);
+      L.push(`   - 从 ${P(a)} ${s.tool === "arrow" ? "指向" : "到"} ${P(b)}`);
+    } else if (s.tool === "rect" || s.tool === "ellipse" || s.tool === "mosaic") {
+      const l = Math.min(a.x, b.x) - ox, t = Math.min(a.y, b.y) - oy;
+      const ww = Math.abs(b.x - a.x), hh = Math.abs(b.y - a.y);
+      L.push(`${n}. **${name}** — 色 ${s.color}，粗 ${s.width}`);
+      L.push(`   - 区域 x=${l}, y=${t}, w=${ww}, h=${hh}（中心 ${Math.round(l + ww / 2)},${Math.round(t + hh / 2)}）`);
+      if (s.tool === "mosaic") L.push(`   - ⚠ 此区域已遮挡，内容不外泄`);
+    } else if (s.tool === "text") {
+      L.push(`${n}. **${name}** — 色 ${s.color}`);
+      L.push(`   - 锚点 ${P(a)}`);
+      L.push(`   - 内容："${(s.text || "").replace(/"/g, '\\"')}"`);
+    } else { // pen / highlight
+      L.push(`${n}. **${name}** — 色 ${s.color}，粗 ${s.width}，${s.pts.length} 个点`);
+      L.push(`   - 起 ${P(s.pts[0])} 止 ${P(s.pts[s.pts.length - 1])}`);
+    }
+    // 「指向」: 该标注下面是哪个真实 UI 元素(已跳过 poof 自身)
+    const pa = hits[i];
+    if (pa && (pa.name || pa.control_type)) {
+      const ct = pa.control_type ? `[${pa.control_type}] ` : "";
+      L.push(`   - 指向: ${ct}${pa.name || "(无名)"}`);
+    }
+  });
+  L.push("");
+  return L.join("\n");
+}
+// 只保留与裁剪框有交集的形状(框选小图时, 框外的标注不进 Markdown)。
+function shapesInCrop(shapes: Shape[], ox: number, oy: number, w: number, h: number): Shape[] {
+  return shapes.filter((s) => {
+    const xs = s.pts.map((p) => p.x - ox), ys = s.pts.map((p) => p.y - oy);
+    const l = Math.min(...xs), r = Math.max(...xs), t = Math.min(...ys), b = Math.max(...ys);
+    return r >= 0 && l <= w && b >= 0 && t <= h;
+  });
+}
+
 async function doAction(act: string) {
   if (!cap || mode !== "selected") return;
   commitTextIfOpen();
   const [pl, pt, pr, pb] = cropPhys();
   const png = compositePng();
   try {
-    if (act === "copy") {
+    if (act === "md") {
+      // 复制为 Markdown: 存 PNG → 解析每个标注指向的真实 UI 元素(跳过 poof 自身)→ 拼结构化
+      // Markdown(元信息 + 每个标注坐标/文字/指向 + 图片路径)→ 写 .md 旁挂 → 内容进剪贴板。
+      const path = await invoke<string>("save_image", { pngBase64: png });
+      const { ox, oy, w: cw, h: ch } = cropMeta();
+      const shapes = shapesInCrop(annot.getShapes(), ox, oy, cw, ch);
+      let hits: (PointAt | null)[] = shapes.map(() => null);
+      try {
+        const pts = shapes.map(resolvePointScreen);
+        hits = await invoke<(PointAt | null)[]>("resolve_points_at", { points: pts });
+      } catch {}
+      const md = buildMarkdown(path, shapes, ox, oy, cw, ch, hits);
+      try { await invoke("save_markdown", { md, pngPath: path }); } catch {}
+      await invoke("copy_text", { text: md });
+      await closeSnap();
+    } else if (act === "copy") {
       await invoke("save_image", { pngBase64: png }); // persist to the history folder
       await invoke("copy_image", { pngBase64: png });
       await closeSnap();
@@ -473,8 +570,10 @@ window.addEventListener("keydown", (e) => {
     return; // record mode has no annotation/copy keys
   }
   if (mode === "selected") {
-    if (k === "Enter") { e.preventDefault(); doAction("copy"); return; }
-    if ((e.ctrlKey || e.metaKey) && (k === "c" || k === "C")) { e.preventDefault(); doAction("copy"); return; }
+    // 回车 / 双击 / Ctrl+C = 复制为 Markdown(结构化标注+路径, 喂 AI); Ctrl+Shift+C = 复制纯图片
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (k === "c" || k === "C")) { e.preventDefault(); doAction("copy"); return; }
+    if (k === "Enter") { e.preventDefault(); doAction("md"); return; }
+    if ((e.ctrlKey || e.metaKey) && (k === "c" || k === "C")) { e.preventDefault(); doAction("md"); return; }
     if ((e.ctrlKey || e.metaKey) && (k === "s" || k === "S")) { e.preventDefault(); doAction("save"); return; }
     if ((e.ctrlKey || e.metaKey) && (k === "z" || k === "Z")) { e.preventDefault(); annot.undo(); return; }
     if ((e.ctrlKey || e.metaKey) && (k === "y" || k === "Y")) { e.preventDefault(); annot.redo(); return; }
@@ -485,16 +584,16 @@ window.addEventListener("keydown", (e) => {
       if (nt) { e.preventDefault(); setTool(nt); return; }
     }
   } else {
-    if (k === "Enter") { e.preventDefault(); selectFull(); doAction("copy"); return; }
+    if (k === "Enter") { e.preventDefault(); selectFull(); doAction("md"); return; }
     if (k === "F3") { e.preventDefault(); selectFull(); doAction("pin"); return; }
   }
 });
 
-// double-click inside the selection copies (Snipaste behavior; record mode records on single click)
+// double-click inside the selection copies as Markdown (record mode records on single click)
 document.addEventListener("dblclick", (e) => {
   if (recordMode || mode !== "selected") return;
   const inside = e.clientX >= sel.l && e.clientX <= sel.r && e.clientY >= sel.t && e.clientY <= sel.b;
-  if (inside) doAction("copy");
+  if (inside) doAction("md");
 });
 
 // right-click anywhere cancels (selection first, then the whole snip)

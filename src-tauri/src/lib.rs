@@ -5,9 +5,13 @@ mod native_rec; // AI 会话录像 (P4): native coarse layer (foreground window 
 #[cfg(windows)]
 mod region_rec; // 区域录制: 截图同款选区 → 关键帧+OCR+焦点+活跃,零配置
 mod pty;
+mod fileio; // 笔记「活文件块」的磁盘读写: 文本读/写回 + 二进制 base64(图片/PDF 预览)
+mod notesstore; // 笔记落盘存储: docs/<id>.ydoc + blobs/<sha>(搬出 WebView2 IndexedDB 到浅路径)
 mod notebridge; // 笔记 ops 桥(CLI ⇄ 活笔记 collection 的文件命令队列)
 mod record_cmd; // AI 会话录像 (P1)
 mod search;
+mod tags; // 自定义文件标签(path→tags, 落 %LOCALAPPDATA%, 进搜索打分 + #tag 过滤)
+mod fileid; // NTFS FileId 冗余救援键(文件移到监视目录外时, 标签靠它自愈)
 #[cfg(windows)]
 mod mft; // NTFS MFT/USN 全盘枚举(Everything 级范围), search 用; 非 NTFS/未提权时回退游走
 mod snapshot;
@@ -40,7 +44,11 @@ fn log_path() -> std::path::PathBuf {
     std::env::temp_dir().join("poof-summon.log")
 }
 
+// 串行化写入 —— 否则多线程(键盘钩子 / setup / OCR 轮询 / JS 命令)同时 append, 字节会交错成乱码。
+static LOG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn log_line(s: &str) {
+    let _g = LOG_LOCK.lock();
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -48,6 +56,14 @@ fn log_line(s: &str) {
     {
         let _ = writeln!(f, "{} {}", now_ms(), s);
     }
+}
+
+/// 全套日志: JS 侧(各 webview 窗口)把 console 报错 / 未捕获异常 / Promise 拒绝喂进来,
+/// 落进和原生日志同一条时间线, 便于在崩溃(原生 0xcfffffff 这类)前后对齐排查。
+#[tauri::command]
+fn log_js(line: String) {
+    let s: String = line.chars().take(4000).collect();
+    log_line(&format!("[js] {s}"));
 }
 
 #[cfg(windows)]
@@ -473,6 +489,23 @@ fn float_windows(app: &tauri::AppHandle) -> Vec<tauri::WebviewWindow> {
         .collect()
 }
 
+/// 把主悬浮层重新贴合到它当前所在的显示器(尺寸+位置)。窗口尺寸只在启动时设过一次,
+/// 用户改分辨率/缩放后会过时 —— 每次召出前调一次, 保证覆盖整屏、动作栏不溢出、整体居中。
+#[cfg(windows)]
+fn fit_main(main: &tauri::WebviewWindow) {
+    let mon = main
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| main.primary_monitor().ok().flatten());
+    if let Some(mon) = mon {
+        let sz = mon.size();
+        let pos = mon.position();
+        let _ = main.set_size(tauri::PhysicalSize::new(sz.width, sz.height));
+        let _ = main.set_position(tauri::PhysicalPosition::new(pos.x, pos.y));
+    }
+}
+
 /// 双击 Ctrl → show 快捷菜单+搜索 (main overlay), minimizing the other floating windows. 三击 Ctrl
 /// (restore_floats=true) → show main AND bring back every floating window.
 #[cfg(windows)]
@@ -484,6 +517,7 @@ fn summon_main(app: &tauri::AppHandle, restore_floats: bool) {
         return;
     }
     let _ = main.unminimize();
+    fit_main(&main); // 改分辨率/缩放后窗口尺寸会过时, 召出前重新贴合
     let _ = main.show();
     let _ = main.set_always_on_top(true);
     let _ = main.set_focus();
@@ -511,6 +545,7 @@ fn open_notes(app: &tauri::AppHandle) {
     use tauri::{Emitter, Manager};
     if let Some(main) = app.get_webview_window("main") {
         let _ = main.unminimize();
+        fit_main(&main);
         let _ = main.show();
         let _ = main.set_always_on_top(true);
         let _ = main.set_focus();
@@ -529,6 +564,9 @@ fn summon_snap(app: &tauri::AppHandle, record: bool) {
         let _ = snap.set_position(PhysicalPosition::new(p.x, p.y));
         let _ = snap.set_size(PhysicalSize::new(s.width, s.height));
     }
+    // 必须在抓帧前隐藏主悬浮层: main 是「全屏透明 + 置顶」的覆盖层, 留它在屏上时 xcap 抓到的是黑帧
+    // (DWM/WebView2 无法干净地把一个置顶透明全屏层合成进截图), 且 snap 会被压在 main 之下 → 截图框点不到
+    // = "开着 poof 按无效"。所以截图与录制都先收起 main, 在冻结的干净桌面上标注。
     let _ = snap.show();
     let _ = snap.set_focus();
     if let Some(main) = app.get_webview_window("main") {
@@ -630,12 +668,28 @@ fn take_chat_intents() -> Vec<(String, Option<String>)> {
 #[allow(unused_variables)]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 性能基准: poof.exe --bench-search → 逐字拼音搜索计时后退出(在单实例/Builder 之前, 不被单实例拦)。
+    if std::env::args().any(|a| a == "--bench-search") {
+        search::bench_search();
+        std::process::exit(0);
+    }
+    // 全套日志: 把 panic(含位置 + 回溯)落进同一条时间线 —— 后台线程(OCR/轮询/键盘钩子)
+    // 的 panic 平时会被 unwind 静默吞掉, 这里强制记下来。原生崩溃(访问越界)抓不到, 但配合
+    // JS 侧 log_js + tauri dev 的 poof-dev.log, 三路日志足以定位绝大多数崩溃。
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let bt = std::backtrace::Backtrace::force_capture();
+        log_line(&format!("[PANIC] {info}\n{bt}"));
+        prev_hook(info);
+    }));
     tauri::Builder::default()
         // single-instance MUST be first: a second launch never starts a 2nd poof — it
         // just summons the existing one. Enforces the "never two poofs" rule at the process level.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             use tauri::Manager;
             if let Some(w) = app.get_webview_window("main") {
+                #[cfg(windows)]
+                fit_main(&w);
                 let _ = w.show();
                 let _ = w.set_focus();
                 let _ = tauri::Emitter::emit(app, "summon", ());
@@ -648,17 +702,15 @@ pub fn run() {
             let handle = app.handle().clone();
             // warm the file-search index: load persisted instantly, then refresh in bg
             std::thread::spawn(|| search::warm_start());
+            // warm the file-tag store (path→tags) so the first keystroke already weights tags
+            std::thread::spawn(|| tags::warm());
             // P2: localhost HTTP collector for the 录像 extensions (own thread, blocking accept).
             std::thread::spawn(|| http_rec::start_http_server());
             #[cfg(windows)]
             {
                 // Fullscreen overlay: cover the whole monitor (taskbar included).
                 if let Some(w) = app.get_webview_window("main") {
-                    if let Ok(Some(mon)) = w.current_monitor() {
-                        let sz = mon.size();
-                        let _ = w.set_size(tauri::PhysicalSize::new(sz.width, sz.height));
-                        let _ = w.set_position(tauri::PhysicalPosition::new(0, 0));
-                    }
+                    fit_main(&w);
                 }
                 // Exclude poof's OWN capture tooling from screen capture: a 截图 must never grab
                 // the snap chrome, and a 录屏 must never grab the rec bar. WDA_EXCLUDEFROMCAPTURE
@@ -716,6 +768,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            log_js,
             run_shell,
             ask_ai,
             copy_text,
@@ -730,10 +783,46 @@ pub fn run() {
             pty::pty_write,
             pty::pty_resize,
             pty::pty_kill,
+            fileio::read_file_text,
+            fileio::write_file_text,
+            fileio::read_file_b64,
+            notesstore::notes_root,
+            notesstore::notes_doc_get,
+            notesstore::notes_doc_put,
+            notesstore::notes_doc_del,
+            notesstore::notes_doc_keys,
+            notesstore::notes_blob_get,
+            notesstore::notes_blob_put,
+            notesstore::notes_blob_del,
+            notesstore::notes_blob_keys,
+            notesstore::notes_md_put,
+            notesstore::notes_md_del,
+            notesstore::notes_index_put,
+            notesstore::notes_version_put,
+            notesstore::notes_version_all,
+            notesstore::notes_version_del_one,
+            notesstore::notes_version_del_all,
             search::search,
             search::search_reindex,
             search::open_path,
             search::reveal_path,
+            search::set_override,
+            search::get_override,
+            search::list_overrides,
+            search::toggle_important_folder,
+            search::is_important_folder,
+            search::recent_top,
+            tags::tag_add,
+            tags::tag_remove,
+            tags::tags_for,
+            tags::tag_defs,
+            tags::tag_files,
+            tags::tag_set_def,
+            tags::tag_rename,
+            tags::tag_delete,
+            tags::tag_orphans,
+            tags::tag_reassign,
+            tags::tag_rescue,
             snapshot::snapshot_region,
             show_snap,
             present_snap,
@@ -748,6 +837,8 @@ pub fn run() {
             snap_cmd::reveal_shot,
             snap_cmd::pin_image,
             snap_cmd::ocr_region,
+            snap_cmd::save_markdown,
+            snap_cmd::resolve_points_at,
             show_replay,
             record_cmd::record_start,
             record_cmd::record_event,

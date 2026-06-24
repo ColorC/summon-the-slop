@@ -2,12 +2,12 @@
 // Tools: rect, ellipse, arrow, line, pen, text, highlight, mosaic. Undo + color.
 export type Tool = "rect" | "ellipse" | "arrow" | "line" | "pen" | "text" | "highlight" | "mosaic";
 
-interface Pt { x: number; y: number }
-interface Shape {
+export interface Pt { x: number; y: number }
+export interface Shape {
   tool: Tool;
   color: string;
   width: number;
-  pts: Pt[];          // physical-pixel canvas coords
+  pts: Pt[];          // physical-pixel canvas coords (full-frame; origin = captured frame top-left)
   text?: string;
 }
 
@@ -36,6 +36,11 @@ export class Annotator {
 
   undo() { const s = this.shapes.pop(); if (s) { this.redoStack.push(s); this.redraw(); } }
   hasInk() { return this.shapes.length > 0; }
+
+  /** 结构化导出: 所有标注形状的深拷贝(snap.ts 序列化成 Markdown 喂 AI 用)。pts 是全帧物理像素坐标。 */
+  getShapes(): Shape[] {
+    return this.shapes.map((s) => ({ ...s, pts: s.pts.map((p) => ({ ...p })) }));
+  }
 
   private toCanvas(cssX: number, cssY: number): Pt {
     return { x: Math.round(cssX * this.dpr), y: Math.round(cssY * this.dpr) };
