@@ -23,14 +23,13 @@ import { ContentManager } from "./content/ContentManager";
 import { SearchBar } from "./regions/SearchBar";
 import { Notifications } from "./regions/Notifications";
 import { TerminalBar } from "./regions/TerminalBar";
-import { ConvBar } from "./regions/ConvBar";
 import { ProjectSurface, ReviewSurface } from "./surfaces";
 import { NotesWorkspace } from "./regions/NotesWorkspace";
 import { DockStage, type PanelKind } from "./panels";
 import GoalsSurface from "./goalsSurface";
-import { pushChatIntent } from "./chatIntents";
 import { sendToController, OMNI_WEB_URL } from "./controller";
 import { startNoteBridge } from "./noteOps";
+import { installInstantTooltips } from "./tooltips";
 import { getCollection } from "./regions/notesCollection";
 import { allBindings } from "./regions/boundRegistry";
 import "./App.css";
@@ -71,6 +70,32 @@ function gatherDiagState(): any {
       if (k.startsWith("poof-")) ls[k] = (localStorage.getItem(k) || "").length;
     }
     out.localStorageBytes = ls;
+  } catch {
+    /* ignore */
+  }
+  // 审计可见的原生表单控件 + iframe —— 揪"莫名其妙的原生控件"(如 number/date 的 ▲▼ spinner)的归属:
+  // 父文档里有就直接定位到元素; 父文档没有但某 iframe 覆盖该坐标 → 是被嵌入的外部页面(poof CSS 管不到)。
+  try {
+    const r0 = innerWidth, r1 = innerHeight;
+    const seen = (r: DOMRect) =>
+      r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 && r.top < r1 && r.left < r0;
+    const tag = (el: Element) => {
+      const a = el.closest("[class]");
+      const cls = a ? "." + ((a.className as string) || "").trim().split(/\s+/)[0] : "";
+      return el.tagName.toLowerCase() + ((el as HTMLInputElement).type ? `[${(el as HTMLInputElement).type}]` : "") + cls;
+    };
+    const box = (el: Element) => {
+      const r = el.getBoundingClientRect();
+      return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
+    };
+    out.inputsAudit = Array.from(document.querySelectorAll("input,textarea,select"))
+      .filter((el) => seen(el.getBoundingClientRect()))
+      .map((el) => ({ el: tag(el), ...box(el) }));
+    out.iframesAudit = Array.from(document.querySelectorAll("iframe")).map((f) => ({
+      src: (f as HTMLIFrameElement).getAttribute("src") || ((f as HTMLIFrameElement).srcdoc ? "[srcdoc]" : ""),
+      cls: (f.className as string) || "",
+      ...box(f),
+    }));
   } catch {
     /* ignore */
   }
@@ -130,6 +155,9 @@ export default function App() {
   useEffect(() => {
     startNoteBridge();
   }, []);
+
+  // 全局即时提示: 所有带 data-tip/title 的按钮悬浮立刻显示名称(无延迟)
+  useEffect(() => installInstantTooltips(), []);
 
   const isOpen = (k: PanelKind) => open.includes(k);
   const openPanel = useCallback(
@@ -213,10 +241,6 @@ export default function App() {
     hide();
   }, [hide]);
 
-  function newChat(provider: string, query?: string, cwd?: string) {
-    openPanel("chat");
-    pushChatIntent(provider, query, cwd);
-  }
   // 顶部输入框发消息 → 送给总控(可见、持续的 codex/claude 对话, 或 omni-web)。不后台。
   const askAI = (query: string) => {
     const q = (query || "").trim();
@@ -292,85 +316,48 @@ export default function App() {
           </div>
         )}
         <div className="pf-bar">
-          <ConvBar
-            onNewChat={(provider) => newChat(provider)}
-            onOpenChat={() => openPanel("chat")}
-            onPickKind={(k) => {
-              if (k === "omni-web") setOmniWeb(true);
-            }}
-          />
-          <span className="pf-sep" />
-          <button
-            className={"pf-btn" + (isOpen("notes") ? " on" : "")}
-            onClick={() => togglePanel("notes")}
-            title="笔记空间"
-          >
+          {/* 面板 — 工作区与内容 */}
+          <button className={"pf-btn" + (isOpen("notes") ? " on" : "")} onClick={() => togglePanel("notes")} data-tip="笔记空间">
             <PenLine size={17} />
           </button>
-          <button
-            className={"pf-btn" + (isOpen("project") ? " on" : "")}
-            onClick={() => togglePanel("project")}
-            title="项目"
-          >
+          <button className={"pf-btn" + (isOpen("project") ? " on" : "")} onClick={() => togglePanel("project")} data-tip="项目">
             <FolderKanban size={17} />
           </button>
-          <button
-            className={"pf-btn" + (isOpen("goals") ? " on" : "")}
-            onClick={() => togglePanel("goals")}
-            title="目标 / 任务（whatnow · 北极星/主线/支线 + 进度）"
-          >
+          <button className={"pf-btn" + (isOpen("goals") ? " on" : "")} onClick={() => togglePanel("goals")} data-tip="目标 / 任务">
             <Target size={17} />
           </button>
-          <button
-            className={"pf-btn" + (isOpen("review") ? " on" : "")}
-            onClick={() => togglePanel("review")}
-            title="审阅台"
-          >
+          <button className={"pf-btn" + (isOpen("review") ? " on" : "")} onClick={() => togglePanel("review")} data-tip="审阅台">
             <CheckSquare size={17} />
           </button>
-          <button
-            className={"pf-btn" + (isOpen("chat") ? " on" : "")}
-            onClick={() => togglePanel("chat")}
-            title="终端 / 对话（PowerShell · Claude · Codex）"
-          >
+          <button className={"pf-btn" + (isOpen("chat") ? " on" : "")} onClick={() => togglePanel("chat")} data-tip="终端 / 对话">
             <SquareTerminal size={17} />
           </button>
-          <span className="pf-sep" />
-          <button className="pf-btn" onClick={startSnap} title="截图 / 标注（框选 → 标注 → 复制 / 保存 / 钉屏 / OCR · Esc 退出）">
-            <Camera size={17} />
-          </button>
-          <button className="pf-btn" onClick={startInspect} title="圈选 / 洞察（系统级 · 指哪看哪 · 点击抓取元素 → 带信息的截图给 AI · Esc 退出）">
-            <ScanEye size={17} />
-          </button>
-          <button className="pf-btn" onClick={startScreenRecord} title="录屏（框选窗口 / 区域 → 定时画面快照 + OCR 文字 + 焦点，给 AI 读 · 录制条上 ■ 停止）">
-            <MonitorPlay size={17} />
-          </button>
-          <button className="pf-btn" onClick={startReplay} title="回放（看录制的会话 · 导出 AI 时间线）">
-            <Film size={17} />
-          </button>
-          <button
-            className="pf-btn"
-            onClick={runDiagnostic}
-            title="全量诊断快照（截当前所有可见 poof 界面 + 状态 → 报告，复制链接。也可按 Ctrl+Alt+S）"
-          >
-            <Stethoscope size={17} />
-          </button>
-          <button
-            className={"pf-btn" + (isOpen("clips") ? " on" : "")}
-            onClick={() => togglePanel("clips")}
-            title="快选内容（剪贴板历史 + poof 快照 + 捕获/圈选 · 预览/恢复/管理）"
-          >
+          <button className={"pf-btn" + (isOpen("clips") ? " on" : "")} onClick={() => togglePanel("clips")} data-tip="快选内容（剪贴板 · 快照）">
             <ClipboardList size={17} />
           </button>
           <span className="pf-sep" />
-          <button
-            className={"pf-btn" + (notifOpen ? " on" : "")}
-            onClick={() => setNotifOpen((o) => !o)}
-            title="通知"
-          >
+          {/* 抓取 — 截图 / 圈选 / 录屏 / 回放 / 诊断 */}
+          <button className="pf-btn" onClick={startSnap} data-tip="截图 / 标注">
+            <Camera size={17} />
+          </button>
+          <button className="pf-btn" onClick={startInspect} data-tip="圈选 / 洞察">
+            <ScanEye size={17} />
+          </button>
+          <button className="pf-btn" onClick={startScreenRecord} data-tip="录屏">
+            <MonitorPlay size={17} />
+          </button>
+          <button className="pf-btn" onClick={startReplay} data-tip="回放">
+            <Film size={17} />
+          </button>
+          <button className="pf-btn" onClick={runDiagnostic} data-tip="全量诊断快照（Ctrl+Alt+S）">
+            <Stethoscope size={17} />
+          </button>
+          <span className="pf-sep" />
+          {/* 系统 */}
+          <button className={"pf-btn" + (notifOpen ? " on" : "")} onClick={() => setNotifOpen((o) => !o)} data-tip="通知">
             <Bell size={17} />
           </button>
-          <button className="pf-btn" onClick={toggleOnTop} title="钉屏（始终置顶）">
+          <button className="pf-btn" onClick={toggleOnTop} data-tip="钉屏（始终置顶）">
             {onTop ? <Pin size={17} /> : <PinOff size={17} />}
           </button>
         </div>
