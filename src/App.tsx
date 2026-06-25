@@ -28,7 +28,51 @@ import GoalsSurface from "./goalsSurface";
 import { pushChatIntent } from "./chatIntents";
 import { sendToController, OMNI_WEB_URL } from "./controller";
 import { startNoteBridge } from "./noteOps";
+import { getCollection } from "./regions/notesCollection";
+import { allBindings } from "./regions/boundRegistry";
 import "./App.css";
+
+// 全量诊断快照: 收集 poof 当前关键状态(笔记/绑定源/localStorage/JS堆/位置), 交给 Rust 写进报告。
+function gatherDiagState(): any {
+  const out: any = { time: new Date().toString(), location: location.href, ua: navigator.userAgent };
+  try {
+    const mem = (performance as any).memory;
+    if (mem)
+      out.jsHeapMB = {
+        used: Math.round(mem.usedJSHeapSize / 1e6),
+        total: Math.round(mem.totalJSHeapSize / 1e6),
+        limit: Math.round(mem.jsHeapSizeLimit / 1e6),
+      };
+  } catch {
+    /* ignore */
+  }
+  try {
+    const c = getCollection();
+    const metas = c.meta.docMetas;
+    out.notes = {
+      total: metas.length,
+      live: metas.filter((m: any) => !m.trashed && !m.archived).length,
+    };
+  } catch {
+    /* ignore */
+  }
+  try {
+    out.boundSources = Object.values(allBindings()).map((b: any) => ({ kind: b.kind, ref: b.ref }));
+  } catch {
+    /* ignore */
+  }
+  try {
+    const ls: Record<string, number> = {};
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i)!;
+      if (k.startsWith("poof-")) ls[k] = (localStorage.getItem(k) || "").length;
+    }
+    out.localStorageBytes = ls;
+  } catch {
+    /* ignore */
+  }
+  return out;
+}
 
 const PIN_KEY = "poof-panels-pinned";
 function loadPinned(): PanelKind[] {
@@ -48,10 +92,31 @@ export default function App() {
   const [open, setOpen] = useState<PanelKind[]>(() => loadPinned());
   const [notifOpen, setNotifOpen] = useState(false);
   const [onTop, setOnTop] = useState(true);
+  const [diagToast, setDiagToast] = useState("");
 
   useEffect(() => {
     localStorage.setItem(PIN_KEY, JSON.stringify(pinned));
   }, [pinned]);
+
+  // Ctrl+Alt+D → 全量诊断快照: 只 main 窗口处理(view-* 也加载 index.html, 否则会触发多次)。
+  useEffect(() => {
+    if (getCurrentWindow().label !== "main") return;
+    let un: (() => void) | undefined;
+    listen("poof://diag", async () => {
+      try {
+        const summary = gatherDiagState();
+        const r: any = await invoke("diagnostic_snapshot", {
+          stateJson: JSON.stringify(summary, null, 2),
+          when: new Date().toString(),
+        });
+        setDiagToast(`诊断快照已存(${r.windows} 个窗口截图)· 链接已复制 · Ctrl+Alt+V 管理`);
+      } catch (e) {
+        setDiagToast("诊断快照失败: " + String(e));
+      }
+      setTimeout(() => setDiagToast(""), 6000);
+    }).then((u) => (un = u));
+    return () => un?.();
+  }, []);
 
   // #7 笔记 ops 桥: 后台轮询文件命令(omni notes), 在活笔记 collection 上执行。常驻(笔记面板不开也能改)。
   useEffect(() => {
@@ -175,6 +240,11 @@ export default function App() {
 
   return (
     <div className="pf-root" onMouseDown={onBackdrop}>
+      {diagToast && (
+        <div className="pf-diag-toast" onClick={() => setDiagToast("")}>
+          📸 {diagToast}
+        </div>
+      )}
       {/* middle band — real dock: panels are flush-to-edge, full-height sidebars
           (left / right) with a drag-sash on the inner seam, or floating cards.
           Notes is NOT a panel here (a CSS transform would break BlockSuite's

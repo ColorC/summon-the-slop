@@ -1,0 +1,93 @@
+* { box-sizing: border-box; }
+body { font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+
+.cm {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: #16181d;
+  color: #d6d9e0;
+}
+.cm-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #2a2d35;
+  flex: none;
+}
+.cm-logo { font-size: 13px; font-weight: 600; color: #eceef3; white-space: nowrap; }
+.cm-tabs { display: flex; gap: 4px; margin-left: 8px; }
+.cm-tab {
+  height: 28px; padding: 0 12px; border: none; border-radius: 7px;
+  background: transparent; color: #aeb3bf; cursor: pointer; font-size: 13px;
+}
+.cm-tab:hover { background: rgba(255,255,255,0.06); }
+.cm-tab.on { background: #3a6df0; color: #fff; }
+.cm-spacer { flex: 1; }
+.cm-search {
+  height: 28px; width: 180px; padding: 0 10px; border: 1px solid #3a3e48;
+  border-radius: 7px; background: #0f1115; color: #e6e8ee; font-size: 12px; outline: none;
+}
+.cm-search:focus { border-color: #3a6df0; }
+.cm-btn {
+  height: 28px; padding: 0 10px; border: 1px solid #3a3e48; border-radius: 7px;
+  background: transparent; color: #c3c6cf; cursor: pointer; font-size: 12px; white-space: nowrap;
+}
+.cm-btn:hover { background: rgba(255,255,255,0.08); }
+.cm-btn.danger { color: #ff9a9a; border-color: #5a3030; }
+.cm-btn.danger:hover { background: #3a2020; }
+
+.cm-body { flex: 1; display: flex; min-height: 0; }
+.cm-list {
+  width: 340px; flex: none; overflow-y: auto; border-right: 1px solid #2a2d35;
+  padding: 8px; display: flex; flex-direction: column; gap: 4px;
+}
+.cm-item {
+  display: flex; gap: 10px; align-items: center; text-align: left;
+  border: 1px solid transparent; border-radius: 8px; background: transparent;
+  color: inherit; cursor: pointer; padding: 7px 8px;
+}
+.cm-item:hover { background: #20232b; }
+.cm-item.sel { background: #233; border-color: #3a6df0; }
+.cm-item-thumb {
+  width: 52px; height: 42px; flex: none; border-radius: 6px; overflow: hidden;
+  background: #0f1115; display: flex; align-items: center; justify-content: center;
+}
+.cm-item-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.cm-ph { font-size: 18px; opacity: 0.5; }
+.cm-badge { font-size: 11px; font-weight: 600; color: #8b93a3; }
+.cm-item-meta { min-width: 0; flex: 1; }
+.cm-item-title {
+  font-size: 12.5px; color: #e3e6ec; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cm-item-sub { font-size: 11px; color: #767d8c; margin-top: 2px; }
+
+.cm-preview { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.cm-preview-bar {
+  display: flex; align-items: center; gap: 6px; padding: 8px 12px;
+  border-bottom: 1px solid #2a2d35; flex: none;
+}
+.cm-preview-title {
+  font-size: 13px; color: #e9ebf0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; max-width: 40%;
+}
+.cm-preview-body { flex: 1; overflow: auto; padding: 14px; }
+.cm-preview-img {
+  max-width: 100%; height: auto; border-radius: 8px; border: 1px solid #2a2d35;
+  display: block; margin: 0 auto 14px;
+}
+.cm-preview-html {
+  width: 100%; min-height: 320px; border: 1px solid #2a2d35; border-radius: 8px;
+  background: #fff;
+}
+.cm-preview-text {
+  white-space: pre-wrap; word-break: break-word; font-size: 12.5px; line-height: 1.55;
+  color: #c7cbd4; font-family: ui-monospace, "Cascadia Code", monospace; margin: 0;
+}
+.cm-empty {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  color: #6a7180; font-size: 13px; padding: 30px;
+}

@@ -16,6 +16,53 @@ fn file_too_big(path: &str, cap: u64) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+pub struct DirEntry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub ts_ms: u64,
+    pub size: u64,
+    pub ext: String,
+}
+
+/// 列一个目录(给内容管理界面浏览 omni/poof 的快照/捕获目录)。新的在前。不递归。
+#[tauri::command]
+pub fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
+    let mut out = Vec::new();
+    let rd = match std::fs::read_dir(&path) {
+        Ok(r) => r,
+        Err(_) => return Ok(out),
+    };
+    for ent in rd.flatten() {
+        let p = ent.path();
+        let md = ent.metadata().ok();
+        let is_dir = md.as_ref().map(|m| m.is_dir()).unwrap_or(false);
+        let ts_ms = md
+            .as_ref()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let size = md.as_ref().map(|m| m.len()).unwrap_or(0);
+        let ext = p
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .unwrap_or_default();
+        out.push(DirEntry {
+            name: p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            path: p.to_string_lossy().into_owned(),
+            is_dir,
+            ts_ms,
+            size,
+            ext,
+        });
+    }
+    out.sort_by(|a, b| b.ts_ms.cmp(&a.ts_ms));
+    Ok(out)
+}
+
 /// 读文本(宽容解码: 非法 UTF-8 字节用替换符, 不报错 —— 让用户至少能看到内容)。
 #[tauri::command]
 pub fn read_file_text(path: String) -> Result<String, String> {

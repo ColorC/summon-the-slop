@@ -24,6 +24,8 @@ mod inspect;
 mod ocr;
 #[cfg(windows)]
 mod snap_cmd;
+mod diagnostic; // 全量诊断快照(Ctrl+Alt+D): 截当前所有可见 poof 界面 + 时间 + 状态 → 报告 + 复制链接
+mod clipclip; // 剪贴板历史: 监听系统剪贴板, 持久化 文本/图片/HTML, 供内容管理界面浏览/恢复
 #[cfg(windows)]
 mod uia;
 
@@ -254,11 +256,15 @@ mod hook {
     pub enum Sig {
         Snap,    // Ctrl+Alt+A → 截图
         Notes,   // Ctrl+Alt+N → 全屏笔记
+        Diag,    // Ctrl+Alt+D → 全量诊断快照
+        Content, // Ctrl+Alt+V → 快选内容管理(剪贴板/快照)
         CtrlTap, // one clean Ctrl tap; the rx loop times taps → 2=快捷菜单(min others) / 3=+all floats
     }
 
     static SNAP_DOWN: AtomicBool = AtomicBool::new(false); // de-dupe Ctrl+Alt+A auto-repeat
     static NOTES_DOWN: AtomicBool = AtomicBool::new(false); // de-dupe Ctrl+Alt+N auto-repeat
+    static DIAG_DOWN: AtomicBool = AtomicBool::new(false); // de-dupe Ctrl+Alt+D auto-repeat
+    static CONTENT_DOWN: AtomicBool = AtomicBool::new(false); // de-dupe Ctrl+Alt+V auto-repeat
     // clean-Ctrl-tap state: a "tap" = Ctrl down→up with NO other key pressed in between.
     static CTRL_HELD: AtomicBool = AtomicBool::new(false);
     static DIRTY: AtomicBool = AtomicBool::new(false); // another key was pressed during this Ctrl hold
@@ -274,6 +280,8 @@ mod hook {
     const VK_RCONTROL: u32 = 0xA3;
     const VK_A: u32 = 0x41;
     const VK_N: u32 = 0x4E;
+    const VK_D: u32 = 0x44;
+    const VK_V: u32 = 0x56;
 
     #[inline]
     fn is_ctrl(vk: u32) -> bool {
@@ -308,6 +316,24 @@ mod hook {
                 return 1;
             }
             if up && vk == VK_N { NOTES_DOWN.store(false, Ordering::SeqCst); }
+
+            // Ctrl+Alt+D → 全量诊断快照. Swallow the 'D'.
+            if down && vk == VK_D && held(VK_CONTROL) && held(VK_MENU_STATE) {
+                if !DIAG_DOWN.swap(true, Ordering::SeqCst) {
+                    if let Some(tx) = TX.get() { let _ = tx.send(Sig::Diag); }
+                }
+                return 1;
+            }
+            if up && vk == VK_D { DIAG_DOWN.store(false, Ordering::SeqCst); }
+
+            // Ctrl+Alt+V → 快选内容管理(剪贴板/快照). Swallow the 'V'.
+            if down && vk == VK_V && held(VK_CONTROL) && held(VK_MENU_STATE) {
+                if !CONTENT_DOWN.swap(true, Ordering::SeqCst) {
+                    if let Some(tx) = TX.get() { let _ = tx.send(Sig::Content); }
+                }
+                return 1;
+            }
+            if up && vk == VK_V { CONTENT_DOWN.store(false, Ordering::SeqCst); }
 
             // clean Ctrl-tap detection (double/triple-tap Ctrl = 召出快捷菜单). A Ctrl press is only
             // a "tap" if no other key was pressed while it was held — so Ctrl+C, Ctrl+Alt+A etc. don't count.
@@ -407,6 +433,40 @@ async fn open_view(app: tauri::AppHandle, view: String) -> Result<(), String> {
         .always_on_top(true)
         .build()
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 快选内容管理窗口(剪贴板历史 + poof/omni 快照)。普通窗口(非透明覆盖层), 关=隐藏可再召。
+fn show_content(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    if let Some(w) = app.get_webview_window("content") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+        return;
+    }
+    let url = tauri::WebviewUrl::App("content.html".into());
+    if let Ok(w) = tauri::WebviewWindowBuilder::new(app, "content", url)
+        .title("poof · 快选内容")
+        .inner_size(1180.0, 800.0)
+        .always_on_top(true)
+        .build()
+    {
+        // 关闭 = 隐藏(保持可再召出), 不销毁。
+        let wc = w.clone();
+        w.on_window_event(move |e| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = e {
+                api.prevent_close();
+                let _ = wc.hide();
+            }
+        });
+        let _ = w.set_focus();
+    }
+}
+
+#[tauri::command]
+fn open_content(app: tauri::AppHandle) -> Result<(), String> {
+    show_content(&app);
     Ok(())
 }
 
@@ -738,6 +798,8 @@ pub fn run() {
             std::thread::spawn(|| tags::warm());
             // P2: localhost HTTP collector for the 录像 extensions (own thread, blocking accept).
             std::thread::spawn(|| http_rec::start_http_server());
+            // 剪贴板历史: 后台监听系统剪贴板, 把每次变更持久化(供快选内容管理界面)。
+            clipclip::start_monitor();
             #[cfg(windows)]
             {
                 // Fullscreen overlay: cover the whole monitor (taskbar included).
@@ -776,6 +838,8 @@ pub fn run() {
                         match rx.recv_timeout(std::time::Duration::from_millis(340)) {
                             Ok(hook::Sig::Snap) => { let h = handle.clone(); let _ = handle.run_on_main_thread(move || summon_snap(&h, false)); }
                             Ok(hook::Sig::Notes) => { let h = handle.clone(); let _ = handle.run_on_main_thread(move || open_notes(&h)); }
+                            Ok(hook::Sig::Diag) => { let h = handle.clone(); let _ = handle.run_on_main_thread(move || { let _ = h.emit("poof://diag", ()); }); }
+                            Ok(hook::Sig::Content) => { let h = handle.clone(); let _ = handle.run_on_main_thread(move || show_content(&h)); }
                             Ok(hook::Sig::CtrlTap) => {
                                 taps += 1;
                                 if taps >= 3 {
@@ -885,7 +949,18 @@ pub fn run() {
             region_is_recording,
             list_windows,
             focus_window,
-            show_snap_record
+            show_snap_record,
+            open_content,
+            diagnostic::diagnostic_snapshot,
+            diagnostic::list_diagnostics,
+            diagnostic::delete_diagnostic,
+            clipclip::clip_list,
+            clipclip::clip_get,
+            clipclip::clip_thumb,
+            clipclip::clip_restore,
+            clipclip::clip_delete,
+            clipclip::clip_clear,
+            fileio::list_dir
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

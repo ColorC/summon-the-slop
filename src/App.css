@@ -2500,3 +2500,22 @@ body,
   background: rgba(239, 68, 68, 0.2);
   color: #ff9c9c;
 }
+
+/* 诊断快照提示条 */
+.pf-diag-toast {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 999999;
+  max-width: 70vw;
+  padding: 10px 16px;
+  background: #1f2a3a;
+  border: 1px solid #3a5170;
+  border-radius: 10px;
+  color: #d8e3f3;
+  font-size: 13px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+  pointer-events: auto;
+}
