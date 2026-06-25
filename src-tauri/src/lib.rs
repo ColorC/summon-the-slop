@@ -793,8 +793,10 @@ pub fn run() {
                             Ok(hook::Sig::Snap) => { let h = handle.clone(); let _ = handle.run_on_main_thread(move || summon_snap(&h, false)); }
                             Ok(hook::Sig::Notes) => { let h = handle.clone(); let _ = handle.run_on_main_thread(move || open_notes(&h)); }
                             Ok(hook::Sig::Diag) => {
-                                // 纯 Rust 截图写报告(后台线程, 不依赖前端 → poof 隐藏/卡死也能出快照), 完事发 diag-done 弹提示。
+                                // 纯 Rust 截图写报告(后台线程, 不依赖前端 → poof 隐藏/卡死也能出快照)。
+                                // 先发 diag-start 立刻给反馈(若 main 可见就弹"正在生成"), 完事发 diag-done。
                                 let h = handle.clone();
+                                let _ = h.emit("poof://diag-start", ());
                                 std::thread::spawn(move || {
                                     if diagnostic::do_diagnostic(&h).is_some() {
                                         let _ = h.emit("poof://diag-done", ());

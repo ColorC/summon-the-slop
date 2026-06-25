@@ -72,24 +72,30 @@ function gatherDiagState(): any {
   } catch {
     /* ignore */
   }
-  // 审计可见的原生表单控件 + iframe —— 揪"莫名其妙的原生控件"(如 number/date 的 ▲▼ spinner)的归属:
-  // 父文档里有就直接定位到元素; 父文档没有但某 iframe 覆盖该坐标 → 是被嵌入的外部页面(poof CSS 管不到)。
+  // 审计原生表单控件 + iframe —— 揪"莫名其妙的原生控件"(如 number 的 ▲▼ spinner)的归属。
+  // ⚠ 必须穿透 shadow DOM(BlockSuite 等 web component 把 input 藏在 shadow root, 普通 querySelectorAll
+  // 看不到), 且不按尺寸过滤(可能是被压成 0 宽、只露 spinner 的输入)。host 链记录它藏在哪些自定义元素里。
   try {
-    const r0 = innerWidth, r1 = innerHeight;
-    const seen = (r: DOMRect) =>
-      r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 && r.top < r1 && r.left < r0;
-    const tag = (el: Element) => {
-      const a = el.closest("[class]");
-      const cls = a ? "." + ((a.className as string) || "").trim().split(/\s+/)[0] : "";
-      return el.tagName.toLowerCase() + ((el as HTMLInputElement).type ? `[${(el as HTMLInputElement).type}]` : "") + cls;
-    };
     const box = (el: Element) => {
       const r = el.getBoundingClientRect();
       return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) };
     };
-    out.inputsAudit = Array.from(document.querySelectorAll("input,textarea,select"))
-      .filter((el) => seen(el.getBoundingClientRect()))
-      .map((el) => ({ el: tag(el), ...box(el) }));
+    const inputs: any[] = [];
+    const walk = (root: Document | ShadowRoot, host: string, depth: number) => {
+      if (depth > 16) return;
+      let all: NodeListOf<Element>;
+      try { all = root.querySelectorAll("*"); } catch { return; }
+      all.forEach((el) => {
+        const t = el.tagName.toLowerCase();
+        if (t === "input" || t === "textarea" || t === "select") {
+          inputs.push({ el: t + ((el as HTMLInputElement).type ? `[${(el as HTMLInputElement).type}]` : ""), host, ...box(el) });
+        }
+        const sr = (el as HTMLElement).shadowRoot;
+        if (sr) walk(sr, host ? host + ">" + t : t, depth + 1);
+      });
+    };
+    walk(document, "", 0);
+    out.deepInputs = inputs;
     out.iframesAudit = Array.from(document.querySelectorAll("iframe")).map((f) => ({
       src: (f as HTMLIFrameElement).getAttribute("src") || ((f as HTMLIFrameElement).srcdoc ? "[srcdoc]" : ""),
       cls: (f.className as string) || "",
@@ -129,12 +135,13 @@ export default function App() {
   // 完成后发 poof://diag-done → 这里只弹个提示(若 main 可见)。只 main 窗口听。
   useEffect(() => {
     if (getCurrentWindow().label !== "main") return;
-    let un: (() => void) | undefined;
+    const uns: Array<() => void> = [];
+    listen("poof://diag-start", () => setDiagToast("正在生成诊断快照…")).then((u) => uns.push(u));
     listen("poof://diag-done", () => {
       setDiagToast("诊断快照已存 · 报告链接已复制 → 打开「快选内容」面板可看/管理");
       setTimeout(() => setDiagToast(""), 6000);
-    }).then((u) => (un = u));
-    return () => un?.();
+    }).then((u) => uns.push(u));
+    return () => uns.forEach((u) => u());
   }, []);
 
   // 点按钮做诊断(带上前端状态: 笔记/JS堆等, 比纯热键更全)。

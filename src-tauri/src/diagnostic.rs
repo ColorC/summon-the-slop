@@ -1,8 +1,37 @@
 //! 全量诊断快照 (Ctrl+Alt+D 触发) —— 给"反馈渠道"用: 一键截下 poof 当前所有可见界面 + 时间 + 关键状态,
 //! 落 ~/Pictures/poof-diagnostics/diag-<ns>/{screen.png, win-<label>.png, report.md}, 并把 report.md
 //! 的 [[链接]] 复制到剪贴板(发给 AI / 贴进笔记即用)。前端状态(笔记数/面板/JS 堆)由前端传 state_json。
+use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+use image::{ExtendedColorType, ImageEncoder};
 use std::path::{Path, PathBuf};
 use tauri::Manager;
+
+// 快速 PNG: 低压缩 + 不做自适应滤波。整屏 2560×1440 用默认压缩要近 1 秒(诊断"慢"的根因);
+// 这里求快不求小 —— 文件大几倍但编码快好几倍, 诊断快照本就只为看一眼。
+fn save_png_fast(path: &Path, rgba: &[u8], w: u32, h: u32) -> Result<(), String> {
+    let file = std::fs::File::create(path).map_err(|e| format!("建PNG失败: {e}"))?;
+    // Sub 滤波几乎不花 CPU, 却把截图的大片平坦区变成 0 → deflate 又快又小(比 NoFilter 文件小数倍)。
+    let enc = PngEncoder::new_with_quality(
+        std::io::BufWriter::new(file),
+        CompressionType::Fast,
+        FilterType::Sub,
+    );
+    enc.write_image(rgba, w, h, ExtendedColorType::Rgba8)
+        .map_err(|e| format!("编码PNG失败: {e}"))
+}
+
+// 完事响一声系统提示音 —— 热键路径 poof 常常是隐藏的, 没有界面能弹提示, 用声音确认"拍到了"。
+#[cfg(windows)]
+fn beep_done() {
+    // windows-sys 0.52 把 MessageBeep 放在 Diagnostics::Debug 下(元数据分组的怪癖)。
+    use windows_sys::Win32::System::Diagnostics::Debug::MessageBeep;
+    use windows_sys::Win32::UI::WindowsAndMessaging::MB_OK;
+    unsafe {
+        MessageBeep(MB_OK);
+    }
+}
+#[cfg(not(windows))]
+fn beep_done() {}
 
 fn now_ns() -> u128 {
     std::time::SystemTime::now()
@@ -89,7 +118,7 @@ pub fn capture_diag(app: &tauri::AppHandle, state_json: String) -> Result<DiagRe
     let (rgba, mw, mh, mx, my, _scale) = crate::capture::capture_primary_raw()?;
     let full = image::RgbaImage::from_raw(mw, mh, rgba).ok_or("RGBA→image 失败")?;
     let screen_path = dir.join("screen.png");
-    full.save(&screen_path).map_err(|e| format!("存整屏失败: {e}"))?;
+    save_png_fast(&screen_path, full.as_raw(), mw, mh)?;
 
     // 2) 每个可见 poof 窗口: 从整屏裁出它的区域 + 记元数据
     let mut win_lines: Vec<String> = Vec::new();
@@ -109,10 +138,15 @@ pub fn capture_diag(app: &tauri::AppHandle, state_json: String) -> Result<DiagRe
             if ox < mw && oy < mh {
                 let cw = sw.min(mw - ox);
                 let ch = sh.min(mh - oy);
-                let sub = image::imageops::crop_imm(&full, ox, oy, cw, ch).to_image();
-                let fname = format!("win-{label}.png");
-                if sub.save(dir.join(&fname)).is_ok() {
-                    win_imgs.push((label.clone(), fname));
+                // 接近整屏的覆盖层(poof 主窗就是全屏的)和 screen.png 几乎一模一样, 再编码一张大图纯属重复 ——
+                // 这是"慢"的另一半。只为真正局部的小窗口(浮层/面板)单独裁图, 整屏级的直接引用 screen.png。
+                let area_ratio = (cw as f64 * ch as f64) / (mw as f64 * mh as f64);
+                if area_ratio < 0.9 {
+                    let sub = image::imageops::crop_imm(&full, ox, oy, cw, ch).to_image();
+                    let fname = format!("win-{label}.png");
+                    if save_png_fast(&dir.join(&fname), sub.as_raw(), sub.width(), sub.height()).is_ok() {
+                        win_imgs.push((label.clone(), fname));
+                    }
                 }
             }
         }
@@ -163,7 +197,10 @@ pub async fn diagnostic_snapshot(
 /// 热键(Ctrl+Alt+S)路径: 纯 Rust 跑, 不经前端 → poof 隐藏/卡死也能出快照。失败返回 None。
 pub fn do_diagnostic(app: &tauri::AppHandle) -> Option<DiagResult> {
     match capture_diag(app, String::new()) {
-        Ok(r) => Some(r),
+        Ok(r) => {
+            beep_done(); // 隐藏时也能听见"拍到了"
+            Some(r)
+        }
         Err(e) => {
             crate::log_line(&format!("diagnostic_snapshot 失败: {e}"));
             None

@@ -84,10 +84,20 @@ fn capture_primary_gdi() -> Result<(Vec<u8>, u32, u32, i32, i32, f32), String> {
                 if blt == 0 || got == 0 {
                     Err("BitBlt/GetDIBits failed".into())
                 } else {
-                    // GDI 32bpp is BGRX (alpha=0). Convert to RGBA opaque for putImageData.
-                    for px in buf.chunks_exact_mut(4) {
-                        px.swap(0, 2); // B <-> R
-                        px[3] = 255;
+                    // GDI 32bpp 是 BGRX(小端内存序 B,G,R,X)。转成 RGBA 不透明给前端 putImageData / PNG。
+                    // 用 u32 整字处理(一读一写 + 位运算)比逐字节 swap 在 debug 构建下快好几倍 —— 整屏 370 万
+                    // 像素, 这个循环本身就是诊断"慢"的一大块。len 恒为 w*h*4, 必是 4 的倍数。
+                    let p = buf.as_mut_ptr() as *mut u32;
+                    let n = buf.len() / 4;
+                    for i in 0..n {
+                        unsafe {
+                            let v = *p.add(i); // 小端: X<<24 | R<<16 | G<<8 | B
+                            // 目标 RGBA 小端: 0xFF<<24 | B<<16 | G<<8 | R
+                            *p.add(i) = 0xFF00_0000
+                                | ((v & 0x0000_00FF) << 16)
+                                | (v & 0x0000_FF00)
+                                | ((v >> 16) & 0x0000_00FF);
+                        }
                     }
                     Ok(buf)
                 }

@@ -51,4 +51,22 @@ windows-sys = { version = "0.52", features = [
   "Win32_System_Threading",
   "Win32_System_DataExchange",
   "Win32_System_Memory",
+  "Win32_System_Diagnostics_Debug",
 ] }
+
+# 诊断快照"慢"的真凶: debug 构建里 PNG deflate / 像素处理比优化版慢 5-10 倍。这里只把图像编码相关的
+# 依赖按 release 优化(一次性多编译一会儿, 之后缓存), 其余照旧 debug —— 日常迭代不变慢, 截图编码飞快。
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.fdeflate]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+[profile.dev.package.flate2]
+opt-level = 3
+[profile.dev.package.image]
+opt-level = 3
+[profile.dev.package.crc32fast]
+opt-level = 3
+[profile.dev.package.adler2]
+opt-level = 3
