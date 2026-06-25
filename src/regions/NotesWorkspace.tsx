@@ -421,12 +421,16 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
       installFileTemplateSearch(); // #5 工具栏"Search file or anything"(模板面板)→ 搜本机文件(Everything)
       hookCleanups.push(installFileWriteback(doc)); // 活文件块: 改文本块 → 防抖写回源文件
       hookCleanups.push(
-        installBoundSync(doc, (ref) => {
+        installBoundSync(doc, (ref, kind, detail) => {
           const name = ref.replace(/\\/g, "/").split("/").pop() || ref;
-          setConflictMsg(`「${name}」源文件外部也被改过，已三路合并（含冲突标记）写回，请检查`);
+          setConflictMsg(
+            kind === "conflict"
+              ? `「${name}」源文件外部也被改过，已三路合并（含冲突标记）写回，请检查`
+              : `「${name}」含 markdown 存不下的块（${detail}），这些块不会写进源文件`
+          );
           window.setTimeout(() => setConflictMsg(""), 8000);
         })
-      ); // 同步源块: 改 embed 子文档 → 防抖写回源(冲突闸+历史) + 轮询外部改动
+      ); // 同步源块: 改 embed 子文档 → 防抖写回源(冲突闸+保真闸+历史) + 轮询外部改动
       hookCleanups.push(installMdPreviewToggle(doc)); // md 活文件块: 源码 ⇄ 渲染预览
       hookCleanups.push(installMarkdownPaste(editor)); // 粘贴 markdown 智能转(Shift=纯文本)
       hookCleanups.push(installOmniRefJump(editor)); // @omni 引用点击 → 跳 vscode/看板

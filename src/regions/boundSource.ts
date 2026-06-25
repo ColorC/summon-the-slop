@@ -215,15 +215,15 @@ export async function insertBoundSource(
 export async function syncBoundDoc(
   subDocId: string,
   collection?: any,
-  onConflict?: (ref: string) => void
-): Promise<{ wrote: boolean; conflict: boolean }> {
+  onIssue?: (ref: string, kind: "conflict" | "lossy", detail?: string) => void
+): Promise<{ wrote: boolean; conflict: boolean; lossy: string[] }> {
   const c = collection || getCollection();
   const binding = getBinding(subDocId);
-  if (!binding) return { wrote: false, conflict: false };
+  if (!binding) return { wrote: false, conflict: false, lossy: [] };
   const adapter = getSourceAdapter(binding.kind);
-  if (!adapter || !adapter.writable) return { wrote: false, conflict: false };
+  if (!adapter || !adapter.writable) return { wrote: false, conflict: false, lossy: [] };
   const subDoc = c.getDoc(subDocId);
-  if (!subDoc) return { wrote: false, conflict: false };
+  if (!subDoc) return { wrote: false, conflict: false, lossy: [] };
 
   let mine = "";
   try {
@@ -231,9 +231,13 @@ export async function syncBoundDoc(
   } catch (e) {
     // eslint-disable-next-line no-console
     console.error("[bound] 导出失败", subDocId, e);
-    return { wrote: false, conflict: false };
+    return { wrote: false, conflict: false, lossy: [] };
   }
-  if (mine === binding.base) return { wrote: false, conflict: false }; // 没实质变化
+  if (mine === binding.base) return { wrote: false, conflict: false, lossy: [] }; // 没实质变化
+
+  // 保真闸: 子文档里有 markdown 存不下的块 → 文本仍写回, 但提示这些块进不了 md 源(防"以为存上了")。
+  const lossy = nonMdBlocks(subDoc);
+  if (lossy.length && onIssue) onIssue(binding.ref, "lossy", lossy.join("、"));
 
   // 写回前重读源, 检测外部改动
   let theirs = binding.base;
@@ -254,7 +258,7 @@ export async function syncBoundDoc(
   } catch (e) {
     // eslint-disable-next-line no-console
     console.error("[bound] 写回源失败", binding.ref, e);
-    return { wrote: false, conflict: false };
+    return { wrote: false, conflict: false, lossy };
   }
   if (toWrite !== mine) {
     await reimportMd(subDoc, toWrite, c); // 合并结果回灌, 让笔记看到合并后内容
@@ -269,8 +273,8 @@ export async function syncBoundDoc(
   } catch {
     /* ignore */
   }
-  if (conflict && onConflict) onConflict(binding.ref);
-  return { wrote: true, conflict };
+  if (conflict && onIssue) onIssue(binding.ref, "conflict");
+  return { wrote: true, conflict, lossy };
 }
 
 // ============ 同步引擎: 监听绑定子文档 → 导出写回(冲突闸 + 历史) + 轮询外部 ============
@@ -286,7 +290,7 @@ interface SyncState {
 // 给一个 host 笔记装同步: 找它里面所有 embed-synced-doc → 绑定子文档 → 监听+导出+轮询。返回 cleanup。
 export function installBoundSync(
   hostDoc: any,
-  onConflict?: (ref: string) => void
+  onIssue?: (ref: string, kind: "conflict" | "lossy", detail?: string) => void
 ): () => void {
   const collection = getCollection();
   const states = new Map<string, SyncState>();
@@ -296,7 +300,7 @@ export function installBoundSync(
     if (!st) return;
     st.suppress = true; // syncBoundDoc 内可能 reimport(回灌) → 抑制由此触发的再导出
     try {
-      const r = await syncBoundDoc(subDocId, collection, onConflict);
+      const r = await syncBoundDoc(subDocId, collection, onIssue);
       st.lastConflict = r.conflict;
     } finally {
       st.suppress = false;
