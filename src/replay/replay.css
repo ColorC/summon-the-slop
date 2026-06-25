@@ -12,3 +12,8 @@ html, body { margin: 0; height: 100%; font: 14px "Microsoft YaHei", system-ui, s
 [hidden] { display: none !important; }
 /* AI 时间线面板(导出时替换播放器) */
 #timeline { margin: 0; padding: 16px 20px; height: calc(100vh - 49px); overflow: auto; white-space: pre-wrap; word-break: break-word; font: 12px/1.65 Consolas, "Microsoft YaHei", monospace; color: #cdd3df; }
+
+/* 嵌入模式(快选内容面板的 iframe): 隐藏自己的会话选择/刷新/关闭, 由父面板控制 */
+body.embed #sessions,
+body.embed #refresh,
+body.embed #close { display: none; }

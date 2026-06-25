@@ -13,16 +13,29 @@ import {
   Image as ImageIcon,
   Camera,
   Stethoscope,
+  Film,
   RotateCcw,
   Trash2,
   RefreshCw,
   FolderOpen,
   Link2,
   Copy,
+  Play,
+  Pause,
 } from "lucide-react";
 
-type Tab = "clipboard" | "snapshots" | "captures";
+type Tab = "clipboard" | "snapshots" | "captures" | "recordings";
 const CAPTURES_DIR = "E:/WindowsWorkspace/captures";
+
+// 预览的是外部 HTML(剪贴板复制来的 / markdown 渲染), 跑在 sandbox="" 的 iframe 里 —— poof 的暗色
+// 主题与样式都跨不进这个边界, 浏览器会用默认样式渲染里面的原生表单控件。最扎眼的是 <input type=number>
+// 右侧那对白底 ▲▼ spinner(用户看到的"莫名其妙的上下箭头")。拼 srcdoc 时前置一段 reset 抹掉它。
+const PREVIEW_RESET = `<style>
+input::-webkit-inner-spin-button,
+input::-webkit-outer-spin-button { -webkit-appearance: none; appearance: none; margin: 0; }
+input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
+</style>`;
+const withPreviewReset = (html: string) => PREVIEW_RESET + html;
 
 interface Item {
   key: string;
@@ -36,11 +49,13 @@ interface Item {
   path?: string;
   mdPath?: string;
   dir?: string;
+  sid?: string; // 录像会话 id
 }
 
 const TABS: { key: Tab; label: string }[] = [
   { key: "clipboard", label: "剪贴板" },
   { key: "snapshots", label: "快照" },
+  { key: "recordings", label: "录像" },
   { key: "captures", label: "捕获" },
 ];
 
@@ -64,9 +79,23 @@ function typeIcon(it: Item) {
           ? "md"
           : it.kind === "diag"
             ? "diag"
-            : "img";
+            : it.kind === "rec"
+              ? "rec"
+              : "img";
   const Ico =
-    k === "html" ? Code2 : k === "text" ? FileText : k === "md" ? FileText : k === "diag" ? Stethoscope : it.kind === "shot" ? Camera : ImageIcon;
+    k === "html"
+      ? Code2
+      : k === "text"
+        ? FileText
+        : k === "md"
+          ? FileText
+          : k === "diag"
+            ? Stethoscope
+            : k === "rec"
+              ? Film
+              : it.kind === "shot"
+                ? Camera
+                : ImageIcon;
   return { k, Ico };
 }
 
@@ -176,6 +205,19 @@ export function ContentManager() {
           dir: d.dir,
         }));
         out = [...a, ...b].sort((x, y) => y.ts - x.ts);
+      } else if (which === "recordings") {
+        const sessions: any[] = await invoke<any[]>("list_sessions").catch(() => []);
+        out = sessions.map((s) => ({
+          key: "rec:" + s.sid,
+          tab: "recordings" as Tab,
+          kind: "rec",
+          title: s.title || "录像",
+          sub: `${s.event_lines ?? 0} 事件 · ${fmtTime(s.start_ms)}`,
+          ts: s.start_ms,
+          isImage: false,
+          sid: s.sid,
+          path: s.session_path, // read_session 用
+        }));
       } else {
         const files: any[] = await invoke<any[]>("list_dir", { path: CAPTURES_DIR }).catch(() => []);
         out = files
@@ -367,6 +409,137 @@ export function ContentManager() {
   );
 }
 
+// 内嵌回放: 在主窗口直接读会话 + 用 rrweb 播放(不走 iframe —— Tauri 不给子 frame 注入 IPC, iframe 里 invoke 会失效)。
+let rrwebReady: Promise<void> | null = null;
+function ensureRrweb(): Promise<void> {
+  if ((window as any).rrweb) return Promise.resolve();
+  if (rrwebReady) return rrwebReady;
+  rrwebReady = new Promise<void>((resolve, reject) => {
+    if (!document.querySelector("link[data-rrweb]")) {
+      const css = document.createElement("link");
+      css.rel = "stylesheet";
+      css.href = "/vendor/rrweb/2.0.0/style.css";
+      css.setAttribute("data-rrweb", "1");
+      document.head.appendChild(css);
+    }
+    const s = document.createElement("script");
+    s.src = "/vendor/rrweb/2.0.0/rrweb.umd.js";
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("rrweb 加载失败"));
+    document.head.appendChild(s);
+  });
+  return rrwebReady;
+}
+
+function RecPlayer({ path }: { path: string }) {
+  const stage = useRef<HTMLDivElement>(null);
+  const [msg, setMsg] = useState("加载中…");
+  const [tl, setTl] = useState("");
+  const playerRef = useRef<any>(null);
+  const envsRef = useRef<any[]>([]);
+
+  useEffect(() => {
+    let alive = true;
+    let replayer: any = null;
+    setMsg("加载中…");
+    setTl("");
+    (async () => {
+      let text = "";
+      try {
+        text = (await invoke<string>("read_session", { sessionPath: path })) || "";
+      } catch (e) {
+        if (alive) setMsg("读取失败: " + e);
+        return;
+      }
+      const envs = text
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((l) => {
+          try {
+            return JSON.parse(l);
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean) as any[];
+      envsRef.current = envs;
+      const events = envs.filter((e) => e.kind === "rrweb").map((e) => e.p.ev);
+      if (events.length < 2) {
+        if (alive) setMsg(envs.length ? "此会话无 DOM 回放(vscode/native 等)— 可导出 AI 时间线" : "无交互记录, 无法回放");
+        return;
+      }
+      try {
+        await ensureRrweb();
+      } catch (e) {
+        if (alive) setMsg(String(e));
+        return;
+      }
+      if (!alive || !stage.current) return;
+      stage.current.innerHTML = "";
+      try {
+        replayer = new (window as any).rrweb.Replayer(events, { root: stage.current, skipInactive: true });
+        replayer.play();
+        playerRef.current = replayer;
+        setMsg("");
+      } catch (e) {
+        if (alive) setMsg("回放失败: " + e);
+      }
+    })();
+    return () => {
+      alive = false;
+      try {
+        replayer?.pause();
+      } catch {
+        /* ignore */
+      }
+    };
+  }, [path]);
+
+  const exportTl = async () => {
+    try {
+      const { sessionToTimeline } = await import("../replay/ai_timeline.js");
+      const t = sessionToTimeline(envsRef.current);
+      setTl(t);
+      await navigator.clipboard.writeText(t).catch(() => {});
+    } catch (e) {
+      setMsg("导出失败: " + e);
+    }
+  };
+
+  return (
+    <div className="cm-rec">
+      <div className="cm-rec-bar">
+        <button className="cm-icobtn" onClick={() => playerRef.current?.play?.()} data-tip="播放">
+          <Play size={15} />
+        </button>
+        <button className="cm-icobtn" onClick={() => playerRef.current?.pause?.()} data-tip="暂停">
+          <Pause size={15} />
+        </button>
+        <button className="cm-icobtn" onClick={exportTl} data-tip="导出 AI 时间线(并复制)">
+          <FileText size={15} />
+        </button>
+        {msg && <span className="cm-rec-msg">{msg}</span>}
+      </div>
+      {tl ? (
+        <pre className="cm-preview-text" style={{ margin: 12, flex: 1, overflow: "auto" }}>{tl}</pre>
+      ) : (
+        <div className="cm-rec-stage" ref={stage} />
+      )}
+    </div>
+  );
+}
+
+// 从剪贴板文本抠出文件路径: 整体是 [[路径]] 或 单行绝对路径(支持空格/中文)。
+function extractFilePath(t: string): string | null {
+  const s = (t || "").trim();
+  const m = s.match(/^\[\[([^\]]+)\]\]$/);
+  const cand = (m ? m[1] : s).trim();
+  if ((/^[a-zA-Z]:[\\/]/.test(cand) || /^\\\\/.test(cand)) && !cand.includes("\n") && cand.length < 500) return cand;
+  return null;
+}
+const isImgPath = (p: string) => /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(p);
+
 function Preview({
   item,
   onDelete,
@@ -383,32 +556,63 @@ function Preview({
   const [html, setHtml] = useState<string>("");
   const [img, setImg] = useState<string>("");
   const [showRaw, setShowRaw] = useState(false);
+  const [openPath, setOpenPath] = useState<string>(""); // 解析出来的真实文件(可"打开")
 
   useEffect(() => {
     setText("");
     setHtml("");
     setImg("");
     setShowRaw(false);
-    if (!item) return;
+    setOpenPath("");
+    if (!item || item.kind === "rec") return; // 录像走 iframe, 不在这里加载
     let alive = true;
+
+    // 预览一个真实文件: 图片→显示图; 诊断报告→连带显示对应截图; md→渲染; 其它→文本。
+    const showFile = async (fp: string) => {
+      setOpenPath(fp);
+      const ext = (fp.split(".").pop() || "").toLowerCase();
+      if (isImgPath(fp)) {
+        const b64 = await invoke<string>("read_file_b64", { path: fp }).catch(() => "");
+        if (alive && b64) setImg("data:image/png;base64," + b64);
+        return;
+      }
+      if (/poof-diagnostics/i.test(fp) && /report\.md$/i.test(fp)) {
+        const shot = fp.replace(/report\.md$/i, "screen.png"); // 诊断报告旁的整屏截图
+        const b64 = await invoke<string>("read_file_b64", { path: shot }).catch(() => "");
+        if (alive && b64) setImg("data:image/png;base64," + b64);
+      }
+      const t = await invoke<string>("read_file_text", { path: fp }).catch(() => "");
+      if (!alive) return;
+      setText(t);
+      if (ext === "md") {
+        try {
+          setHtml(micromark(t));
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+
     (async () => {
       try {
         if (item.clipId) {
           const full: any = await invoke("clip_get", { id: item.clipId });
           if (!alive) return;
-          if (full.image_b64) setImg(full.image_b64);
+          if (full.image_b64) {
+            setImg(full.image_b64);
+            return;
+          }
+          const fp = full.text ? extractFilePath(full.text) : null;
+          if (fp) {
+            await showFile(fp); // 剪贴板里是文件链接/路径 → 预览那个文件(而不是只显示链接)
+            return;
+          }
           if (full.html) setHtml(full.html);
           if (full.text) setText(full.text);
         } else if (item.kind === "md" && item.path) {
-          const t = await invoke<string>("read_file_text", { path: item.path });
-          if (!alive) return;
-          setText(t);
-          try {
-            setHtml(micromark(t));
-          } catch {
-            /* ignore */
-          }
+          await showFile(item.path);
         } else if (item.isImage && item.path) {
+          setOpenPath(item.path);
           const b64 = await invoke<string>("read_file_b64", { path: item.path });
           if (!alive) return;
           setImg("data:image/png;base64," + b64);
@@ -424,8 +628,7 @@ function Preview({
             }
           }
         } else if (item.path) {
-          const t = await invoke<string>("read_file_text", { path: item.path }).catch(() => "");
-          if (alive) setText(t);
+          await showFile(item.path);
         }
       } catch (e) {
         // eslint-disable-next-line no-console
@@ -444,6 +647,9 @@ function Preview({
       </div>
     );
 
+  const openTarget = openPath || item.mdPath || item.path;
+  const isRec = item.kind === "rec" && !!item.sid;
+
   return (
     <div className="cm-preview">
       <div className="cm-preview-bar">
@@ -459,13 +665,13 @@ function Preview({
             <Link2 size={15} />
           </button>
         )}
-        {text && (
+        {text && !openPath && (
           <button className="cm-icobtn" onClick={() => invoke("copy_text", { text })} data-tip="复制文本">
             <Copy size={15} />
           </button>
         )}
-        {item.path && (
-          <button className="cm-icobtn" onClick={() => invoke("open_path", { path: item.path })} data-tip="用默认程序打开">
+        {openTarget && (
+          <button className="cm-icobtn" onClick={() => invoke("open_path", { path: openTarget })} data-tip="用默认程序打开">
             <FolderOpen size={15} />
           </button>
         )}
@@ -486,10 +692,16 @@ function Preview({
         )}
       </div>
       <div className="cm-preview-body">
-        {img && <img className="cm-preview-img" src={img} alt="" />}
-        {html && !showRaw && <iframe className="cm-preview-html" sandbox="" srcDoc={html} title="preview" />}
-        {((html && showRaw) || (!html && text)) && <pre className="cm-preview-text">{text}</pre>}
-        {!img && !html && !text && <div className="cm-empty">（无可预览内容）</div>}
+        {isRec ? (
+          <RecPlayer path={item.path!} />
+        ) : (
+          <>
+            {img && <img className="cm-preview-img" src={img} alt="" />}
+            {html && !showRaw && <iframe className="cm-preview-html" sandbox="" srcDoc={withPreviewReset(html)} title="preview" />}
+            {((html && showRaw) || (!html && text)) && <pre className="cm-preview-text">{text}</pre>}
+            {!img && !html && !text && <div className="cm-empty">（无可预览内容）</div>}
+          </>
+        )}
       </div>
     </div>
   );

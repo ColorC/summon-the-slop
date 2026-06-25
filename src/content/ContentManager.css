@@ -250,3 +250,24 @@
 }
 .cm-flyout .cm-preview { flex: 1; min-height: 0; }
 .cm-flyout .cm-preview-title { max-width: 55%; }
+
+/* 录像类型图标 + 内嵌回放 iframe */
+.cm-ico[data-k="rec"] { background: linear-gradient(135deg, #c0457a, #9a3560); }
+.cm-preview-replay {
+  width: 100%;
+  height: 100%;
+  min-height: 320px;
+  border: 1px solid #23262e;
+  border-radius: 10px;
+  background: #1b1b1f;
+}
+
+/* 内嵌回放播放器 */
+.cm-rec { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.cm-rec-bar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 8px 12px; border-bottom: 1px solid #23262e; flex: none;
+}
+.cm-rec-msg { font-size: 12px; color: #8b93a3; margin-left: 4px; }
+.cm-rec-stage { flex: 1; overflow: auto; background: #1b1b1f; }
+.cm-rec-stage .replayer-wrapper { margin: auto; }

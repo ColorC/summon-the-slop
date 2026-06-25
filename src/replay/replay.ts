@@ -19,6 +19,13 @@ let replayer: any = null;
 let sessionsList: Session[] = [];
 let currentEvents: any[] = []; // ALL envelopes of the selected session (not just rrweb)
 
+// 嵌入模式: 快选内容面板用 <iframe src="replay.html?sid=X&embed=1"> 复用本播放器。
+// embed → 隐藏 自己的会话下拉 + 关闭按钮(由父面板的列表选会话/收起); sid → 自动选中并播放那一段。
+const _params = new URLSearchParams(location.search);
+const _wantSid = _params.get("sid");
+const _embed = _params.has("embed");
+if (_embed) document.body.classList.add("embed");
+
 async function loadList() {
   info.textContent = "刷新中…";
   let sessions: Session[] = [];
@@ -33,6 +40,10 @@ async function loadList() {
     sel.appendChild(o);
   }
   info.textContent = `${sessions.length} 段`;
+  if (_wantSid) {
+    const m = sessions.find((s) => s.sid === _wantSid);
+    if (m) sel.value = m.session_path;
+  }
   loadSelected();
 }
 

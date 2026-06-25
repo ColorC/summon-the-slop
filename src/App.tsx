@@ -10,7 +10,6 @@ import {
   Camera,
   ScanEye,
   MonitorPlay,
-  Film,
   SquareTerminal,
   Bell,
   Pin,
@@ -235,12 +234,6 @@ export default function App() {
     return () => { un.then((f) => f()).catch(() => {}); };
   }, []);
 
-  // 回放：open the replay window to watch a recorded session.
-  const startReplay = useCallback(() => {
-    invoke("show_replay").catch(() => {});
-    hide();
-  }, [hide]);
-
   // 顶部输入框发消息 → 送给总控(可见、持续的 codex/claude 对话, 或 omni-web)。不后台。
   const askAI = (query: string) => {
     const q = (query || "").trim();
@@ -345,9 +338,6 @@ export default function App() {
           </button>
           <button className="pf-btn" onClick={startScreenRecord} data-tip="录屏">
             <MonitorPlay size={17} />
-          </button>
-          <button className="pf-btn" onClick={startReplay} data-tip="回放">
-            <Film size={17} />
           </button>
           <button className="pf-btn" onClick={runDiagnostic} data-tip="全量诊断快照（Ctrl+Alt+S）">
             <Stethoscope size={17} />
