@@ -16,6 +16,7 @@ import {
   notesBlobDel,
   notesBlobKeys,
 } from "../lib";
+import { isBoundSubDoc } from "./boundRegistry";
 
 // ---- base64 <-> bytes(分块, 防大数组爆栈/二次方拼接)----
 function b64ToBytes(b64: string): Uint8Array {
@@ -276,6 +277,7 @@ export async function healOrphanNotes(collection: any): Promise<{ added: number;
   let titled = 0;
   for (const id of keys) {
     if (id === collection.id) continue; // workspace 根 doc(=collectionId), 不是笔记
+    if (isBoundSubDoc(id)) continue; // 同步源块的绑定子文档(embed 内容), 不是独立笔记, 别列进去
     // 扫一次 .ydoc 拿标题 + 可渲染性(补登记孤儿 + 喂显示标题缓存都要用)。
     let title = "";
     let renderable = false;

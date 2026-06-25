@@ -8,6 +8,7 @@ import { Text } from "@blocksuite/store";
 import { micromark } from "micromark";
 import { readFileText, writeFileText, readFileB64 } from "../lib";
 import { getCollection } from "./notesCollection";
+import { insertBoundSource } from "./boundSource";
 
 // ---- 扩展名 → 类别 / 高亮语言 / mime ----
 const CODE_LANG: Record<string, string> = {
@@ -68,12 +69,16 @@ function noteIdOf(doc: any): string | null {
 
 /**
  * 把文件插进当前笔记。返回插入块 id(失败 null)。
- * 文本类会自动登记写回绑定(scheduleWrite 在编辑时防抖落盘)。
+ *  · markdown → 同步源块(绑定子文档 + embed-synced-doc, 原生块渲染, 双向写回, 带历史) —— 见 boundSource。
+ *  · 其它文本(json/yaml/代码/配置…) → affine:code 块 + 写回绑定(字节保真, 单向 note→disk)。
+ *  · 图片/PDF/二进制 → image/attachment(只读)。
+ * 传 opts.raw=true 强制 md 也走代码块(字节保真逃生口)。
  */
 export async function insertFileIntoNote(
   doc: any,
   path: string,
-  name?: string
+  name?: string,
+  opts?: { raw?: boolean }
 ): Promise<string | null> {
   const fileName = name || (path.replace(/\\/g, "/").split("/").pop() ?? path);
   const ext = extOf(fileName) || extOf(path);
@@ -82,6 +87,12 @@ export async function insertFileIntoNote(
   const kind = kindOf(ext);
   try {
     if (kind === "text") {
+      // markdown → 同步源块(原生块 + 双向同步 + 历史), 除非显式要原文/代码块
+      if (!opts?.raw && /\.(md|markdown|mdx)$/i.test(path)) {
+        const embedId = await insertBoundSource(doc, "md-file", path);
+        if (embedId) return embedId;
+        // 引擎失败兜底走代码块
+      }
       const content = await readFileText(path);
       const id = doc.addBlock(
         "affine:code",

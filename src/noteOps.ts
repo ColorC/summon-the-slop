@@ -4,6 +4,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { Text } from "@blocksuite/store";
 import { getCollection } from "./regions/notesCollection";
 import { getCachedTitle } from "./regions/fileNotesStore";
+import { isBoundSubDoc } from "./regions/boundRegistry";
+import { insertBlock, BLOCK_REGISTRY, type BlockKind } from "./regions/blockBus";
 
 let activeEditor: { setEditor?: unknown } | any = null;
 export function setActiveEditor(ed: unknown): void {
@@ -42,7 +44,7 @@ function allBlocks(doc: any): any[] {
 
 function metas(c: any): any[] {
   try {
-    return c.meta?.docMetas ?? [];
+    return (c.meta?.docMetas ?? []).filter((m: any) => !isBoundSubDoc(m.id)); // 排绑定子文档
   } catch {
     return [];
   }
@@ -56,7 +58,7 @@ function elemView(note: string, b: any, n = 160): any {
   return { id: b.id, flavour: b.flavour, text: blockText(b).slice(0, n), link: `poof-note://${note}/${b.id}` };
 }
 
-function handleNoteOp(cmd: any): any {
+async function handleNoteOp(cmd: any): Promise<any> {
   const c = getCollection();
   const op = cmd.op;
   try {
@@ -179,6 +181,22 @@ function handleNoteOp(cmd: any): any {
       doc.deleteBlock(b);
       return { ok: true, deleted: cmd.block };
     }
+    if (op === "add-block") {
+      // 统一插入入口(CLI): 把内容作为同步源块加进笔记。kind: md/file/plan/progress/review/ai
+      doc.load();
+      const k = String(cmd.kind || "") as BlockKind;
+      if (!BLOCK_REGISTRY.some((s) => s.kind === k)) {
+        return { ok: false, error: `未知 kind ${k}(支持 ${BLOCK_REGISTRY.map((s) => s.kind).join("/")})` };
+      }
+      let blockId: string | null = null;
+      try {
+        blockId = await insertBlock(doc, k, { ref: cmd.ref, name: cmd.name, text: cmd.text });
+      } catch (e) {
+        return { ok: false, error: String(e) };
+      }
+      if (!blockId) return { ok: false, error: "插入失败(读源/解析失败)" };
+      return { ok: true, added: blockId, kind: k, link: `poof-note://${note}/${blockId}` };
+    }
     if (op === "center") {
       if (!activeEditor) return { ok: false, error: "笔记面板没开,无法居中(数据 op 不受影响)" };
       try {
@@ -213,7 +231,7 @@ export function startNoteBridge(): void {
     for (const [id, body] of pending) {
       let result: any;
       try {
-        result = handleNoteOp(JSON.parse(body));
+        result = await handleNoteOp(JSON.parse(body));
       } catch (e) {
         result = { ok: false, error: String(e) };
       }

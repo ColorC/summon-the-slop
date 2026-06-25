@@ -363,7 +363,27 @@ export function localizeSlashMenu(editor: any): void {
       if (!rootId || !view?.getWidget) return false;
       const w = view.getWidget("affine-slash-menu-widget", rootId);
       if (!w || !w.config || !Array.isArray(w.config.items)) return false;
-      w.config = { ...w.config, items: translateItems(w.config.items) };
+      let items = translateItems(w.config.items);
+      // 追加"插入内容"(统一入口: 文件/计划/任务/审阅 → 同步源块), 打开浏览面板。幂等。
+      if (!items.some((it: any) => it.name === "插入内容")) {
+        items = [
+          ...items,
+          {
+            name: "插入内容",
+            description: "文件 / 计划 / 任务 / 审阅材料 → 同步源块",
+            group: "9_Others@poof",
+            icon: html`<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M12 8v8M8 12h8"/></svg>`,
+            action: () => {
+              try {
+                window.dispatchEvent(new CustomEvent("poof:open-browse"));
+              } catch {
+                /* ignore */
+              }
+            },
+          },
+        ];
+      }
+      w.config = { ...w.config, items };
       return true;
     } catch {
       return false;

@@ -12,10 +12,12 @@ import { Job } from "@blocksuite/store";
 import { MarkdownAdapter } from "@blocksuite/blocks";
 import { notesMdPut, notesIndexPut } from "../lib";
 import { recordNoteOmniLinks, omniLinksOf } from "./omniLink";
+import { isBoundSubDoc } from "./boundRegistry";
 
 /** 单条笔记 → docs/<id>.md。跳过根 doc(id==collectionId, 是 meta 容器不是笔记)。 */
 export async function exportNoteToMd(doc: any, collection: any): Promise<void> {
   if (!doc || !collection || doc.id === collection.id) return;
+  if (isBoundSubDoc(doc.id)) return; // 绑定子文档的 .md 真源是外部文件, 不导成笔记 .md
   try {
     doc.load();
     // ⚠ doc.load() 是同步的, 真内容靠异步 pull(await ready + IPC)。若此刻还没 pull 完, doc 里没块,
@@ -49,7 +51,10 @@ export async function rebuildNotesIndex(collection: any): Promise<void> {
     }
     const metas = collection?.meta?.docMetas ?? [];
     const notes = metas
-      .filter((m: any) => m.id !== collection.id && !m.trashed && !m.archived) // 排除根/回收站/归档
+      .filter(
+        (m: any) =>
+          m.id !== collection.id && !m.trashed && !m.archived && !isBoundSubDoc(m.id)
+      ) // 排除根/回收站/归档/绑定子文档
       .map((m: any) => ({
         id: m.id,
         title: m.title || "未命名笔记",

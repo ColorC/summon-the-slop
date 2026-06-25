@@ -21,6 +21,7 @@ import {
   SquareTerminal,
   Link2,
   LayoutGrid,
+  FolderInput,
 } from "lucide-react";
 import { TerminalView } from "./Terminal";
 import { copyText, notesDocDel, notesMdDel } from "../lib";
@@ -42,10 +43,14 @@ import { OverrideThemeExtension } from "@blocksuite/affine-shared/services";
 import { signal } from "@preact/signals-core";
 import { getCollection } from "./notesCollection";
 import { installFileWriteback, installMdPreviewToggle, insertFileIntoNote } from "./fileInsert";
+import { installBoundSync } from "./boundSource";
+import { isBoundSubDoc } from "./boundRegistry";
 import { flushNotesStore, getCachedTitle, setCachedTitle } from "./fileNotesStore";
 import { scheduleNoteExport, rebuildNotesIndex, backfillExports } from "./noteExport";
 import { installMarkdownPaste } from "./markdownPaste";
 import { installOmniRefJump } from "./omniLink";
+import { BrowsePanel } from "./BrowsePanel";
+import "./omniSources"; // 注册 omni 源适配器(plan/progress/review), 即便没开浏览面板也要在(同步引擎要用)
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 
 // DARK theme everywhere (canvas + 弹层/菜单都深底浅字, 跟 poof 的暗色玻璃悬浮层哲学一致)。
@@ -187,6 +192,8 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
   const [ready, setReady] = useState(false);
   const [verOpen, setVerOpen] = useState(false);
   const [versions, setVersions] = useState<NoteVersion[]>([]);
+  const [browseOpen, setBrowseOpen] = useState(false); // 浏览/插入面板(文件/计划/进度/审阅)
+  const [conflictMsg, setConflictMsg] = useState(""); // 同步源块写回冲突提示
   const seeded = useRef(false);
   const [geom, setGeom] = useState<Geom>(loadGeom);
 
@@ -265,7 +272,9 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
   }
 
   function readMetas(): Meta[] {
-    return c.meta.docMetas.map((m: any) => ({
+    return c.meta.docMetas
+      .filter((m: any) => !isBoundSubDoc(m.id)) // 同步源块的绑定子文档不是独立笔记, 不进列表
+      .map((m: any) => ({
       id: m.id,
       // docMeta.title 加载时会被刷成空页标题 → 回退到内容派生的显示标题缓存(见 fileNotesStore)。
       title: (m.title || getCachedTitle(m.id) || "").trim(),
@@ -320,6 +329,13 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     if (activeId) localStorage.setItem(LAST_KEY, activeId);
   }, [activeId]);
+
+  // slash 菜单"插入内容" → 打开浏览面板(slash 在 editorConfig, 用事件桥到这里的 React 状态)
+  useEffect(() => {
+    const open = () => setBrowseOpen(true);
+    window.addEventListener("poof:open-browse", open);
+    return () => window.removeEventListener("poof:open-browse", open);
+  }, []);
 
   // mount the BlockSuite editor for the active doc + auto-sync its title (fixes 未命名)
   useEffect(() => {
@@ -404,6 +420,13 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
       installChromeTranslator(); // #8 全量中文(格式条/工具条/tooltip/链接卡片, DOM 级)
       installFileTemplateSearch(); // #5 工具栏"Search file or anything"(模板面板)→ 搜本机文件(Everything)
       hookCleanups.push(installFileWriteback(doc)); // 活文件块: 改文本块 → 防抖写回源文件
+      hookCleanups.push(
+        installBoundSync(doc, (ref) => {
+          const name = ref.replace(/\\/g, "/").split("/").pop() || ref;
+          setConflictMsg(`「${name}」源文件外部也被改过，已三路合并（含冲突标记）写回，请检查`);
+          window.setTimeout(() => setConflictMsg(""), 8000);
+        })
+      ); // 同步源块: 改 embed 子文档 → 防抖写回源(冲突闸+历史) + 轮询外部改动
       hookCleanups.push(installMdPreviewToggle(doc)); // md 活文件块: 源码 ⇄ 渲染预览
       hookCleanups.push(installMarkdownPaste(editor)); // 粘贴 markdown 智能转(Shift=纯文本)
       hookCleanups.push(installOmniRefJump(editor)); // @omni 引用点击 → 跳 vscode/看板
@@ -683,6 +706,14 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
         <button className="notes-bar-btn" title="新建笔记" onClick={createNote}>
           <Plus size={15} />
         </button>
+        <button
+          className={"notes-bar-btn" + (browseOpen ? " on" : "")}
+          title="插入内容（文件 / 计划 / 任务 / 审阅材料 → 同步源块）"
+          disabled={!activeId}
+          onClick={() => setBrowseOpen((o) => !o)}
+        >
+          <FolderInput size={15} />
+        </button>
         <span className="notes-bar-title">{activeTitle}</span>
         <span className="notes-bar-spacer" />
         <button
@@ -899,6 +930,20 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {browseOpen && (
+        <BrowsePanel
+          getDoc={() => c.getDoc(activeId)}
+          onClose={() => setBrowseOpen(false)}
+          onInserted={() => setMetas(readMetas())}
+        />
+      )}
+
+      {conflictMsg && (
+        <div className="notes-conflict" onClick={() => setConflictMsg("")} title="点此关闭">
+          ⚠ {conflictMsg}
         </div>
       )}
     </div>
