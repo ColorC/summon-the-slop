@@ -3,6 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Text } from "@blocksuite/store";
 import { getCollection } from "./regions/notesCollection";
+import { getCachedTitle } from "./regions/fileNotesStore";
 
 let activeEditor: { setEditor?: unknown } | any = null;
 export function setActiveEditor(ed: unknown): void {
@@ -64,7 +65,12 @@ function handleNoteOp(cmd: any): any {
         ok: true,
         notes: metas(c).map((m: any) => {
           const d = c.getDoc(m.id);
-          return { id: m.id, title: m.title || "未命名", elements: d ? allBlocks(d).length : 0 };
+          // docMeta.title 加载时会被刷成空页标题 → 回退到内容派生的显示标题缓存(见 fileNotesStore)。
+          return {
+            id: m.id,
+            title: m.title || getCachedTitle(m.id) || "未命名",
+            elements: d ? allBlocks(d).length : 0,
+          };
         }),
       };
     }
@@ -81,11 +87,12 @@ function handleNoteOp(cmd: any): any {
       for (const m of metas(c)) {
         const d = c.getDoc(m.id);
         if (!d) continue;
-        const titleHit = String(m.title || "").toLowerCase().includes(q);
+        const dispTitle = m.title || getCachedTitle(m.id) || "未命名";
+        const titleHit = dispTitle.toLowerCase().includes(q);
         const elems = allBlocks(d).filter((b) => blockText(b).toLowerCase().includes(q));
         if (titleHit || elems.length) {
           hits.push({
-            note: m.id, title: m.title || "未命名", titleHit, link: `poof-note://${m.id}`,
+            note: m.id, title: dispTitle, titleHit, link: `poof-note://${m.id}`,
             elements: elems.slice(0, 20).map((b) => elemView(m.id, b, 120)),
           });
         }

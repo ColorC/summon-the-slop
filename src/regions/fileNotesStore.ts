@@ -181,6 +181,41 @@ export class FileBlobSource {
   }
 }
 
+// ---- 显示标题缓存(独立于 docMeta.title)----
+// 为什么要这层: docMeta.title 不是真源, 它由 BlockSuite 的 RootBlockModel 在文档加载(rootAdded)时
+// 强制刷成"页标题"(affine:page.prop:title)。很多笔记的标题写在正文首行/首个标题块里, 页标题是空的,
+// 于是每次加载都把 docMeta.title 刷成空 → 侧栏/桥显示"未命名"(逐篇打开也只是临时盖住, 重启又回空)。
+// 不去和这个内部绑定较劲(改页标题会和正文标题重复显示), 而是另存一份"从内容扫出来的显示标题",
+// 侧栏/桥在 docMeta.title 为空时回退到它。真源永远是笔记内容; 这只是个显示用的派生缓存。
+const TITLE_CACHE_KEY = "poof-note-titles";
+let titleCache: Record<string, string> | null = null;
+function loadTitleCache(): Record<string, string> {
+  if (titleCache) return titleCache;
+  try {
+    titleCache = JSON.parse(localStorage.getItem(TITLE_CACHE_KEY) || "{}");
+  } catch {
+    titleCache = {};
+  }
+  return titleCache!;
+}
+/** 取某笔记的内容派生显示标题(没有则空串)。给侧栏/桥在 docMeta.title 为空时回退用。 */
+export function getCachedTitle(id: string): string {
+  return loadTitleCache()[id] || "";
+}
+/** 写入显示标题缓存。空标题不覆盖(内容可能临时为空, 别把已知标题抹掉)。 */
+export function setCachedTitle(id: string, title: string): void {
+  const t = (title || "").trim().slice(0, 80);
+  if (!t) return;
+  const cache = loadTitleCache();
+  if (cache[id] === t) return;
+  cache[id] = t;
+  try {
+    localStorage.setItem(TITLE_CACHE_KEY, JSON.stringify(cache));
+  } catch {
+    /* ignore */
+  }
+}
+
 // ---- 自愈: 把磁盘上有 .ydoc 但 meta 没列的"孤儿笔记"重新加回 meta(防迁移后"笔记看不见")----
 // 只读笔记内容拿标题 + 只往 meta 加条目(addDocMeta), 绝不碰笔记内容 .ydoc, 对笔记零风险。
 // 内容在用户打开该笔记时由 FileDocSource 懒加载。每次启动都跑 → 即便 meta 再被截断也能恢复。
@@ -192,7 +227,8 @@ function scanYdoc(bytes: Uint8Array): { title: string; renderable: boolean } {
     Y.applyUpdate(ydoc, bytes);
     const blocks = ydoc.getMap("blocks") as any;
     let pageTitle = "";
-    let firstText = "";
+    let firstPara = ""; // 首个非空 正文段/列表(标题首选来源)
+    let firstOther = ""; // 退路: 代码块首行 / 附件名(拖文件生成的笔记没有正文段也能有标题)
     let hasPage = false;
     let hasNote = false;
     blocks.forEach((b: any) => {
@@ -203,29 +239,44 @@ function scanYdoc(bytes: Uint8Array): { title: string; renderable: boolean } {
         if (t?.toString) pageTitle = t.toString().trim();
       } else if (fl === "affine:note") {
         hasNote = true;
-      } else if ((fl === "affine:paragraph" || fl === "affine:list") && !firstText) {
-        const t = b.get("prop:text");
-        if (t?.toString) firstText = t.toString().trim();
+      } else if (fl === "affine:paragraph" || fl === "affine:list") {
+        if (!firstPara) {
+          const s = b.get("prop:text")?.toString?.().trim();
+          if (s) firstPara = s;
+        }
+      } else if (fl === "affine:code") {
+        if (!firstOther) {
+          const s = b.get("prop:text")?.toString?.().trim();
+          if (s) firstOther = s.split("\n")[0]; // 代码块取首行
+        }
+      } else if (fl === "affine:attachment" || fl === "affine:bookmark" || fl === "affine:image") {
+        if (!firstOther) {
+          const s = (b.get("prop:name") ?? b.get("prop:title") ?? b.get("prop:caption"))
+            ?.toString?.()
+            .trim();
+          if (s) firstOther = s;
+        }
       }
     });
-    return { title: (pageTitle || firstText || "").slice(0, 80), renderable: hasPage && hasNote };
+    const title = (pageTitle || firstPara || firstOther || "").slice(0, 80);
+    return { title, renderable: hasPage && hasNote };
   } catch {
     return { title: "", renderable: false };
   }
 }
 
-export async function healOrphanNotes(collection: any): Promise<number> {
+export async function healOrphanNotes(collection: any): Promise<{ added: number; titled: number }> {
   let keys: string[] = [];
   try {
     keys = await notesDocKeys();
   } catch {
-    return 0;
+    return { added: 0, titled: 0 };
   }
   let added = 0;
+  let titled = 0;
   for (const id of keys) {
     if (id === collection.id) continue; // workspace 根 doc(=collectionId), 不是笔记
-    // ⚠ 实时复查(不是开头快照): meta 是异步加载的, 延迟期间这条可能已自己进来了 → 实时查避免重复登记。
-    if ((collection?.meta?.docMetas || []).some((m: any) => m.id === id)) continue;
+    // 扫一次 .ydoc 拿标题 + 可渲染性(补登记孤儿 + 喂显示标题缓存都要用)。
     let title = "";
     let renderable = false;
     try {
@@ -238,6 +289,15 @@ export async function healOrphanNotes(collection: any): Promise<number> {
     } catch {
       /* ignore */
     }
+    // 从内容扫出的标题喂进显示缓存。docMeta.title 会被 RootBlockModel 在加载时刷成空页标题(见缓存说明),
+    // 所以不去改 docMeta, 让侧栏/桥读 docMeta.title || getCachedTitle(id) 即可稳定显示, 不必逐篇打开。
+    if (title) {
+      setCachedTitle(id, title);
+      titled++;
+    }
+    // ⚠ 实时复查(不是开头快照): meta 是异步加载的, 延迟期间这条可能已自己进来了。
+    const existing = (collection?.meta?.docMetas || []).some((m: any) => m.id === id);
+    if (existing) continue;
     if (!renderable) continue; // ⚠ 空/坏文档不加进列表, 否则 edgeless 渲染崩 WebView2
     try {
       collection.meta.addDocMeta({
@@ -253,9 +313,18 @@ export async function healOrphanNotes(collection: any): Promise<number> {
   }
   if (added) {
     // eslint-disable-next-line no-console
-    console.log(`[notes] 自愈: 把 ${added} 篇孤儿笔记加回了列表`);
+    console.log(`[notes] 自愈: 补登记 ${added} 篇孤儿笔记`);
   }
-  return added;
+  // 缓存里有了新标题 → 戳一下 docUpdated, 让已打开的侧栏重新 readMetas 拿到回退标题(缓存在 localStorage,
+  // 不会自己触发刷新)。docAdded 已由 addDocMeta 触发, 这里补 titled 的情况。
+  if (titled) {
+    try {
+      collection.slots.docUpdated.emit();
+    } catch {
+      /* ignore */
+    }
+  }
+  return { added, titled };
 }
 
 // ---- 一次性迁移: 旧 IndexedDB("poof-notes") → 磁盘 .ydoc ----

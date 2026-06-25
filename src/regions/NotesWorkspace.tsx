@@ -42,7 +42,7 @@ import { OverrideThemeExtension } from "@blocksuite/affine-shared/services";
 import { signal } from "@preact/signals-core";
 import { getCollection } from "./notesCollection";
 import { installFileWriteback, installMdPreviewToggle, insertFileIntoNote } from "./fileInsert";
-import { flushNotesStore } from "./fileNotesStore";
+import { flushNotesStore, getCachedTitle, setCachedTitle } from "./fileNotesStore";
 import { scheduleNoteExport, rebuildNotesIndex, backfillExports } from "./noteExport";
 import { installMarkdownPaste } from "./markdownPaste";
 import { installOmniRefJump } from "./omniLink";
@@ -72,14 +72,26 @@ function seedDoc(c: DocCollection): Doc {
   return doc;
 }
 
-/** first non-empty paragraph/heading text — the note's auto-title (no editor needed). */
+/** first non-empty paragraph/heading text — the note's auto-title (no editor needed).
+ *  正文都空时退到 代码块首行 / 附件名, 让"拖文件进去"生成的笔记也能自动有标题。
+ *  规则与 fileNotesStore.scanYdoc 保持一致, 否则启动回填的标题会在打开笔记时被算回空。 */
 function firstLineOf(doc: any): string {
   try {
-    const blocks = doc.getBlocksByFlavour(["affine:paragraph", "affine:list"]) || [];
-    for (const b of blocks) {
-      const model = b?.model ?? b; // getBlocksByFlavour returns Block (.model); be defensive
-      const s = model?.text?.toString?.().trim();
+    const text = doc.getBlocksByFlavour(["affine:paragraph", "affine:list"]) || [];
+    for (const b of text) {
+      const s = (b?.model ?? b)?.text?.toString?.().trim(); // getBlocksByFlavour 返回 Block(.model)
       if (s) return s.slice(0, 80);
+    }
+    const code = doc.getBlocksByFlavour(["affine:code"]) || [];
+    for (const b of code) {
+      const s = (b?.model ?? b)?.text?.toString?.().trim();
+      if (s) return s.split("\n")[0].slice(0, 80);
+    }
+    const att = doc.getBlocksByFlavour(["affine:attachment", "affine:bookmark", "affine:image"]) || [];
+    for (const b of att) {
+      const m = b?.model ?? b;
+      const s = (m?.name ?? m?.title ?? m?.caption)?.toString?.().trim?.();
+      if (s) return String(s).slice(0, 80);
     }
   } catch {
     /* ignore */
@@ -96,10 +108,9 @@ async function duplicateDoc(c: DocCollection, id: string): Promise<string | null
     const snap = (job as any).docToSnapshot(doc);
     if (!snap) return null;
     const nd = await (job as any).snapshotToDoc(snap);
-    c.setDocMeta(nd.id, {
-      title: (((doc.meta as any)?.title || "未命名笔记") + " 副本"),
-      updatedDate: Date.now(),
-    } as any);
+    const dupTitle = ((doc.meta as any)?.title || getCachedTitle(id) || "未命名笔记") + " 副本";
+    c.setDocMeta(nd.id, { title: dupTitle, updatedDate: Date.now() } as any);
+    setCachedTitle(nd.id, dupTitle); // 副本的页标题多为空, docMeta 会被刷掉 → 同时写显示缓存才稳得住
     return nd.id;
   } catch {
     return null;
@@ -256,7 +267,8 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
   function readMetas(): Meta[] {
     return c.meta.docMetas.map((m: any) => ({
       id: m.id,
-      title: (m.title || "").trim(),
+      // docMeta.title 加载时会被刷成空页标题 → 回退到内容派生的显示标题缓存(见 fileNotesStore)。
+      title: (m.title || getCachedTitle(m.id) || "").trim(),
       archived: !!m.archived,
       trashed: !!m.trashed,
       favorite: !!m.favorite,
@@ -325,6 +337,7 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
         /* ignore */
       }
       if (!t) t = firstLineOf(doc);
+      if (t) setCachedTitle(activeId, t); // 喂显示标题缓存(编辑当前笔记时实时刷新, 不依赖打开才有标题)
       const cur = ((doc.meta as any)?.title || "").trim();
       if (t && t !== cur) c.setDocMeta(activeId, { title: t, updatedDate: Date.now() } as any);
     };

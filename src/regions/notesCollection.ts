@@ -60,11 +60,34 @@ export function getCollection(): DocCollection {
   collection.meta.initialize();
   collection.start();
   g.__poofNotesCollection = collection;
-  // 自愈: 等迁移 + 首轮 meta pull 落定后, 把磁盘上有 .ydoc 却没进 meta 的孤儿笔记加回列表。
-  // (迁移后 workspace meta 若被截断, 笔记内容还在 docs/<id>.ydoc, 这里把它们重新列出来。)
-  void ready
-    .then(() => new Promise((r) => setTimeout(r, 1500)))
-    .then(() => healOrphanNotes(collection))
-    .catch(() => {});
+  // 自愈: 等迁移 + 首轮 meta pull 落定后, ① 把磁盘上有 .ydoc 却没进 meta 的孤儿笔记加回列表;
+  // ② 给"在列表但标题空"的笔记从 .ydoc 内容回填标题(否则得逐篇打开才显标题, 见 healOrphanNotes)。
+  // docMetas 是异步逐条 pull 的, 固定延时容易"赶早了"。所以订阅 docMetaAdded: 每当有笔记进列表就防抖
+  // 跑一遍, 直到加载稳定; 再加两个绝对时点兜底(防全部早已在列表→不触发 docMetaAdded 的情况)。
+  // 幂等(已登记/已有标题都跳过), 不会重复登记或来回改标题。加载窗口过后退订, 免得后续每次新建都全盘扫。
+  void ready.then(() => {
+    let healTimer: ReturnType<typeof setTimeout> | undefined;
+    const runHeal = () => void healOrphanNotes(collection).catch(() => {});
+    const scheduleHeal = () => {
+      if (healTimer) clearTimeout(healTimer);
+      healTimer = setTimeout(runHeal, 700);
+    };
+    let off: any;
+    try {
+      off = collection.meta.docMetaAdded.on(scheduleHeal);
+    } catch {
+      /* ignore */
+    }
+    scheduleHeal();
+    setTimeout(runHeal, 2500); // 兜底一遍
+    setTimeout(() => {
+      runHeal(); // 兜底两遍
+      try {
+        off?.dispose?.();
+      } catch {
+        /* ignore */
+      }
+    }, 6000);
+  });
   return collection;
 }
