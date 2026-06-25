@@ -2,17 +2,19 @@
 body { font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
 
 .cm {
-  width: 100vw;
-  height: 100vh;
+  width: 100%;
+  height: 100%;
   display: flex;
   flex-direction: column;
   background: #16181d;
   color: #d6d9e0;
+  font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
 }
 .cm-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 6px;
   padding: 8px 12px;
   border-bottom: 1px solid #2a2d35;
   flex: none;
@@ -27,7 +29,7 @@ body { font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
 .cm-tab.on { background: #3a6df0; color: #fff; }
 .cm-spacer { flex: 1; }
 .cm-search {
-  height: 28px; width: 180px; padding: 0 10px; border: 1px solid #3a3e48;
+  height: 28px; flex: 1; min-width: 90px; padding: 0 10px; border: 1px solid #3a3e48;
   border-radius: 7px; background: #0f1115; color: #e6e8ee; font-size: 12px; outline: none;
 }
 .cm-search:focus { border-color: #3a6df0; }
@@ -91,3 +93,12 @@ body { font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
   flex: 1; display: flex; align-items: center; justify-content: center;
   color: #6a7180; font-size: 13px; padding: 30px;
 }
+
+/* 窄(停靠侧栏)时: 列表在上、预览在下, 上下堆叠 */
+.cm.narrow .cm-body { flex-direction: column; }
+.cm.narrow .cm-list {
+  width: 100%; height: 46%; flex: none;
+  border-right: none; border-bottom: 1px solid #2a2d35;
+}
+.cm.narrow .cm-preview { min-height: 0; }
+.cm.narrow .cm-preview-title { max-width: 50%; }

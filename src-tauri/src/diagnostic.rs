@@ -31,13 +31,57 @@ pub struct DiagResult {
     pub windows: usize,
 }
 
-/// 截屏 + 每个可见 poof 窗口区域 + 写报告 + 复制链接。state_json/when 由前端给(它有 Date + 应用状态)。
-#[tauri::command]
-pub async fn diagnostic_snapshot(
-    app: tauri::AppHandle,
-    state_json: String,
-    when: String,
-) -> Result<DiagResult, String> {
+#[cfg(windows)]
+fn local_time_str() -> String {
+    use windows_sys::Win32::Foundation::SYSTEMTIME;
+    use windows_sys::Win32::System::SystemInformation::GetLocalTime;
+    unsafe {
+        let mut st: SYSTEMTIME = std::mem::zeroed();
+        GetLocalTime(&mut st);
+        format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond
+        )
+    }
+}
+#[cfg(not(windows))]
+fn local_time_str() -> String {
+    String::new()
+}
+
+// 纯 Rust 拿到的状态(热键路径用, 不依赖前端)。前端点按钮的路径会传更全的 state_json。
+fn rust_state_summary() -> String {
+    let home = std::env::var("USERPROFILE").unwrap_or_default();
+    let count_ext = |dir: &Path, ext: &str| -> usize {
+        std::fs::read_dir(dir)
+            .map(|rd| {
+                rd.flatten()
+                    .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some(ext))
+                    .count()
+            })
+            .unwrap_or(0)
+    };
+    let notes = count_ext(Path::new("E:\\WindowsWorkspace\\poof-notes\\docs"), "ydoc");
+    let clips = std::fs::read_to_string(Path::new(&home).join(".poof").join("clipboard").join("index.jsonl"))
+        .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
+        .unwrap_or(0);
+    let diags = std::fs::read_dir(diag_root())
+        .map(|rd| rd.flatten().filter(|e| e.path().is_dir()).count())
+        .unwrap_or(0);
+    format!(
+        "{{\n  \"来源\": \"Rust(热键)\",\n  \"笔记ydoc数\": {notes},\n  \"剪贴板历史条目\": {clips},\n  \"已存诊断数\": {diags}\n}}"
+    )
+}
+
+/// 核心: 截屏 + 每个可见 poof 窗口区域 + 写报告 + 复制链接。纯 Rust, 不依赖前端 → poof 隐藏/卡住也能跑。
+/// state_json 空 = 热键路径(用 Rust 状态); 非空 = 前端按钮传来的更全状态。
+pub fn capture_diag(app: &tauri::AppHandle, state_json: String) -> Result<DiagResult, String> {
+    let when = local_time_str();
+    let state_json = if state_json.trim().is_empty() {
+        rust_state_summary()
+    } else {
+        state_json
+    };
     let dir = diag_root().join(format!("diag-{}", now_ns()));
     std::fs::create_dir_all(&dir).map_err(|e| format!("建诊断目录失败: {e}"))?;
 
@@ -105,6 +149,26 @@ pub async fn diagnostic_snapshot(
         link,
         windows: win_imgs.len(),
     })
+}
+
+/// 前端按钮路径: 带上前端状态(笔记/JS堆等)。
+#[tauri::command]
+pub async fn diagnostic_snapshot(
+    app: tauri::AppHandle,
+    state_json: String,
+) -> Result<DiagResult, String> {
+    capture_diag(&app, state_json)
+}
+
+/// 热键(Ctrl+Alt+S)路径: 纯 Rust 跑, 不经前端 → poof 隐藏/卡死也能出快照。失败返回 None。
+pub fn do_diagnostic(app: &tauri::AppHandle) -> Option<DiagResult> {
+    match capture_diag(app, String::new()) {
+        Ok(r) => Some(r),
+        Err(e) => {
+            crate::log_line(&format!("diagnostic_snapshot 失败: {e}"));
+            None
+        }
+    }
 }
 
 #[derive(serde::Serialize)]

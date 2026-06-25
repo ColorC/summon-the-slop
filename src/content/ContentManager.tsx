@@ -41,6 +41,17 @@ export function ContentManager() {
   const [loading, setLoading] = useState(false);
   const thumbs = useRef<Record<string, string>>({});
   const [, force] = useState(0);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [narrow, setNarrow] = useState(false);
+
+  // 窄(停靠侧栏)时上下堆叠, 宽(浮窗/拉宽)时左右并排
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => setNarrow(entries[0].contentRect.width < 560));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   const load = useCallback(async (which: Tab) => {
     setLoading(true);
@@ -149,9 +160,8 @@ export function ContentManager() {
   );
 
   return (
-    <div className="cm">
+    <div className={"cm" + (narrow ? " narrow" : "")} ref={rootRef}>
       <div className="cm-head">
-        <span className="cm-logo">poof · 快选内容</span>
         <div className="cm-tabs">
           {TABS.map((t) => (
             <button key={t.key} className={"cm-tab" + (tab === t.key ? " on" : "")} onClick={() => setTab(t.key)}>
