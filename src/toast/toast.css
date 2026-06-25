@@ -1,0 +1,47 @@
+/* poof 小提示窗 —— 一闪而过的轻量气泡, 不抢焦点、无声。底部居中。 */
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif;
+  user-select: none;
+}
+#toast {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  box-sizing: border-box;
+  height: 100%;
+  margin: 0 8px;
+  padding: 0 17px;
+  background: rgba(22, 24, 28, 0.97);
+  border: 1px solid #2e333d;
+  border-radius: 14px;
+  color: #e9ebf0;
+  font-size: 13.5px;
+  font-weight: 500;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 12px 38px rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  transform: translateY(7px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+#toast.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+#ico {
+  color: #46d18a;
+  font-weight: 700;
+  font-size: 15px;
+  flex: none;
+}
+#msg {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

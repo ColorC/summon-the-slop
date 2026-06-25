@@ -64,6 +64,21 @@
         "visible": false,
         "resizable": false,
         "shadow": false
+      },
+      {
+        "label": "toast",
+        "url": "toast.html",
+        "title": "poof",
+        "width": 340,
+        "height": 52,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "focus": false,
+        "resizable": false,
+        "shadow": false
       }
     ],
     "security": {

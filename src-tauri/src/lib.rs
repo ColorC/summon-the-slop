@@ -492,6 +492,97 @@ fn exclude_from_capture(window: &tauri::WebviewWindow) {
     }
 }
 
+// 连续弹提示时用代号防止"上一条的收起定时器把下一条提早收掉"。
+static TOAST_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// 永不激活: 给窗口加 WS_EX_NOACTIVATE + WS_EX_TOOLWINDOW —— 弹出/点击都不抢键盘焦点,
+/// 用户在别的程序里打字时弹个提示也不会打断输入。
+#[cfg(windows)]
+fn set_no_activate(win: &tauri::WebviewWindow) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        WS_EX_TRANSPARENT,
+    };
+    if let Ok(h) = win.hwnd() {
+        unsafe {
+            let ex = GetWindowLongW(h.0 as isize, GWL_EXSTYLE);
+            // NOACTIVATE=不抢焦点; TOOLWINDOW=不进 Alt-Tab; TRANSPARENT=鼠标穿透(显示期间也不挡点击)。
+            SetWindowLongW(
+                h.0 as isize,
+                GWL_EXSTYLE,
+                ex | WS_EX_NOACTIVATE as i32 | WS_EX_TOOLWINDOW as i32 | WS_EX_TRANSPARENT as i32,
+            );
+        }
+    }
+}
+
+/// 不激活地显示(SW_SHOWNOACTIVATE) —— 普通 .show() 在 Windows 上可能把焦点抢过来。
+#[cfg(windows)]
+fn show_no_activate(win: &tauri::WebviewWindow) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
+    if let Ok(h) = win.hwnd() {
+        unsafe {
+            ShowWindow(h.0 as isize, SW_SHOWNOACTIVATE);
+        }
+    } else {
+        let _ = win.show();
+    }
+}
+
+/// 收起小提示窗。用原生 ShowWindow(SW_HIDE) —— Tauri 的 hide() 从分离线程调用不生效(要主线程),
+/// 而 ShowWindow 是线程安全的(消息会投递到窗口自己的线程), 和 show_no_activate 对称。
+#[cfg(windows)]
+fn hide_no_activate(win: &tauri::WebviewWindow) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+    if let Ok(h) = win.hwnd() {
+        unsafe {
+            ShowWindow(h.0 as isize, SW_HIDE);
+        }
+    } else {
+        let _ = win.hide();
+    }
+}
+
+/// 小提示窗: 底部居中弹一条文字约 1.8s 再悄悄收起, 不抢焦点、无声。诊断完成等场景用 —— 哪怕
+/// poof 主界面是藏着的也能看见(它是独立的小窗, 不依赖 main 可见)。
+#[cfg(windows)]
+pub(crate) fn show_toast(app: &tauri::AppHandle, text: &str) {
+    use std::sync::atomic::Ordering;
+    use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize};
+    let Some(win) = app.get_webview_window("toast") else {
+        return;
+    };
+    let (mx, my, mw, mh, scale) = if let Ok(Some(m)) = win.primary_monitor() {
+        let p = m.position();
+        let s = m.size();
+        (p.x, p.y, s.width as i32, s.height as i32, m.scale_factor())
+    } else {
+        (0, 0, 1920, 1080, 1.0)
+    };
+    let tw = (340.0 * scale) as i32;
+    let th = (52.0 * scale) as i32;
+    let tx = mx + (mw - tw) / 2;
+    let ty = my + mh - th - (110.0 * scale) as i32; // 离屏幕底边约 110px
+    let _ = win.set_size(PhysicalSize::new(tw.max(1) as u32, th.max(1) as u32));
+    let _ = win.set_position(PhysicalPosition::new(tx, ty));
+    set_no_activate(&win);
+    exclude_from_capture(&win); // 提示自身别被后续截图拍进去
+    let _ = win.emit("poof://toast", text.to_string());
+    show_no_activate(&win);
+    let _ = win.set_always_on_top(true);
+    let gen = TOAST_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let win2 = win.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(1850));
+        // 只有没有更新的提示顶上来时才收(连续弹出时, 由最后一条负责收起)。
+        if TOAST_GEN.load(Ordering::SeqCst) == gen {
+            hide_no_activate(&win2);
+        }
+    });
+}
+#[cfg(not(windows))]
+pub(crate) fn show_toast(_app: &tauri::AppHandle, _text: &str) {}
+
 /// The "floating" windows = everything except the main overlay + the transient capture tools.
 #[cfg(windows)]
 fn float_windows(app: &tauri::AppHandle) -> Vec<tauri::WebviewWindow> {
@@ -580,7 +671,11 @@ fn summon_snap(app: &tauri::AppHandle, record: bool) {
     // 在 main 后)"。main 全程可见、不隐藏。关 snap 时恢复 main 置顶(poof 回到最前)。
     // 录制(record=true): 收起 main, 录干净桌面。
     use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize};
-    let Some(snap) = app.get_webview_window("snap") else { return };
+    log_line(&format!("[snap] summon_snap enter record={record}"));
+    let Some(snap) = app.get_webview_window("snap") else {
+        log_line("[snap] NO 'snap' window — abort");
+        return;
+    };
     if let Ok(Some(m)) = snap.primary_monitor() {
         let p = m.position();
         let s = m.size();
@@ -595,10 +690,11 @@ fn summon_snap(app: &tauri::AppHandle, record: bool) {
             RESTORE_TOPMOST.store(true, std::sync::atomic::Ordering::SeqCst);
         }
     }
-    let _ = snap.show();
+    let r = snap.show();
     let _ = snap.set_always_on_top(true);
     let _ = snap.set_focus();
     let _ = snap.emit("snap-summon", record);
+    log_line(&format!("[snap] snap.show()={:?}, emitted snap-summon", r.is_ok()));
 }
 #[cfg(windows)]
 #[tauri::command]
@@ -790,17 +886,14 @@ pub fn run() {
                     let mut taps: u32 = 0;
                     loop {
                         match rx.recv_timeout(std::time::Duration::from_millis(340)) {
-                            Ok(hook::Sig::Snap) => { let h = handle.clone(); let _ = handle.run_on_main_thread(move || summon_snap(&h, false)); }
+                            Ok(hook::Sig::Snap) => { log_line("[snap] rx Sig::Snap → summon_snap"); let h = handle.clone(); let _ = handle.run_on_main_thread(move || summon_snap(&h, false)); }
                             Ok(hook::Sig::Notes) => { let h = handle.clone(); let _ = handle.run_on_main_thread(move || open_notes(&h)); }
                             Ok(hook::Sig::Diag) => {
                                 // 纯 Rust 截图写报告(后台线程, 不依赖前端 → poof 隐藏/卡死也能出快照)。
-                                // 先发 diag-start 立刻给反馈(若 main 可见就弹"正在生成"), 完事发 diag-done。
+                                // 完成后由 capture_diag 自己弹小提示窗(不抢焦点、无声)。
                                 let h = handle.clone();
-                                let _ = h.emit("poof://diag-start", ());
                                 std::thread::spawn(move || {
-                                    if diagnostic::do_diagnostic(&h).is_some() {
-                                        let _ = h.emit("poof://diag-done", ());
-                                    }
+                                    let _ = diagnostic::do_diagnostic(&h);
                                 });
                             }
                             Ok(hook::Sig::CtrlTap) => {

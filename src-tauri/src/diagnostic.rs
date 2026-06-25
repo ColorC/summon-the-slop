@@ -20,18 +20,6 @@ fn save_png_fast(path: &Path, rgba: &[u8], w: u32, h: u32) -> Result<(), String>
         .map_err(|e| format!("编码PNG失败: {e}"))
 }
 
-// 完事响一声系统提示音 —— 热键路径 poof 常常是隐藏的, 没有界面能弹提示, 用声音确认"拍到了"。
-#[cfg(windows)]
-fn beep_done() {
-    // windows-sys 0.52 把 MessageBeep 放在 Diagnostics::Debug 下(元数据分组的怪癖)。
-    use windows_sys::Win32::System::Diagnostics::Debug::MessageBeep;
-    use windows_sys::Win32::UI::WindowsAndMessaging::MB_OK;
-    unsafe {
-        MessageBeep(MB_OK);
-    }
-}
-#[cfg(not(windows))]
-fn beep_done() {}
 
 fn now_ns() -> u128 {
     std::time::SystemTime::now()
@@ -176,6 +164,9 @@ pub fn capture_diag(app: &tauri::AppHandle, state_json: String) -> Result<DiagRe
     let link = format!("[[{}]]", strip_unc(&md_path));
     let _ = arboard::Clipboard::new().and_then(|mut c| c.set_text(link.clone()));
 
+    // 5) 弹个小提示(底部居中, 不抢焦点、无声) —— poof 藏着也能看见"拍到了"。✓ 图标由提示窗自带。
+    crate::show_toast(app, "已存诊断快照 · 链接已复制");
+
     Ok(DiagResult {
         dir: strip_unc(&dir),
         md: strip_unc(&md_path),
@@ -197,10 +188,7 @@ pub async fn diagnostic_snapshot(
 /// 热键(Ctrl+Alt+S)路径: 纯 Rust 跑, 不经前端 → poof 隐藏/卡死也能出快照。失败返回 None。
 pub fn do_diagnostic(app: &tauri::AppHandle) -> Option<DiagResult> {
     match capture_diag(app, String::new()) {
-        Ok(r) => {
-            beep_done(); // 隐藏时也能听见"拍到了"
-            Some(r)
-        }
+        Ok(r) => Some(r),
         Err(e) => {
             crate::log_line(&format!("diagnostic_snapshot 失败: {e}"));
             None

@@ -18,6 +18,7 @@ export default defineConfig(async () => ({
         pin: "pin.html",
         replay: "replay.html",
         recbar: "rec-bar.html",
+        toast: "toast.html",
       },
     },
   },

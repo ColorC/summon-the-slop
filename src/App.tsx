@@ -131,30 +131,17 @@ export default function App() {
     localStorage.setItem(PIN_KEY, JSON.stringify(pinned));
   }, [pinned]);
 
-  // 诊断快照: Ctrl+Alt+S 由 Rust 端直接截图写报告(不依赖前端 JS, 所以 poof 隐藏/卡住也能用),
-  // 完成后发 poof://diag-done → 这里只弹个提示(若 main 可见)。只 main 窗口听。
-  useEffect(() => {
-    if (getCurrentWindow().label !== "main") return;
-    const uns: Array<() => void> = [];
-    listen("poof://diag-start", () => setDiagToast("正在生成诊断快照…")).then((u) => uns.push(u));
-    listen("poof://diag-done", () => {
-      setDiagToast("诊断快照已存 · 报告链接已复制 → 打开「快选内容」面板可看/管理");
-      setTimeout(() => setDiagToast(""), 6000);
-    }).then((u) => uns.push(u));
-    return () => uns.forEach((u) => u());
-  }, []);
-
-  // 点按钮做诊断(带上前端状态: 笔记/JS堆等, 比纯热键更全)。
+  // 点按钮做诊断(带上前端状态: 笔记/JS堆等, 比纯热键更全)。完成后由 Rust 弹独立的小提示窗
+  // (底部居中、不抢焦点、无声, poof 藏着也能看见), 所以这里成功不再弹 —— 只在出错时就地提示。
   const runDiagnostic = useCallback(async () => {
     try {
-      const r: any = await invoke("diagnostic_snapshot", {
+      await invoke("diagnostic_snapshot", {
         stateJson: JSON.stringify(gatherDiagState(), null, 2),
       });
-      setDiagToast(`诊断快照已存(${r.windows} 个窗口截图)· 报告链接已复制剪贴板`);
     } catch (e) {
       setDiagToast("诊断失败: " + String(e));
+      setTimeout(() => setDiagToast(""), 6000);
     }
-    setTimeout(() => setDiagToast(""), 6000);
   }, []);
 
   // #7 笔记 ops 桥: 后台轮询文件命令(omni notes), 在活笔记 collection 上执行。常驻(笔记面板不开也能改)。
