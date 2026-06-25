@@ -2,8 +2,10 @@
 // ② poof 快照(截图 + 诊断) ③ 捕获/圈选(captures 目录)。左列表(行式, 类型图标 + 预览 + 悬浮操作)右预览。
 // 视觉参考成熟剪贴板管理器(Windows 剪贴板历史 / Ditto / Raycast)。
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { micromark } from "micromark";
+import { X } from "lucide-react";
 import "./ContentManager.css";
 import {
   FileText,
@@ -78,6 +80,7 @@ export function ContentManager() {
   const [, force] = useState(0);
   const rootRef = useRef<HTMLDivElement>(null);
   const [narrow, setNarrow] = useState(false);
+  const [flyout, setFlyout] = useState<React.CSSProperties | null>(null);
 
   useEffect(() => {
     const el = rootRef.current;
@@ -86,6 +89,48 @@ export function ContentManager() {
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
+
+  // 窄(停靠侧栏)时: 预览不堆在列表下面, 而是横向飞出在面板旁边的空白处(哪边宽往哪边飞)。
+  const placeFlyout = useCallback(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const leftRoom = r.left;
+    const rightRoom = window.innerWidth - r.right;
+    const w = Math.min(540, Math.max(300, Math.max(leftRoom, rightRoom) - 14));
+    const onLeft = leftRoom >= rightRoom;
+    setFlyout({
+      position: "fixed",
+      top: Math.round(r.top),
+      height: Math.round(r.height),
+      width: w,
+      left: onLeft ? Math.max(8, Math.round(r.left - w - 6)) : Math.round(r.right + 6),
+    });
+  }, []);
+
+  const pick = useCallback(
+    (it: Item) => {
+      setSel(it);
+      if (narrow) placeFlyout();
+    },
+    [narrow, placeFlyout]
+  );
+
+  // 飞出时跟随窗口/面板变化重新定位; Esc 收起
+  useEffect(() => {
+    if (!narrow || !sel) return;
+    placeFlyout();
+    const onResize = () => placeFlyout();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setSel(null);
+    };
+    window.addEventListener("resize", onResize);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [narrow, sel, placeFlyout]);
 
   const load = useCallback(async (which: Tab) => {
     setLoading(true);
@@ -271,7 +316,7 @@ export function ContentManager() {
               const url = it.isImage ? thumbOf(it) : "";
               return (
                 <div key={it.key} className={"cm-row" + (sel?.key === it.key ? " sel" : "")}>
-                  <button className="cm-row-main" onClick={() => setSel(it)}>
+                  <button className="cm-row-main" onClick={() => pick(it)}>
                     <span className="cm-ico" data-k={k}>
                       {url ? <img src={url} alt="" /> : <Ico size={16} />}
                     </span>
@@ -296,8 +341,28 @@ export function ContentManager() {
               );
             })}
         </div>
-        <Preview item={sel} onChanged={() => load(tab)} onDelete={deleteItem} onRestore={restoreItem} />
+        {/* 宽(浮窗/拉宽): 预览就在面板右半 */}
+        {!narrow && (
+          <Preview item={sel} onChanged={() => load(tab)} onDelete={deleteItem} onRestore={restoreItem} />
+        )}
       </div>
+
+      {/* 窄(停靠侧栏): 选中后预览横向飞出在面板旁边(portal 到 body 避开 transform 影响定位) */}
+      {narrow &&
+        sel &&
+        flyout &&
+        createPortal(
+          <div className="cm-flyout" style={flyout}>
+            <Preview
+              item={sel}
+              onChanged={() => load(tab)}
+              onDelete={deleteItem}
+              onRestore={restoreItem}
+              onClose={() => setSel(null)}
+            />
+          </div>,
+          document.body
+        )}
     </div>
   );
 }
@@ -306,11 +371,13 @@ function Preview({
   item,
   onDelete,
   onRestore,
+  onClose,
 }: {
   item: Item | null;
   onChanged: () => void;
   onDelete: (it: Item) => void;
   onRestore: (it: Item) => void;
+  onClose?: () => void;
 }) {
   const [text, setText] = useState<string>("");
   const [html, setHtml] = useState<string>("");
@@ -410,6 +477,11 @@ function Preview({
         {(item.clipId || item.kind === "shot" || item.kind === "diag") && (
           <button className="cm-icobtn danger" onClick={() => onDelete(item)} data-tip="删除">
             <Trash2 size={15} />
+          </button>
+        )}
+        {onClose && (
+          <button className="cm-icobtn" onClick={onClose} data-tip="收起预览">
+            <X size={15} />
           </button>
         )}
       </div>
