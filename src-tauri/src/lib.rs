@@ -33,7 +33,7 @@ use std::io::Write;
 #[cfg(windows)]
 use std::sync::mpsc::channel;
 #[cfg(windows)]
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 #[derive(serde::Serialize)]
 struct CmdOut {
@@ -495,89 +495,52 @@ fn exclude_from_capture(window: &tauri::WebviewWindow) {
 // 连续弹提示时用代号防止"上一条的收起定时器把下一条提早收掉"。
 static TOAST_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// 永不激活: 给窗口加 WS_EX_NOACTIVATE + WS_EX_TOOLWINDOW —— 弹出/点击都不抢键盘焦点,
-/// 用户在别的程序里打字时弹个提示也不会打断输入。
-#[cfg(windows)]
-fn set_no_activate(win: &tauri::WebviewWindow) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-        WS_EX_TRANSPARENT,
-    };
-    if let Ok(h) = win.hwnd() {
-        unsafe {
-            let ex = GetWindowLongW(h.0 as isize, GWL_EXSTYLE);
-            // NOACTIVATE=不抢焦点; TOOLWINDOW=不进 Alt-Tab; TRANSPARENT=鼠标穿透(显示期间也不挡点击)。
-            SetWindowLongW(
-                h.0 as isize,
-                GWL_EXSTYLE,
-                ex | WS_EX_NOACTIVATE as i32 | WS_EX_TOOLWINDOW as i32 | WS_EX_TRANSPARENT as i32,
-            );
-        }
-    }
-}
-
-/// 不激活地显示(SW_SHOWNOACTIVATE) —— 普通 .show() 在 Windows 上可能把焦点抢过来。
-#[cfg(windows)]
-fn show_no_activate(win: &tauri::WebviewWindow) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNOACTIVATE};
-    if let Ok(h) = win.hwnd() {
-        unsafe {
-            ShowWindow(h.0 as isize, SW_SHOWNOACTIVATE);
-        }
-    } else {
-        let _ = win.show();
-    }
-}
-
-/// 收起小提示窗。用原生 ShowWindow(SW_HIDE) —— Tauri 的 hide() 从分离线程调用不生效(要主线程),
-/// 而 ShowWindow 是线程安全的(消息会投递到窗口自己的线程), 和 show_no_activate 对称。
-#[cfg(windows)]
-fn hide_no_activate(win: &tauri::WebviewWindow) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
-    if let Ok(h) = win.hwnd() {
-        unsafe {
-            ShowWindow(h.0 as isize, SW_HIDE);
-        }
-    } else {
-        let _ = win.hide();
-    }
-}
-
-/// 小提示窗: 底部居中弹一条文字约 1.8s 再悄悄收起, 不抢焦点、无声。诊断完成等场景用 —— 哪怕
-/// poof 主界面是藏着的也能看见(它是独立的小窗, 不依赖 main 可见)。
+/// 小提示窗: 底部居中弹一条文字约 1.8s 再收起, 不抢焦点、无声。诊断完成等场景用 —— 哪怕 poof
+/// 主界面藏着也能看见(独立小窗, 不依赖 main 可见)。所有窗口操作都回主线程做: Tauri 的 show()/emit
+/// 从后台线程调不生效(录制条能用就因为它在主线程)。show() 让 Tauri 认定可见 → emit 才送得到 webview。
 #[cfg(windows)]
 pub(crate) fn show_toast(app: &tauri::AppHandle, text: &str) {
     use std::sync::atomic::Ordering;
-    use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize};
-    let Some(win) = app.get_webview_window("toast") else {
-        return;
-    };
-    let (mx, my, mw, mh, scale) = if let Ok(Some(m)) = win.primary_monitor() {
-        let p = m.position();
-        let s = m.size();
-        (p.x, p.y, s.width as i32, s.height as i32, m.scale_factor())
-    } else {
-        (0, 0, 1920, 1080, 1.0)
-    };
-    let tw = (340.0 * scale) as i32;
-    let th = (52.0 * scale) as i32;
-    let tx = mx + (mw - tw) / 2;
-    let ty = my + mh - th - (110.0 * scale) as i32; // 离屏幕底边约 110px
-    let _ = win.set_size(PhysicalSize::new(tw.max(1) as u32, th.max(1) as u32));
-    let _ = win.set_position(PhysicalPosition::new(tx, ty));
-    set_no_activate(&win);
-    exclude_from_capture(&win); // 提示自身别被后续截图拍进去
-    let _ = win.emit("poof://toast", text.to_string());
-    show_no_activate(&win);
-    let _ = win.set_always_on_top(true);
     let gen = TOAST_GEN.fetch_add(1, Ordering::SeqCst) + 1;
-    let win2 = win.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(1850));
-        // 只有没有更新的提示顶上来时才收(连续弹出时, 由最后一条负责收起)。
-        if TOAST_GEN.load(Ordering::SeqCst) == gen {
-            hide_no_activate(&win2);
-        }
+    let app = app.clone();
+    let text = text.to_string();
+    let app_for_main = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        use tauri::{Manager, PhysicalPosition, PhysicalSize};
+        let Some(win) = app_for_main.get_webview_window("toast") else {
+            return;
+        };
+        let (mx, my, mw, mh, scale) = if let Ok(Some(m)) = win.primary_monitor() {
+            let p = m.position();
+            let s = m.size();
+            (p.x, p.y, s.width as i32, s.height as i32, m.scale_factor())
+        } else {
+            (0, 0, 1920, 1080, 1.0)
+        };
+        let tw = (340.0 * scale) as i32;
+        let th = (52.0 * scale) as i32;
+        let tx = mx + (mw - tw) / 2;
+        let ty = my + mh - th - (110.0 * scale) as i32; // 离屏幕底边约 110px
+        let _ = win.set_size(PhysicalSize::new(tw.max(1) as u32, th.max(1) as u32));
+        let _ = win.set_position(PhysicalPosition::new(tx, ty));
+        let _ = win.show();
+        let _ = win.set_always_on_top(true);
+        // 文字直接 eval 调 webview 里的 __showToast(事件系统送不到这个独立小窗, eval 最稳)。
+        let arg = serde_json::to_string(&text).unwrap_or_else(|_| "\"\"".into());
+        let _ = win.eval(&format!("window.__showToast && window.__showToast({arg})"));
+        // 自动收起
+        let app2 = app_for_main.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(1850));
+            if TOAST_GEN.load(Ordering::SeqCst) == gen {
+                let app3 = app2.clone();
+                let _ = app2.run_on_main_thread(move || {
+                    if let Some(w) = app3.get_webview_window("toast") {
+                        let _ = w.hide();
+                    }
+                });
+            }
+        });
     });
 }
 #[cfg(not(windows))]
@@ -864,6 +827,12 @@ pub fn run() {
                     if let Some(w) = app.get_webview_window(label) {
                         exclude_from_capture(&w);
                     }
+                }
+                // 小提示窗: 启动就 show 一次(让 Tauri 认定它"可见", 否则 emit 的事件送不到 webview),
+                // 但停在屏幕外 = 看不见。之后只靠"移进屏幕 / 移出屏幕"来显示和收起, 不再 show/hide ——
+                // 既不抢焦点, emit 也始终送得到。鼠标穿透一次设好。
+                if let Some(w) = app.get_webview_window("toast") {
+                    let _ = w.set_ignore_cursor_events(true); // 鼠标穿透, 一次设好
                 }
                 // replay: a close (titlebar X / Alt+F4) HIDES instead of destroying, so it stays
                 // re-summonable.
