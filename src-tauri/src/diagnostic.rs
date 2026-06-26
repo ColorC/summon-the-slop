@@ -146,8 +146,30 @@ pub fn capture_diag(app: &tauri::AppHandle, state_json: String) -> Result<DiagRe
     md.push_str(&format!("- 时间: {when}\n"));
     md.push_str(&format!("- 主屏: {mw}×{mh}\n"));
     md.push_str(&format!("- 可见窗口截图: {}\n", win_imgs.len()));
-    md.push_str("\n## 关键状态(前端)\n\n```json\n");
-    md.push_str(&state_json);
+    // 全量状态(含整页 DOM)单独落 state.json; 报告里内联"精简版"(把巨大的 dom 换成计数指针)便于人读。
+    let state_path = dir.join("state.json");
+    let _ = std::fs::write(&state_path, state_json.as_bytes());
+    let report_state = match serde_json::from_str::<serde_json::Value>(&state_json) {
+        Ok(mut v) => {
+            if let Some(obj) = v.as_object_mut() {
+                if let Some(dom) = obj.get("dom") {
+                    let cnt = dom.get("count").and_then(|c| c.as_u64()).unwrap_or(0);
+                    let trunc = dom.get("truncated").and_then(|c| c.as_bool()).unwrap_or(false);
+                    obj.insert(
+                        "dom".into(),
+                        serde_json::json!(format!(
+                            "<全量 DOM {cnt} 个元素{} → 见同目录 state.json>",
+                            if trunc { "(已截断)" } else { "" }
+                        )),
+                    );
+                }
+            }
+            serde_json::to_string_pretty(&v).unwrap_or_else(|_| state_json.clone())
+        }
+        Err(_) => state_json.clone(),
+    };
+    md.push_str("\n## 关键状态(前端) · 全量见 [state.json](state.json)\n\n```json\n");
+    md.push_str(&report_state);
     md.push_str("\n```\n\n## 窗口\n\n");
     for l in &win_lines {
         md.push_str(l);
@@ -211,7 +233,8 @@ fn request_frontend_state(app: &tauri::AppHandle) -> Option<String> {
             let _ = m.eval("window.__reportDiagState && window.__reportDiagState()");
         }
     });
-    for _ in 0..70 {
+    // 全量 DOM 抓取要点时间, 给到 ~3s; 前端真藏着/卡死才会走到超时退回。
+    for _ in 0..300 {
         std::thread::sleep(std::time::Duration::from_millis(10));
         if let Ok(g) = PENDING_DIAG_STATE.lock() {
             if let Some(s) = g.as_ref() {
@@ -219,7 +242,7 @@ fn request_frontend_state(app: &tauri::AppHandle) -> Option<String> {
             }
         }
     }
-    crate::log_line("[diag] 前端 700ms 没回传 → 退回纯 Rust 状态(前端藏着/卡了)");
+    crate::log_line("[diag] 前端 ~3s 没回传 → 退回纯 Rust 状态(前端藏着/卡了)");
     None
 }
 

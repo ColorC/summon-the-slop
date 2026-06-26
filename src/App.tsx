@@ -116,27 +116,46 @@ function gatherDiagState(): any {
       } catch {
         /* ignore */
       }
+      // 取块内容: 自己有文本就用自己的; 容器(note 等)自己没文本 → 收子块文本(选中一篇 note 时, 这样
+      // 才能看见它真正写了什么, 而不是空字符串)。
+      const blockContent = (m: any, depth = 0): string => {
+        if (!m || depth > 3) return "";
+        const own = (m.text?.toString?.() ?? "").trim();
+        if (own) return own.slice(0, 400);
+        const kids: any[] = m.children ?? [];
+        return kids
+          .map((c) => blockContent(c, depth + 1))
+          .filter(Boolean)
+          .join(" ⏎ ")
+          .slice(0, 400);
+      };
       const blockInfo = (id: string) => {
         try {
           const m = doc.getBlock?.(id)?.model ?? doc.getBlockById?.(id) ?? null;
-          return { flavour: m?.flavour, text: (m?.text?.toString?.() ?? "").slice(0, 300) };
+          return { flavour: m?.flavour, text: blockContent(m) };
         } catch {
           return {};
         }
       };
-      // 选区: 既覆盖文本/块选择, 也覆盖无限画布(edgeless)里选中的画布元素。
+      // 选区: 覆盖文本/块选择 + 无限画布选中的元素。跳过 edgeless 光标([gfx-cursor])这种噪声。
+      const noise = (id: any) => id == null || (typeof id === "string" && id.startsWith("["));
       const selectedBlocks: any[] = [];
       try {
         for (const s of (ed.std?.selection?.value ?? []) as any[]) {
           const type = s.type ?? s?.constructor?.type;
+          if (type === "cursor") continue;
           if (Array.isArray(s.elements) && s.elements.length) {
-            for (const id of s.elements) selectedBlocks.push({ type: type ?? "surface", blockId: id, ...blockInfo(id) });
+            for (const id of s.elements) {
+              if (noise(id)) continue;
+              selectedBlocks.push({ type: type ?? "surface", blockId: id, ...blockInfo(id) });
+            }
           } else {
             const blockId = s.blockId ?? s.from?.blockId ?? (Array.isArray(s.path) ? s.path[s.path.length - 1] : undefined);
+            if (noise(blockId)) continue;
             selectedBlocks.push({
               type,
               blockId,
-              ...(blockId ? blockInfo(blockId) : {}),
+              ...blockInfo(blockId),
               from: s.from ? { index: s.from.index, length: s.from.length } : undefined,
             });
           }
@@ -183,7 +202,59 @@ function gatherDiagState(): any {
   } catch {
     /* ignore */
   }
+  // 全量 DOM —— 整页所有元素(穿透 shadow)。最大头, 放最后。Rust 会把它单独落 state.json。
+  try {
+    out.dom = gatherDom();
+  } catch {
+    /* ignore */
+  }
   return out;
+}
+
+// 全量 DOM 快照: 把整页每个元素(穿透 shadow DOM)的 标签/id/class/位置尺寸/属性/直接文本/是否 0 尺寸
+// 都记下 —— "全量信息 = 所有网页元素"。这才能让界面上任何元素级的问题(错位/塌陷/多出来/样式坏)在数据里看得见。
+function gatherDom(): any {
+  let count = 0;
+  const MAX = 12000;
+  let truncated = false;
+  const node = (el: Element): any => {
+    count++;
+    const r = el.getBoundingClientRect();
+    const o: any = { tag: el.tagName.toLowerCase() };
+    if (el.id) o.id = el.id;
+    const cls = typeof el.className === "string" ? el.className.trim() : "";
+    if (cls) o.cls = cls.length > 140 ? cls.slice(0, 140) + "…" : cls;
+    o.box = [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)];
+    if (r.width === 0 || r.height === 0) o.zero = true; // 0 尺寸: 隐藏/塌陷, 可疑
+    const attrs: Record<string, string> = {};
+    for (const a of Array.from(el.attributes)) {
+      if (a.name === "id" || a.name === "class" || a.name === "style") continue;
+      attrs[a.name] = a.value.length > 80 ? a.value.slice(0, 80) + "…" : a.value;
+    }
+    if (Object.keys(attrs).length) o.attrs = attrs;
+    const dt = Array.from(el.childNodes)
+      .filter((n) => n.nodeType === 3 && (n.textContent || "").trim())
+      .map((n) => (n.textContent || "").trim())
+      .join(" ");
+    if (dt) o.text = dt.length > 200 ? dt.slice(0, 200) + "…" : dt;
+    const kids: any[] = [];
+    const sr = (el as HTMLElement).shadowRoot;
+    if (sr) {
+      o.shadowHost = true;
+      for (const c of Array.from(sr.children)) {
+        if (count >= MAX) { truncated = true; break; }
+        kids.push(node(c));
+      }
+    }
+    for (const c of Array.from(el.children)) {
+      if (count >= MAX) { truncated = true; break; }
+      kids.push(node(c));
+    }
+    if (kids.length) o.children = kids;
+    return o;
+  };
+  const tree = node(document.documentElement);
+  return { count, truncated, max: MAX, tree };
 }
 
 const PIN_KEY = "poof-panels-pinned";
