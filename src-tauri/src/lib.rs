@@ -250,9 +250,12 @@ mod hook {
     use windows_sys::Win32::System::Threading::{
         GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
     };
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+        GetAsyncKeyState, RegisterHotKey, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT,
+    };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CallNextHookEx, GetMessageW, SetWindowsHookExW, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL,
+        WM_HOTKEY,
     };
 
     /// What the hook asks the UI thread to do.
@@ -282,6 +285,10 @@ mod hook {
     const VK_A: u32 = 0x41;
     const VK_N: u32 = 0x4E;
     const VK_S: u32 = 0x53; // Ctrl+Alt+S → 诊断快照(避开 Windows 放大镜占用的 Ctrl+Alt+D)
+    // RegisterHotKey ids — delivered back as WM_HOTKEY.wParam in the message loop.
+    const HK_SNAP: i32 = 1;
+    const HK_NOTES: i32 = 2;
+    const HK_DIAG: i32 = 3;
 
     #[inline]
     fn is_ctrl(vk: u32) -> bool {
@@ -299,34 +306,11 @@ mod hook {
             let down = wparam == WM_KEYDOWN || wparam == WM_SYSKEYDOWN;
             let up = wparam == WM_KEYUP || wparam == WM_SYSKEYUP;
 
-            // Ctrl+Alt+A → 截图. Swallow the 'A' so it isn't typed.
-            if down && vk == VK_A && held(VK_CONTROL) && held(VK_MENU_STATE) {
-                if !SNAP_DOWN.swap(true, Ordering::SeqCst) {
-                    if let Some(tx) = TX.get() { let _ = tx.send(Sig::Snap); }
-                }
-                return 1;
-            }
-            if up && vk == VK_A { SNAP_DOWN.store(false, Ordering::SeqCst); }
-
-            // Ctrl+Alt+N → 全屏笔记. Swallow the 'N'.
-            if down && vk == VK_N && held(VK_CONTROL) && held(VK_MENU_STATE) {
-                if !NOTES_DOWN.swap(true, Ordering::SeqCst) {
-                    if let Some(tx) = TX.get() { let _ = tx.send(Sig::Notes); }
-                }
-                return 1;
-            }
-            if up && vk == VK_N { NOTES_DOWN.store(false, Ordering::SeqCst); }
-
-            // Ctrl+Alt+S → 全量诊断快照. Swallow the 'S'.
-            // ⚠ 钩子回调里绝不做文件 I/O/加锁等慢操作 —— 低级键盘钩子超时(LowLevelHooksTimeout)会被系统
-            // 直接跳过这次按键。只发个信号(channel send 不阻塞), 重活都在别的线程。
-            if down && vk == VK_S && held(VK_CONTROL) && held(VK_MENU_STATE) {
-                if !DIAG_DOWN.swap(true, Ordering::SeqCst) {
-                    if let Some(tx) = TX.get() { let _ = tx.send(Sig::Diag); }
-                }
-                return 1;
-            }
-            if up && vk == VK_S { DIAG_DOWN.store(false, Ordering::SeqCst); }
+            // Ctrl+Alt+A/N/S(截图/笔记/诊断)不再在这里处理 —— 改走 RegisterHotKey(见 install())。
+            // 低级钩子回调必须在 LowLevelHooksTimeout(~300ms)内返回, 否则系统直接跳过这次按键; poof 的
+            // webview 吃满 CPU 时回调被饿着 → "开着 poof 就按不出来"。RegisterHotKey 由系统投递成排队的
+            // WM_HOTKEY, 与焦点无关、不受这种饥饿影响。这个低级钩子只留给 Ctrl 连击(RegisterHotKey 表达不了)。
+            // A/N/S 仍会作为普通键经过下面, 正确地把本次 Ctrl 连击标记为 DIRTY。
 
             // clean Ctrl-tap detection (double/triple-tap Ctrl = 召出快捷菜单). A Ctrl press is only
             // a "tap" if no other key was pressed while it was held — so Ctrl+C, Ctrl+Alt+A etc. don't count.
@@ -355,12 +339,38 @@ mod hook {
             let hmod = GetModuleHandleW(core::ptr::null());
             let h = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), hmod, 0);
             if h == 0 {
-                log_line("ERROR SetWindowsHookExW failed (EDR may block low-level keyboard hook)");
-                return;
+                // 不 return —— 即便低级钩子被 EDR 拦掉, RegisterHotKey 仍能独立工作(Ctrl 连击会失效, 但
+                // Ctrl+Alt+A/N/S 照常)。低级钩子只服务 Ctrl 连击。
+                log_line("WARN SetWindowsHookExW failed (EDR?) — Ctrl 连击失效, 但 RegisterHotKey 仍生效");
             }
-            log_line("hook installed ok (2xCtrl 菜单 · 3xCtrl 菜单+悬浮窗 · Ctrl+Alt+A 截图 · Ctrl+Alt+N 笔记 · Ctrl+Alt+S 诊断快照)");
+            // Ctrl+Alt+A/N/S 走 RegisterHotKey: 系统把 WM_HOTKEY 排队投递到本线程, 与焦点无关、不受 webview
+            // 抢 CPU / LowLevelHooksTimeout 影响 —— 这正是 "开着 poof 也能按出来" 的关键。MOD_NOREPEAT 去重长按;
+            // 系统会吞掉这些组合键(不会被输入到焦点窗口), 所以无需低级钩子再 swallow。
+            let mods = MOD_CONTROL | MOD_ALT | MOD_NOREPEAT;
+            let snap_ok = RegisterHotKey(0, HK_SNAP, mods, VK_A) != 0;
+            let notes_ok = RegisterHotKey(0, HK_NOTES, mods, VK_N) != 0;
+            let diag_ok = RegisterHotKey(0, HK_DIAG, mods, VK_S) != 0;
+            log_line(&format!(
+                "hook installed (ll_hook={} · hotkey A={} N={} S={}) · 2xCtrl 菜单 · 3xCtrl 菜单+悬浮窗",
+                h != 0, snap_ok, notes_ok, diag_ok
+            ));
             let mut msg: MSG = std::mem::zeroed();
-            while GetMessageW(&mut msg, 0, 0, 0) != 0 {}
+            while GetMessageW(&mut msg, 0, 0, 0) != 0 {
+                // WM_HOTKEY 是线程消息(注册时 hwnd=0), 这里直接按 id 转成信号; 没有窗口过程要派发。
+                if msg.message == WM_HOTKEY {
+                    let sig = match msg.wParam as i32 {
+                        HK_SNAP => Some(Sig::Snap),
+                        HK_NOTES => Some(Sig::Notes),
+                        HK_DIAG => Some(Sig::Diag),
+                        _ => None,
+                    };
+                    if let Some(s) = sig {
+                        if let Some(tx) = TX.get() {
+                            let _ = tx.send(s);
+                        }
+                    }
+                }
+            }
         });
     }
 }
@@ -1007,6 +1017,7 @@ pub fn run() {
             focus_window,
             show_snap_record,
             diagnostic::diagnostic_snapshot,
+            diagnostic::report_diag_state,
             diagnostic::list_diagnostics,
             diagnostic::delete_diagnostic,
             clipclip::clip_list,

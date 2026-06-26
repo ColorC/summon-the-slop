@@ -104,6 +104,85 @@ function gatherDiagState(): any {
   } catch {
     /* ignore */
   }
+  // 当前交互态(全量诊断的核心): 打开了哪篇笔记、选中了哪个内容块、它的内容、这篇笔记的大纲。
+  try {
+    const ed: any = document.querySelector("affine-editor-container");
+    if (ed && ed.doc) {
+      const doc = ed.doc;
+      let title = "";
+      try {
+        const c = getCollection();
+        title = c.meta.docMetas.find((m: any) => m.id === doc.id)?.title || (doc.meta as any)?.title || "";
+      } catch {
+        /* ignore */
+      }
+      const blockInfo = (id: string) => {
+        try {
+          const m = doc.getBlock?.(id)?.model ?? doc.getBlockById?.(id) ?? null;
+          return { flavour: m?.flavour, text: (m?.text?.toString?.() ?? "").slice(0, 300) };
+        } catch {
+          return {};
+        }
+      };
+      // 选区: 既覆盖文本/块选择, 也覆盖无限画布(edgeless)里选中的画布元素。
+      const selectedBlocks: any[] = [];
+      try {
+        for (const s of (ed.std?.selection?.value ?? []) as any[]) {
+          const type = s.type ?? s?.constructor?.type;
+          if (Array.isArray(s.elements) && s.elements.length) {
+            for (const id of s.elements) selectedBlocks.push({ type: type ?? "surface", blockId: id, ...blockInfo(id) });
+          } else {
+            const blockId = s.blockId ?? s.from?.blockId ?? (Array.isArray(s.path) ? s.path[s.path.length - 1] : undefined);
+            selectedBlocks.push({
+              type,
+              blockId,
+              ...(blockId ? blockInfo(blockId) : {}),
+              from: s.from ? { index: s.from.index, length: s.from.length } : undefined,
+            });
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+      let outline: any[] = [];
+      try {
+        const blocks =
+          doc.getBlocksByFlavour?.([
+            "affine:paragraph",
+            "affine:list",
+            "affine:code",
+            "affine:image",
+            "affine:attachment",
+            "affine:bookmark",
+            "affine:embed-synced-doc",
+          ]) ?? [];
+        outline = blocks.slice(0, 20).map((b: any) => {
+          const m = b?.model ?? b;
+          return { id: m?.id, flavour: m?.flavour, text: (m?.text?.toString?.() ?? "").slice(0, 80) };
+        });
+      } catch {
+        /* ignore */
+      }
+      out.interaction = {
+        openNote: { id: doc.id, title, mode: ed.mode },
+        selectedCount: selectedBlocks.length,
+        selectedBlocks,
+        outline,
+      };
+    } else {
+      out.interaction = { openNote: null, note: "当前没有打开笔记编辑器" };
+    }
+  } catch {
+    /* ignore */
+  }
+  // 当前打开的面板(从 DockStage 标题栏读, 两条路径都能拿到)
+  try {
+    out.openPanels = Array.from(document.querySelectorAll(".dock-panel")).map(
+      (p) => (p.querySelector(".dock-title")?.textContent || "").trim()
+    ).filter(Boolean);
+  } catch {
+    /* ignore */
+  }
   return out;
 }
 
@@ -142,6 +221,19 @@ export default function App() {
       setDiagToast("诊断失败: " + String(e));
       setTimeout(() => setDiagToast(""), 6000);
     }
+  }, []);
+
+  // 热键诊断时 Rust 用 eval 直接调 main 里的 __reportDiagState(事件系统对这类回传不稳, eval 最稳),
+  // 它把和按钮路径一样的 gatherDiagState 回传给 Rust → 纯热键拍的快照也带全量信息(不再只有几个数字)。
+  useEffect(() => {
+    if (getCurrentWindow().label !== "main") return;
+    (window as any).__reportDiagState = () => {
+      try {
+        invoke("report_diag_state", { json: JSON.stringify(gatherDiagState(), null, 2) }).catch(() => {});
+      } catch {
+        /* ignore */
+      }
+    };
   }, []);
 
   // #7 笔记 ops 桥: 后台轮询文件命令(omni notes), 在活笔记 collection 上执行。常驻(笔记面板不开也能改)。

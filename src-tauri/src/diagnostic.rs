@@ -185,9 +185,49 @@ pub async fn diagnostic_snapshot(
     capture_diag(&app, state_json)
 }
 
-/// 热键(Ctrl+Alt+S)路径: 纯 Rust 跑, 不经前端 → poof 隐藏/卡死也能出快照。失败返回 None。
+// 前端回传的"全量状态"暂存槽。热键路径先问前端要一次, 拿到就并进报告。
+static PENDING_DIAG_STATE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// 前端应答 collect-diag-state 时, 把 gatherDiagState 的 JSON 回传到这里。
+#[tauri::command]
+pub fn report_diag_state(json: String) {
+    if let Ok(mut g) = PENDING_DIAG_STATE.lock() {
+        *g = Some(json);
+    }
+}
+
+/// 热键路径问前端要一次全量状态: 发 collect-diag-state, 等最多 ~700ms。拿到就用(打开的笔记/选区/JS堆…),
+/// 拿不到(前端真藏着/卡死)就返回 None → 退回纯 Rust 状态。等待在后台线程里, 不挡钩子/累加器。
+fn request_frontend_state(app: &tauri::AppHandle) -> Option<String> {
+    if let Ok(mut g) = PENDING_DIAG_STATE.lock() {
+        *g = None;
+    }
+    // 用 eval 直接调 main 里的 __reportDiagState(事件 emit 送不到这个 listen, 和小提示窗一个坑)。
+    // 回主线程做 —— 后台线程调 webview 方法不生效。
+    let app2 = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        use tauri::Manager;
+        if let Some(m) = app2.get_webview_window("main") {
+            let _ = m.eval("window.__reportDiagState && window.__reportDiagState()");
+        }
+    });
+    for _ in 0..70 {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        if let Ok(g) = PENDING_DIAG_STATE.lock() {
+            if let Some(s) = g.as_ref() {
+                return Some(s.clone());
+            }
+        }
+    }
+    crate::log_line("[diag] 前端 700ms 没回传 → 退回纯 Rust 状态(前端藏着/卡了)");
+    None
+}
+
+/// 热键(Ctrl+Alt+S)路径: 先问前端要全量状态(打开的笔记/选中的块等), 拿不到再退回纯 Rust。
+/// 这样热键拍的快照也是"全量信息", 而不只是几个磁盘数出来的数字。poof 真藏着/卡死时仍能出快照。
 pub fn do_diagnostic(app: &tauri::AppHandle) -> Option<DiagResult> {
-    match capture_diag(app, String::new()) {
+    let state = request_frontend_state(app).unwrap_or_default();
+    match capture_diag(app, state) {
         Ok(r) => Some(r),
         Err(e) => {
             crate::log_line(&format!("diagnostic_snapshot 失败: {e}"));
