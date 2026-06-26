@@ -247,6 +247,9 @@ mod hook {
     use std::sync::mpsc::Sender;
     use std::sync::OnceLock;
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
+    };
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         CallNextHookEx, GetMessageW, SetWindowsHookExW, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL,
@@ -315,6 +318,8 @@ mod hook {
             if up && vk == VK_N { NOTES_DOWN.store(false, Ordering::SeqCst); }
 
             // Ctrl+Alt+S → 全量诊断快照. Swallow the 'S'.
+            // ⚠ 钩子回调里绝不做文件 I/O/加锁等慢操作 —— 低级键盘钩子超时(LowLevelHooksTimeout)会被系统
+            // 直接跳过这次按键。只发个信号(channel send 不阻塞), 重活都在别的线程。
             if down && vk == VK_S && held(VK_CONTROL) && held(VK_MENU_STATE) {
                 if !DIAG_DOWN.swap(true, Ordering::SeqCst) {
                     if let Some(tx) = TX.get() { let _ = tx.send(Sig::Diag); }
@@ -343,6 +348,10 @@ mod hook {
 
     pub fn install() {
         std::thread::spawn(|| unsafe {
+            // 钩子线程拉到最高优先级: poof 悬浮层开着时 webview(BlockSuite 等)可能吃满 CPU, 把这个
+            // 同进程的钩子线程饿着 → 回调超过 LowLevelHooksTimeout 被系统跳过 = "开着就没反应"。
+            // 这个线程只做 GetMessage + 极快的回调, 高优先级很安全。
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
             let hmod = GetModuleHandleW(core::ptr::null());
             let h = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), hmod, 0);
             if h == 0 {
@@ -622,19 +631,28 @@ fn open_notes(app: &tauri::AppHandle) {
     }
 }
 
-// 截图把 main 降级了 → 关 snap 时恢复它置顶(main 全程不隐藏, poof 一直在、也被抓进画面)。
+// 截图收起了 main → 关 snap 时放回来(poof 已抓进冻结帧, 收起只为让 snap 稳定成为唯一覆盖层)。
 #[cfg(windows)]
-static RESTORE_TOPMOST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static RESTORE_MAIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(windows)]
 fn summon_snap(app: &tauri::AppHandle, record: bool) {
-    // 截图: 不收起 main —— snap.ts 用 capture_screen(GDI, 异步命令跑在 Tauri 运行时, 不卡主线程)抓屏幕
-    // 合成像素时, 可见的 main(poof 自己)照常被抓进画面(用户要的"含自己")。但把 main 降为【非置顶】, 让
-    // 置顶的 snap 稳定盖在它上面 —— 否则两个置顶窗 z 序不定 = "点按钮 poof 关掉 / 按快捷键没反应(snap 压
-    // 在 main 后)"。main 全程可见、不隐藏。关 snap 时恢复 main 置顶(poof 回到最前)。
-    // 录制(record=true): 收起 main, 录干净桌面。
-    use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize};
+    // 「先抓帧、后显示覆盖层」: GDI 抓帧放后台线程(主线程抓 GDI 要 ~200ms 会卡; GDI 在裸线程是线程安全的,
+    // --test-snap-pipeline 实测不崩不死锁)。抓帧此刻 main 仍可见 → poof 自己被抓进画面(用户要的"含自己")。
+    // 抓完回主线程 present: 收起 main(它已进冻结帧)→ snap 成为【唯一】覆盖层 → 必可见。这修掉了
+    // "开着 poof 时按快捷键 snap 被压在 main 之后 = 没反应"(降级 main 不够, z 序不稳; 收起才彻底)。
     log_line(&format!("[snap] summon_snap enter record={record}"));
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let _ = crate::snap_cmd::prime_capture(); // GDI 抓帧(off-main, main 可见 → 含 poof)
+        let app2 = app.clone();
+        let _ = app.run_on_main_thread(move || present_snap_overlay(&app2, record));
+    });
+}
+
+#[cfg(windows)]
+fn present_snap_overlay(app: &tauri::AppHandle, record: bool) {
+    use tauri::{Emitter, Manager, PhysicalPosition, PhysicalSize};
     let Some(snap) = app.get_webview_window("snap") else {
         log_line("[snap] NO 'snap' window — abort");
         return;
@@ -645,19 +663,20 @@ fn summon_snap(app: &tauri::AppHandle, record: bool) {
         let _ = snap.set_position(PhysicalPosition::new(p.x, p.y));
         let _ = snap.set_size(PhysicalSize::new(s.width, s.height));
     }
+    // 收起 main(截图与录制都收): snap 成唯一覆盖层 = 必可见。截图关闭时恢复 main; 录制不恢复。
     if let Some(main) = app.get_webview_window("main") {
-        if record {
+        if main.is_visible().unwrap_or(false) {
+            if !record {
+                RESTORE_MAIN.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
             let _ = main.hide();
-        } else if main.is_visible().unwrap_or(false) {
-            let _ = main.set_always_on_top(false); // 降级(不隐藏): snap 盖上去, main 仍被抓进画面
-            RESTORE_TOPMOST.store(true, std::sync::atomic::Ordering::SeqCst);
         }
     }
     let r = snap.show();
     let _ = snap.set_always_on_top(true);
     let _ = snap.set_focus();
     let _ = snap.emit("snap-summon", record);
-    log_line(&format!("[snap] snap.show()={:?}, emitted snap-summon", r.is_ok()));
+    log_line(&format!("[snap] present: snap.show()={:?}, emitted snap-summon", r.is_ok()));
 }
 #[cfg(windows)]
 #[tauri::command]
@@ -689,9 +708,10 @@ fn present_snap(window: tauri::WebviewWindow) -> Result<(), String> {
 fn close_snap(app: tauri::AppHandle, window: tauri::WebviewWindow) -> Result<(), String> {
     use tauri::Manager;
     let _ = window.hide();
-    // 截图把 main 降过级 → 恢复置顶(poof 回到最前)。main 没被隐藏过, 不用 show。
-    if RESTORE_TOPMOST.swap(false, std::sync::atomic::Ordering::SeqCst) {
+    // 截图收起过 main → 放回来(poof 回到原样)。录制不恢复(录制中桌面保持干净)。
+    if RESTORE_MAIN.swap(false, std::sync::atomic::Ordering::SeqCst) {
         if let Some(main) = app.get_webview_window("main") {
+            let _ = main.show();
             let _ = main.set_always_on_top(true);
             let _ = main.set_focus();
         }
@@ -787,10 +807,18 @@ pub fn run() {
         log_line(&format!("[PANIC] {info}\n{bt}"));
         prev_hook(info);
     }));
-    tauri::Builder::default()
-        // single-instance MUST be first: a second launch never starts a 2nd poof — it
-        // just summons the existing one. Enforces the "never two poofs" rule at the process level.
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+    // single-instance enforces "never two poofs" — but ONLY in release. Under `tauri dev` the watcher
+    // rebuilds and relaunches poof on every code change; with single-instance active, the freshly-built
+    // instance sees the still-dying old instance's lock, defers to it, and exits — the watcher reads that
+    // as "app exited" and tears the whole dev session down (no more auto-rebuild). Gating it to release
+    // lets the dev relaunch always win; the daily summon is the global hotkey, not a 2nd exe launch, so
+    // debug loses nothing. (Companion to the GUI-subsystem fix in main.rs: together they stop the dev
+    // session dying — no console window to close, and no lock to defeat the relaunch.)
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default();
+    #[cfg(not(debug_assertions))]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             use tauri::Manager;
             if let Some(w) = app.get_webview_window("main") {
                 #[cfg(windows)]
@@ -799,7 +827,9 @@ pub fn run() {
                 let _ = w.set_focus();
                 let _ = tauri::Emitter::emit(app, "summon", ());
             }
-        }))
+        }));
+    }
+    builder
         .plugin(tauri_plugin_opener::init())
         .manage(pty::PtyState::default())
         .manage(record_cmd::RecState::default())
@@ -860,6 +890,7 @@ pub fn run() {
                             Ok(hook::Sig::Diag) => {
                                 // 纯 Rust 截图写报告(后台线程, 不依赖前端 → poof 隐藏/卡死也能出快照)。
                                 // 完成后由 capture_diag 自己弹小提示窗(不抢焦点、无声)。
+                                log_line("[acc] Sig::Diag received → do_diagnostic");
                                 let h = handle.clone();
                                 std::thread::spawn(move || {
                                     let _ = diagnostic::do_diagnostic(&h);
