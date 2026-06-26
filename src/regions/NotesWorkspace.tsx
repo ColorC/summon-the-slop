@@ -444,6 +444,46 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
         })
       );
       hookCleanups.push(mountNoteExpandButton(() => setMode("page")));
+      // 让画布上的 note 自动贴合内容: 去掉"折叠/固定高"(edgeless.collapse), BlockSuite 便按内容自适应高度
+      // → 选中框 = note 框 = 内容, 不再出现"选中框比内容大/小"。内容变化后防抖再跑一次。
+      hookCleanups.push(
+        (() => {
+          const fit = () => {
+            try {
+              for (const b of doc.getBlocksByFlavour?.(["affine:note"]) ?? []) {
+                const m: any = (b as any)?.model ?? b;
+                if (m?.edgeless?.collapse) {
+                  doc.updateBlock(m, { edgeless: { ...m.edgeless, collapse: false } });
+                }
+              }
+            } catch {
+              /* ignore */
+            }
+          };
+          fit();
+          const t1 = window.setTimeout(fit, 600);
+          let t2 = 0;
+          let off = () => {};
+          try {
+            const d = doc.slots?.blockUpdated?.on?.(() => {
+              clearTimeout(t2);
+              t2 = window.setTimeout(fit, 400);
+            });
+            if (d?.dispose) off = () => d.dispose();
+          } catch {
+            /* ignore */
+          }
+          return () => {
+            clearTimeout(t1);
+            clearTimeout(t2);
+            try {
+              off();
+            } catch {
+              /* ignore */
+            }
+          };
+        })()
+      );
     };
 
     // 轮询: doc 加载出 page 根就补 surface(若缺)再挂; 等够(~1.5s)仍无 page = 空/坏文档 → reseed 成有效空笔记再挂。
