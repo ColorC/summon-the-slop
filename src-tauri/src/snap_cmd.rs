@@ -322,6 +322,76 @@ pub fn save_markdown(md: String, png_path: String) -> Result<String, String> {
     Ok(s.strip_prefix(r"\\?\").map(|x| x.to_string()).unwrap_or(s))
 }
 
+/// 统一捕获 · 目标探针结果。给 dashboard 的捕获解析器提供:
+/// - content_origin: 光标下浏览器/webview 内容区(Document)左上角的物理像素坐标(坐标换算原点)。
+/// - win_title: 顶层窗口标题(供按标题匹配 omni 表面信标)。
+/// - url: 预留(暂空, 走标题匹配)。
+#[derive(serde::Serialize)]
+pub struct CaptureProbe {
+    pub content_origin: Option<[i32; 2]>,
+    pub win_title: String,
+    pub url: String,
+}
+
+/// 探测屏幕点 (x,y) 下面是什么(跳过 poof 自己的覆盖层)。给统一捕获解析器用:
+/// 用 UIA 树遍历(不 hit-test, 因截图覆盖层在最上)找包含该点的 Document 元素 → 其左上角即内容区原点;
+/// 找包含该点的最大 Window 元素 → 其名字即窗口标题。见 plan UNIVERSAL-CAPTURE 第二层坐标映射。
+#[tauri::command]
+pub async fn capture_probe(app: tauri::AppHandle, x: i32, y: i32) -> CaptureProbe {
+    #[cfg(windows)]
+    {
+        use tauri::Manager;
+        let mut skip: Vec<isize> = Vec::new();
+        for (label, w) in app.webview_windows() {
+            if label == "snap" || label == "recbar" {
+                if let Ok(h) = w.hwnd() {
+                    skip.push(h.0 as isize);
+                }
+            }
+        }
+        tauri::async_runtime::spawn_blocking(move || {
+            let els = crate::uia::elements_excluding(&skip, 6000, 800);
+            let contains = |e: &crate::uia::ElementInfo| {
+                let [l, t, r, b] = e.rect;
+                x >= l && x < r && y >= t && y < b && r > l && b > t
+            };
+            // 内容区原点: 包含该点、control_type 含 "Document" 的元素中取最小面积(真正的文档)。
+            let mut doc: Option<(i64, [i32; 4])> = None;
+            // 窗口标题: 包含该点、control_type 含 "Window" 的元素中取最大面积(顶层窗口)。
+            let mut win: Option<(i64, String)> = None;
+            for e in els.iter() {
+                if !contains(e) {
+                    continue;
+                }
+                let [l, t, r, b] = e.rect;
+                let area = (r - l) as i64 * (b - t) as i64;
+                if e.control_type.contains("Document") {
+                    if doc.map(|(a, _)| area < a).unwrap_or(true) {
+                        doc = Some((area, e.rect));
+                    }
+                }
+                if e.control_type.contains("Window") && !e.name.is_empty() {
+                    if win.map(|(a, _)| area > a).unwrap_or(true) {
+                        win = Some((area, e.name.clone()));
+                    }
+                }
+            }
+            CaptureProbe {
+                content_origin: doc.map(|(_, rc)| [rc[0], rc[1]]),
+                win_title: win.map(|(_, n)| n).unwrap_or_default(),
+                url: String::new(),
+            }
+        })
+        .await
+        .unwrap_or(CaptureProbe { content_origin: None, win_title: String::new(), url: String::new() })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, x, y);
+        CaptureProbe { content_origin: None, win_title: String::new(), url: String::new() }
+    }
+}
+
 /// "这个标注指向哪个 UI 元素" 的解析结果。
 #[derive(serde::Serialize)]
 pub struct PointAt {

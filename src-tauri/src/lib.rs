@@ -1135,6 +1135,7 @@ pub fn run() {
             snap_cmd::ocr_region,
             snap_cmd::save_markdown,
             snap_cmd::resolve_points_at,
+            snap_cmd::capture_probe,
             show_replay,
             record_cmd::record_start,
             record_cmd::record_event,

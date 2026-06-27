@@ -49,8 +49,10 @@
       <button data-act="save" title="保存 (Ctrl+S)">保存</button>
       <button data-act="copy" title="复制纯图片 (Ctrl+Shift+C)">复制图</button>
       <button data-act="md" title="复制为 Markdown：截图元信息 + 每个标注（箭头/框/文字）的结构化坐标 + 图片路径，喂给 AI 读 (Enter / 双击 / Ctrl+C)">复制 MD</button>
+      <span class="tsep"></span>
+      <button data-act="omni" title="评论并发送到 omni：自动识别这一块压在哪个审阅材料/计划/笔记/项目/任务上，把评论(可带三态)挂上去 (Ctrl+Enter)">→omni</button>
     </div>
-    <div id="hint" class="hint hidden">拖拽框选　·　Enter/双击 复制 MD（结构化标注喂 AI）　·　Ctrl+Shift+C 复制图　·　F3 贴图　·　Ctrl+S 保存　·　Esc 取消</div>
+    <div id="hint" class="hint hidden">拖拽框选　·　Enter/双击 复制 MD　·　Ctrl+Enter 评论→omni　·　Ctrl+Shift+C 复制图　·　F3 贴图　·　Ctrl+S 保存　·　Esc 取消</div>
     <script type="module" src="/src/snap/snap.ts"></script>
   </body>
 </html>

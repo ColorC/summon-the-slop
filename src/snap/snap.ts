@@ -7,6 +7,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Annotator, Tool, type Shape, type Pt } from "./anno";
+import { sendCaptureToOmni, promptCaptureMeta } from "./omniSend";
 
 interface Capture { width: number; height: number; x: number; y: number; scale: number; }
 interface Rect { l: number; t: number; r: number; b: number; }
@@ -475,6 +476,19 @@ async function doAction(act: string) {
     } else if (act === "ocr") {
       const text = await invoke<string>("ocr_region", { pngBase64: png });
       showPanel("OCR 结果", `<div class="pv" style="white-space:pre-wrap">${esc(text) || "(无文字)"}</div>`);
+    } else if (act === "omni") {
+      // 评论 → omni: 采集评论/三态, 让 dashboard 按屏幕位置识别这一块属于哪个实体并挂札记。
+      const meta = await promptCaptureMeta();
+      if (!meta) return; // 取消
+      await invoke("save_image", { pngBase64: png }); // 同时留一份本地历史
+      try {
+        const res = await sendCaptureToOmni({ pngBase64: png, rect: [pl, pt, pr, pb], comment: meta.comment, verdict: meta.verdict, modality: "still" });
+        const where = res.omni_uri ? `已指向 ${esc(res.omni_uri)}` : "未识别到 omni 实体（已作为截图留底）";
+        showPanel("已发送到 omni", `<div class="pv">${where}${res.note_id ? `<br>札记 ${esc(res.note_id)}` : ""}</div>`);
+        setTimeout(() => closeSnap(), 1300);
+      } catch (e) {
+        showPanel("发送失败", `<div class="pv">${esc(String(e))}<br>(dashboard 没在跑? 默认 127.0.0.1:8210)</div>`);
+      }
     }
   } catch (err) {
     showPanel("提示", `<div class="pv">${esc(String(err))}</div>`);
@@ -485,6 +499,10 @@ async function doAction(act: string) {
 // recorder captures the LIVE desktop (a short delay lets the hidden overlay clear before frame 0).
 async function startRegionRecord(pl: number, pt: number, pr: number, pb: number, hwnd: number) {
   if (!cap) return;
+  // 统一捕获: 录屏也是一种 modality。在开录瞬间把这一块解析到 omni 实体并挂一条 video 捕获,
+  // 让"录制了哪个 material/计划/笔记/项目/任务"有据可查(目标按开录瞬间锚定, 见 plan 开放问题)。
+  // 非阻塞: dashboard 没跑也不影响录制。
+  sendCaptureToOmni({ pngBase64: "", rect: [pl, pt, pr, pb], comment: "[录屏] 开始录制此区域", modality: "video" }).catch(() => {});
   // brief confirmation in the snap panel (no extra window) before closing + recording
   showPanel("● 开始录屏", `<div class="pv">${hwnd ? "正在录制选中的<b>窗口</b>(它移动也会跟着录)" : "正在录制选中<b>区域</b>"}。<br>到录制条点 <b>■ 停止</b>,或按 <b>Ctrl + Alt + R</b> 结束。</div>`);
   await new Promise((r) => setTimeout(r, 950));
@@ -580,6 +598,7 @@ window.addEventListener("keydown", (e) => {
   if (mode === "selected") {
     // 回车 / 双击 / Ctrl+C = 复制为 Markdown(结构化标注+路径, 喂 AI); Ctrl+Shift+C = 复制纯图片
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && (k === "c" || k === "C")) { e.preventDefault(); doAction("copy"); return; }
+    if ((e.ctrlKey || e.metaKey) && k === "Enter") { e.preventDefault(); doAction("omni"); return; }
     if (k === "Enter") { e.preventDefault(); doAction("md"); return; }
     if ((e.ctrlKey || e.metaKey) && (k === "c" || k === "C")) { e.preventDefault(); doAction("md"); return; }
     if ((e.ctrlKey || e.metaKey) && (k === "s" || k === "S")) { e.preventDefault(); doAction("save"); return; }
