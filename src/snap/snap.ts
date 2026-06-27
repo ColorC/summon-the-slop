@@ -48,7 +48,6 @@ const cssToPhys = (rc: Rect): [number, number, number, number] =>
 const physToCssRect = (w: WinInfo): Rect =>
   ({ l: (w.l - cap!.x) / dpr, t: (w.t - cap!.y) / dpr, r: (w.r - cap!.x) / dpr, b: (w.b - cap!.y) / dpr });
 
-const nextFrame = () => new Promise<void>((res) => requestAnimationFrame(() => requestAnimationFrame(() => res())));
 const esc = (s: string) => (s || "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]!));
 const clampX = (x: number) => Math.max(0, Math.min(x, window.innerWidth));
 const clampY = (y: number) => Math.max(0, Math.min(y, window.innerHeight));
@@ -70,8 +69,8 @@ function clearForCapture() {
 async function doCapture() {
   try {
     clearForCapture();
-    await nextFrame(); // let the transparent frame composite before grabbing the clean desktop
-    const raw = await invoke<ArrayBuffer>("capture_screen");
+    // 帧已由 summon_snap 在显示 snap、收起 main 之前抓好(含 poof 自己); take_capture 取它。
+    const raw = await invoke<ArrayBuffer>("take_capture");
     const dv = new DataView(raw);
     const w = dv.getInt32(0, true), h = dv.getInt32(4, true);
     cap = { width: w, height: h, x: dv.getInt32(8, true), y: dv.getInt32(12, true), scale: dv.getFloat32(16, true) };

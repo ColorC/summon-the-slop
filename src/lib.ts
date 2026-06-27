@@ -28,6 +28,14 @@ export const search = (query: string, limit = 30) =>
   invoke<SearchHit[]>("search", { query, limit });
 export const openPath = (path: string) => invoke<void>("open_path", { path });
 
+/** 取某路径的真实 Windows 图标(data:image/png;base64,...); 取不到 → null。Rust 侧已按 path 缓存。 */
+export const fileIcon = (path: string) => invoke<string | null>("file_icon", { path });
+
+/** 全量重建索引(UAC → 提权子进程走 MFT 秒级全量)。force=true 手动无条件; false 自动(据状态决定是否弹UAC)。
+ *  完成后后端 emit "reindex-done":[条数, 是否走MFT]。返回 "fired" / "settled:..." / 报错。 */
+export const requestFullReindex = (force: boolean) =>
+  invoke<string>("request_full_reindex", { force });
+
 export const revealPath = (path: string) => invoke<void>("reveal_path", { path });
 /** 聚焦匹配 query(项目名/cwd basename)的已开窗口(如 vscode), 并隐藏 poof。返回是否命中。 */
 export const focusWindow = (query: string) => invoke<boolean>("focus_window", { query });

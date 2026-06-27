@@ -10,6 +10,7 @@ mod notesstore; // 笔记落盘存储: docs/<id>.ydoc + blobs/<sha>(搬出 WebVi
 mod notebridge; // 笔记 ops 桥(CLI ⇄ 活笔记 collection 的文件命令队列)
 mod record_cmd; // AI 会话录像 (P1)
 mod search;
+mod icon; // 取文件/应用的真实 Windows 图标 → PNG(base64), 供搜索结果用本体图标替换占位线框图
 mod tags; // 自定义文件标签(path→tags, 落 %LOCALAPPDATA%, 进搜索打分 + #tag 过滤)
 mod fileid; // NTFS FileId 冗余救援键(文件移到监视目录外时, 标签靠它自愈)
 #[cfg(windows)]
@@ -237,6 +238,114 @@ fn focus_window(app: tauri::AppHandle, query: String) -> bool {
     {
         let _ = (app, query);
         false
+    }
+}
+
+// 提权重建的"情况记录": %LOCALAPPDATA%\poof\mft_state.txt 存一个词 —— ok(MFT 成功) / blocked(提权了但
+// EDR 仍拦卷) / declined:N(UAC 被取消 N 次) / 空=没试过。自动触发据此决定要不要再弹 UAC, 避免反复打扰。
+#[cfg(windows)]
+fn mft_state_file() -> std::path::PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("poof")
+        .join("mft_state.txt")
+}
+#[cfg(windows)]
+fn mft_state_read() -> String {
+    std::fs::read_to_string(mft_state_file())
+        .unwrap_or_default()
+        .trim()
+        .to_string()
+}
+#[cfg(windows)]
+fn mft_state_write(s: &str) {
+    let p = mft_state_file();
+    if let Some(d) = p.parent() {
+        let _ = std::fs::create_dir_all(d);
+    }
+    let _ = std::fs::write(p, s);
+}
+
+/// 全量重建索引(提权走 MFT 秒级)。force=true: 手动按钮, 无条件弹 UAC。force=false: 自动触发, 据
+/// mft_state 决定 —— 已 ok/blocked 不再弹; 取消累计 ≥3 次也停。结果记进 mft_state + emit "reindex-done"。
+/// poof 本体保持非提权(配合 tauri dev + EDR), 只把"读卷"隔离到提权子进程 —— Everything 的服务模型。
+#[tauri::command]
+fn request_full_reindex(app: tauri::AppHandle, force: bool) -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+        use windows_sys::Win32::UI::Shell::{
+            ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
+        };
+        use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
+
+        let state = mft_state_read();
+        if !force {
+            // 自动触发: 已定论(成功/被EDR拦)就别再弹; 取消太多次也停。
+            if state == "ok" || state == "blocked" {
+                return Ok(format!("settled:{state}"));
+            }
+            if let Some(n) = state.strip_prefix("declined:") {
+                if n.trim().parse::<u32>().unwrap_or(0) >= 3 {
+                    return Ok("settled:declined".into());
+                }
+            }
+        }
+
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let verb: Vec<u16> = std::ffi::OsStr::new("runas")
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let file: Vec<u16> = exe
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let params: Vec<u16> = std::ffi::OsStr::new("--reindex")
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let mut sei: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
+        sei.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
+        sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+        sei.lpVerb = verb.as_ptr();
+        sei.lpFile = file.as_ptr();
+        sei.lpParameters = params.as_ptr();
+        sei.nShow = SW_HIDE;
+        let ok = unsafe { ShellExecuteExW(&mut sei) };
+        if ok == 0 || sei.hProcess == 0 {
+            // UAC 被取消 → 记一次 declined。
+            let prev = state
+                .strip_prefix("declined:")
+                .and_then(|x| x.trim().parse::<u32>().ok())
+                .unwrap_or(0);
+            mft_state_write(&format!("declined:{}", prev + 1));
+            return Err("提权被取消(下次搜索会再问; 成功一次或取消 3 次后不再问)".into());
+        }
+        let hproc = sei.hProcess;
+        std::thread::spawn(move || {
+            unsafe {
+                WaitForSingleObject(hproc, 600_000);
+                CloseHandle(hproc);
+            }
+            let n = crate::search::reload_persisted().unwrap_or(0);
+            // 读重建日志, 看是否真走了 MFT(管理员) —— 公司 EDR 可能连管理员都拦卷。
+            let log = std::fs::read_to_string(std::env::temp_dir().join("poof-reindex.log"))
+                .unwrap_or_default();
+            let mft = log.contains("MFT(管理员)");
+            mft_state_write(if mft { "ok" } else { "blocked" });
+            let _ = tauri::Emitter::emit(&app, "reindex-done", (n as u64, mft));
+        });
+        Ok("fired".into())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, force);
+        Err("windows only".into())
     }
 }
 
@@ -808,6 +917,28 @@ pub fn run() {
         search::bench_search();
         std::process::exit(0);
     }
+    // 全量重建索引(管理员运行则走 MFT 秒级全量): poof.exe --reindex → 建+持久化+退出。
+    if std::env::args().any(|a| a == "--reindex") {
+        search::reindex_cli();
+        std::process::exit(0);
+    }
+    // 命令行搜索探针: poof.exe --search "<query>" → 载入索引跑真 search, 打印 top-20 后退出
+    // (放在单实例/Builder 之前, 不被单实例拦; 与 --bench-search 同级)。
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if let Some(i) = args.iter().position(|a| a == "--search") {
+            let query = args.get(i + 1).cloned().unwrap_or_default();
+            search::run_search_cli(&query);
+            std::process::exit(0);
+        }
+    }
+    // 图标自检: poof.exe --test-icon <path> → 抽该路径真实图标, 报字节数 + 存 %TEMP%\poof-icon-test.png。
+    #[cfg(windows)]
+    if std::env::args().any(|a| a == "--test-icon") {
+        let path = std::env::args().nth(2).unwrap_or_default();
+        icon::test_icon(&path);
+        std::process::exit(0);
+    }
     // 全套日志: 把 panic(含位置 + 回溯)落进同一条时间线 —— 后台线程(OCR/轮询/键盘钩子)
     // 的 panic 平时会被 unwind 静默吞掉, 这里强制记下来。原生崩溃(访问越界)抓不到, 但配合
     // JS 侧 log_js + tauri dev 的 poof-dev.log, 三路日志足以定位绝大多数崩溃。
@@ -966,6 +1097,8 @@ pub fn run() {
             notesstore::notes_version_del_all,
             search::search,
             search::search_reindex,
+            request_full_reindex,
+            icon::file_icon,
             search::open_path,
             search::reveal_path,
             search::set_override,

@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import {
   Folder,
@@ -19,10 +20,13 @@ import {
   Tag as TagIcon,
   SlidersHorizontal,
   Clock,
+  RefreshCw,
 } from "lucide-react";
 import {
   search,
   openPath,
+  fileIcon,
+  requestFullReindex,
   revealPath,
   copyText,
   runShell,
@@ -64,9 +68,52 @@ function KindIcon({ kind }: { kind: string }) {
   return <FileText size={16} />;
 }
 
-// 紧贴光标弹出的浮层(右键菜单/标签面板)。按"实测尺寸"翻转: 放不下时围绕光标向上/向左展开,
-// 而不是钉到视口边缘(旧 clampPos 用写死高度 470 + 钉底, 在浮层窗口里几乎每次都把菜单甩到远处)。
-// 测量前先 hidden, useLayoutEffect 在绘制前定位完, 无闪烁。
+// 真实 Windows 图标缓存(path → data URL, 或 null = 取过但没有)。跨渲染/查询复用, 不重复 IPC。
+const iconCache = new Map<string, string | null>();
+
+// 取消"40 条显示上限": 后端取 FETCH 条排好序候选, 前端只画 shown 条, 滚到底再 +PAGE(VS Code Quick Open /
+// Everything 式窗口化)。每行图标仍懒取 + 按 path 缓存, 不会一次发几百个 IPC。
+const PAGE = 60;
+const FETCH = 300;
+
+// 优先显示文件/应用本体图标(Chrome 显示 Chrome 图标, .xlsx 显示 Excel 图标…); 取不到时退回线框占位图。
+// 懒取一次按 path 缓存(Rust 侧也缓存), 故同一项不会反复调用。
+function HitIcon({ hit }: { hit: SearchHit }) {
+  const [src, setSrc] = useState<string | null | undefined>(() =>
+    iconCache.get(hit.path)
+  );
+  useEffect(() => {
+    if (iconCache.has(hit.path)) {
+      setSrc(iconCache.get(hit.path));
+      return;
+    }
+    let alive = true;
+    fileIcon(hit.path)
+      .then((url) => {
+        iconCache.set(hit.path, url ?? null);
+        if (alive) setSrc(url ?? null);
+      })
+      .catch(() => {
+        iconCache.set(hit.path, null);
+        if (alive) setSrc(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [hit.path]);
+  if (src) {
+    return (
+      <img className="sr-ico" src={src} alt="" width={18} height={18} draggable={false} />
+    );
+  }
+  return <KindIcon kind={hit.kind} />;
+}
+
+// 紧贴光标弹出的浮层(右键菜单/标签面板)。
+// 关键: 必须 portal 到 document.body —— 浮层本体挂在 .pf-top 内, 而 .pf-top 有 transform,
+// 会把后代 position:fixed 的定位原点从"视口"变成"该祖先盒子", 用 clientX/Y 当 left/top 就整体甩飞。
+// 挂到 body(无 transform)后 fixed 才重新相对视口, clientX/Y 与 getBoundingClientRect 同坐标系。
+// 再按"实测尺寸"翻转: 放不下时围绕光标向上/向左展开; 测量前 hidden, useLayoutEffect 绘制前定位完, 无闪烁。
 function FloatingPanel({
   x,
   y,
@@ -97,13 +144,14 @@ function FloatingPanel({
     const top = y + r.height + pad > vh ? Math.max(pad, y - r.height) : y;
     setPos({ left: Math.max(pad, left), top: Math.max(pad, top), visibility: "visible" });
   }, [x, y]);
-  return (
+  return createPortal(
     <>
       <div className="ctx-backdrop" onMouseDown={onBackdrop} />
       <div ref={ref} className={className} style={pos}>
         {children}
       </div>
-    </>
+    </>,
+    document.body
   );
 }
 
@@ -130,14 +178,19 @@ export function SearchBar({
   const [tagMgr, setTagMgr] = useState<string | null | false>(false);
   // path → tags 的本地即时覆盖(打/删标签后无需重搜即可刷新 chip)
   const [tagEdits, setTagEdits] = useState<Record<string, string[]>>({});
+  const [shown, setShown] = useState(PAGE); // 当前已画的结果行数(滚动加载递增)
+  const [reindexMsg, setReindexMsg] = useState(""); // 全量重建状态提示
+  const resultsRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const qRef = useRef("");
   const histIdx = useRef(-1);
+  const autoReindexRef = useRef(false); // 每会话只自动发起一次全量重建检测
   qRef.current = q;
 
   const showResults = q.trim().length > 0;
   const aiItem: AiItem = { kind: "ai", name: q, path: "", score: 0, tags: [], pinned: false };
-  const items: Item[] = showResults ? [...hits, aiItem] : recent;
+  const visibleHits = showResults ? hits.slice(0, shown) : [];
+  const items: Item[] = showResults ? [...visibleHits, aiItem] : recent;
   const tagsOf = (h: SearchHit) => tagEdits[h.path] ?? h.tags;
 
   const loadRecent = useCallback(() => {
@@ -178,9 +231,19 @@ export function SearchBar({
     }
     let alive = true;
     setSearching(true);
+    // 首次真实搜索 → 自动检测并(据后端 mft_state 状态)发起全量 MFT 重建请求。已成功/被 EDR 拦/取消多次则
+    // 静默跳过, 不打扰; 否则弹 UAC, 输管理员凭据后秒级走 MFT 全量, 完成自动热换(reindex-done 事件)。
+    if (!autoReindexRef.current) {
+      autoReindexRef.current = true;
+      requestFullReindex(false)
+        .then((m) => {
+          if (m === "fired") setReindexMsg("检测到可用管理员重建(MFT 全量),已弹 UAC…");
+        })
+        .catch(() => {});
+    }
     const t = setTimeout(() => {
-      search(q, 40)
-        .then((r) => alive && (setHits(r), setSel(0)))
+      search(q, FETCH)
+        .then((r) => alive && (setHits(r), setSel(0), setShown(PAGE)))
         .catch(() => alive && setHits([]))
         .finally(() => alive && setSearching(false));
     }, 110);
@@ -193,11 +256,51 @@ export function SearchBar({
   // re-run the current query (after an override/tag change) so the list reflects it
   const refresh = useCallback(() => {
     if (qRef.current.trim()) {
-      search(qRef.current, 40).then(setHits).catch(() => {});
+      search(qRef.current, FETCH).then(setHits).catch(() => {});
     } else {
       loadRecent();
     }
   }, [loadRecent]);
+
+  // 滚动到接近底部 → 再画一页(只追加; 已画行与其已解析图标不动, 新行各自懒取图标)。
+  const onResultsScroll = useCallback(() => {
+    const el = resultsRef.current;
+    if (!el) return;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 200) {
+      setShown((s) => (s < hits.length ? Math.min(s + PAGE, hits.length) : s));
+    }
+  }, [hits.length]);
+
+  // 键盘下移走出已画窗口时自动多画一页, 让选中行始终可达。
+  useEffect(() => {
+    if (showResults && sel >= shown - 8 && shown < hits.length) {
+      setShown((s) => Math.min(s + PAGE, hits.length));
+    }
+  }, [sel, shown, hits.length, showResults]);
+
+  // 手动按钮: 无条件弹 UAC → 提权子进程秒级全量(MFT) → 完成后热换 + 提示。
+  const doReindex = useCallback(() => {
+    setReindexMsg("正在请求管理员权限(UAC)…");
+    requestFullReindex(true)
+      .then((m) =>
+        setReindexMsg(
+          m === "fired" ? "已弹 UAC，输入管理员凭据后约 6-25s 完成…" : m
+        )
+      )
+      .catch((e) => setReindexMsg("重建失败：" + String(e)));
+  }, []);
+  useEffect(() => {
+    const un = listen<[number, boolean]>("reindex-done", (e) => {
+      const [n, mft] = e.payload;
+      setReindexMsg(
+        `✓ 全量重建完成：${n.toLocaleString()} 条（${mft ? "MFT · 管理员秒级" : "遍历全盘"}）`
+      );
+      refresh();
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, [refresh]);
 
   function askAI() {
     pushHistory(q);
@@ -331,7 +434,7 @@ export function SearchBar({
         }}
       >
         <span className="sr-kind">
-          {it.pinned ? <Star size={15} className="sr-pin" /> : <KindIcon kind={it.kind} />}
+          {it.pinned ? <Star size={15} className="sr-pin" /> : <HitIcon hit={it} />}
         </span>
         <span className="sr-name">{it.name}</span>
         {tags.length > 0 && (
@@ -369,7 +472,7 @@ export function SearchBar({
       {searching && <Loader2 size={16} className="spin search-spin" />}
 
       {showResults ? (
-        <div className="search-results">
+        <div className="search-results" ref={resultsRef} onScroll={onResultsScroll}>
           {items.map((it, i) =>
             it.kind === "ai" ? (
               <div
@@ -390,19 +493,25 @@ export function SearchBar({
           )}
         </div>
       ) : (
-        recent.length > 0 && (
-          <div className="search-results recent">
-            <div className="sr-section">
-              <Clock size={12} /> 常用 / 置顶
-              <button className="sr-managetags" onClick={() => setTagMgr(null)} title="标签管理">
-                <SlidersHorizontal size={12} /> 标签
-              </button>
-            </div>
-            {recent.map((it, i) => (
-              <HitRow key={it.path + i} it={it} i={i} />
-            ))}
+        <div className="search-results recent">
+          <div className="sr-section">
+            <Clock size={12} /> 常用 / 置顶
+            <button className="sr-managetags" onClick={() => setTagMgr(null)} title="标签管理">
+              <SlidersHorizontal size={12} /> 标签
+            </button>
+            <button
+              className="sr-managetags"
+              onClick={doReindex}
+              title="用管理员重建全量索引(NTFS MFT, 秒级全盘, 一个不漏)"
+            >
+              <RefreshCw size={12} /> 全量重建
+            </button>
           </div>
-        )
+          {recent.map((it, i) => (
+            <HitRow key={it.path + i} it={it} i={i} />
+          ))}
+          {reindexMsg && <div className="sr-more">{reindexMsg}</div>}
+        </div>
       )}
 
       {menu && (

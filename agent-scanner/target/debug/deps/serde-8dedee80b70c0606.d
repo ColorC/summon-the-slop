@@ -1,0 +1,14 @@
+E:\WindowsWorkspace\poof\agent-scanner\target\debug\deps\serde-8dedee80b70c0606.d: C:\Users\lilithgames\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\lilithgames\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\lilithgames\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\lilithgames\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\lilithgames\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs E:\WindowsWorkspace\poof\agent-scanner\target\debug\build\serde-afe1acbcc42b1940\out/private.rs
+
+E:\WindowsWorkspace\poof\agent-scanner\target\debug\deps\libserde-8dedee80b70c0606.rlib: C:\Users\lilithgames\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\lilithgames\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\lilithgames\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\lilithgames\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\lilithgames\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs E:\WindowsWorkspace\poof\agent-scanner\target\debug\build\serde-afe1acbcc42b1940\out/private.rs
+
+E:\WindowsWorkspace\poof\agent-scanner\target\debug\deps\libserde-8dedee80b70c0606.rmeta: C:\Users\lilithgames\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs C:\Users\lilithgames\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs C:\Users\lilithgames\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs C:\Users\lilithgames\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs C:\Users\lilithgames\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs E:\WindowsWorkspace\poof\agent-scanner\target\debug\build\serde-afe1acbcc42b1940\out/private.rs
+
+C:\Users\lilithgames\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\lib.rs:
+C:\Users\lilithgames\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\integer128.rs:
+C:\Users\lilithgames\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\mod.rs:
+C:\Users\lilithgames\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\de.rs:
+C:\Users\lilithgames\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\serde-1.0.228\src\private\ser.rs:
+E:\WindowsWorkspace\poof\agent-scanner\target\debug\build\serde-afe1acbcc42b1940\out/private.rs:
+
+# env-dep:OUT_DIR=E:\\WindowsWorkspace\\poof\\agent-scanner\\target\\debug\\build\\serde-afe1acbcc42b1940\\out

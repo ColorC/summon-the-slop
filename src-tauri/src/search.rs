@@ -261,12 +261,23 @@ fn under_important(path: &str, folders: &[String]) -> bool {
 
 // kind/扩展名 → 乘性类型系数(×1000)。取代旧的 kind_bonus 加数: app/exe 同分时轻微领先而非永远钉死,
 // 源码文档略升, 临时/产物噪音(.tmp/.log/.obj…)压到 0.5。
-fn type_factor_fp(kind: &str, name: &str) -> i64 {
+// kind 级类型权(app/exe/folder); 文件返回 None(需看扩展名再细分)。一、二段共用同一组常量避免漂移:
+// 一段闸门分用它(廉价 O(1), 不解析扩展名), 二段 type_factor_fp 用它 + 文件扩展名精算。
+fn type_base(kind: &str) -> Option<i64> {
     match kind {
-        "app" => 1200,
-        "exe" => 1120,
-        "folder" => 1050,
-        _ => {
+        // 正式注册的应用(开始菜单 .lnk)享决定性加权: 让 "chrome" 命中的 "Google Chrome" 压过那些恰好
+        // 整段叫 "chrome" 的缓存文件夹(全等匹配)。仍需「应用名命中查询」才吃到这份权重, 故不会污染无关查询。
+        "app" => Some(2600),
+        "exe" => Some(1120),
+        "folder" => Some(1050),
+        _ => None,
+    }
+}
+
+fn type_factor_fp(kind: &str, name: &str) -> i64 {
+    match type_base(kind) {
+        Some(b) => b,
+        None => {
             let ext = name.rsplit('.').next().unwrap_or(""); // 大小写不敏感比对, 不分配
             const SRC_DOC: &[&str] = &[
                 "md", "txt", "rs", "ts", "tsx", "js", "jsx", "py", "go", "java", "c", "cpp", "h",
@@ -576,21 +587,42 @@ fn build_index() -> Vec<Entry> {
         let py = pinyin_of(&display);
         idx.push(("app".to_string(), display, path, py));
     }
-    // whole disk. Prefer the NTFS MFT per drive (Everything-grade: millions of files in seconds,
-    // no directory walk); fall back to the throttled walk where MFT can't run (not elevated / not
-    // NTFS) and for non-drive sub-roots from poof-roots.txt.
+    // whole disk, FULL — nothing dropped (用户铁律: "全量,没有一点点文件应该漏下"). Prefer the NTFS MFT
+    // per drive (Everything-grade: millions of files in seconds) — but it needs admin/SeBackupPrivilege
+    // to open \\.\<vol>, which we PROVED non-elevated poof never has (CreateFileW→ACCESS_DENIED, the
+    // FSCTL→ERROR_INVALID_FUNCTION). So in practice every drive falls to the throttled walk; MFT stays a
+    // non-fatal fast-path for when poof happens to run elevated. The walk is now UNCAPPED (was 2,000,000,
+    // which truncated D: mid-way through the P4 workspace and dropped D:\P4\main\AIWorkSpace entirely) and
+    // deeper (40 vs 18). Bounded by actual disk contents (+ is_noise pruning); slower one-time cold build,
+    // then persisted + watched. The latency this buys is paid back later by an index-layout rewrite, NOT
+    // by dropping files. Mature precedent: Listary/Alfred/fzf index via ordinary walks; Everything alone
+    // uses the MFT, behind a LocalSystem service we deliberately don't add (keeps the overlay unprivileged).
     let mut fs: Vec<(String, String, bool)> = Vec::new();
     for root in index_roots() {
         #[cfg(windows)]
         {
             if let Some(letter) = drive_root_letter(&root) {
+                let t = std::time::Instant::now();
                 if let Some(mut e) = crate::mft::enumerate_volume(letter) {
+                    ilog(&format!(
+                        "[index] {}: MFT(管理员) {} 条, {:?}",
+                        letter,
+                        e.len(),
+                        t.elapsed()
+                    ));
                     fs.append(&mut e);
                     continue;
                 }
+                ilog(&format!(
+                    "[index] {}: MFT 不可用(非管理员/EDR 拦卷), 改遍历全盘…",
+                    letter
+                ));
             }
         }
-        let mut e = collect(&[root], 18, 2_000_000);
+        let t = std::time::Instant::now();
+        let rd = root.display().to_string();
+        let mut e = collect(&[root], 40, usize::MAX);
+        ilog(&format!("[index] {} 遍历 {} 条, {:?}", rd, e.len(), t.elapsed()));
         fs.append(&mut e);
     }
     for (name, path, is_dir) in fs {
@@ -849,6 +881,27 @@ fn submatch(needle: &[u8], hay: &[u8]) -> Option<(i32, i32)> {
     None
 }
 
+// 扩展名过滤查询: ".exe" / "*.exe" → Some("exe")。让用户输入 .exe 就只出 exe 文件(按 frecency×类型×深度
+// 排), 而不是把名字里恰好含 ".exe" 的杂项也模糊匹配进来。仅当整串就是一个裸扩展名时触发。
+fn ext_query(text: &str) -> Option<String> {
+    let t = text.trim().strip_prefix('*').unwrap_or(text.trim());
+    let ext = t.strip_prefix('.')?;
+    if !ext.is_empty() && ext.len() <= 8 && ext.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        Some(ext.to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
+// name 是否以 .ext 结尾(大小写不敏感, 且 ext 前确有一个点 + 至少一个基名字符)。
+#[inline]
+fn name_has_ext(name: &str, ext: &str) -> bool {
+    let (nb, eb) = (name.as_bytes(), ext.as_bytes());
+    nb.len() > eb.len() + 1
+        && nb[nb.len() - eb.len() - 1] == b'.'
+        && nb[nb.len() - eb.len()..].eq_ignore_ascii_case(eb)
+}
+
 // keep a bounded top-K of (score, idx) in a min-heap: push if under capacity, else replace the
 // current minimum when a higher score arrives. O(log k) per candidate, O(k) memory — no matter
 // how many entries match. (min-heap = max-heap of Reverse, so peek() is the smallest score.)
@@ -884,24 +937,33 @@ fn match_quality(
     } else {
         submatch(qb, py.as_bytes())
     };
-    let chosen: Option<(i32, i32, usize)> = match (nm, pym) {
+    let chosen: Option<(i32, i32, usize, &[u8])> = match (nm, pym) {
         (Some(a), Some(b)) => {
             if (a.1, a.0) <= (b.1, b.0) {
-                Some((a.0, a.1, name.len()))
+                Some((a.0, a.1, name.len(), name.as_bytes()))
             } else {
-                Some((b.0, b.1, py.len()))
+                Some((b.0, b.1, py.len(), py.as_bytes()))
             }
         }
-        (Some(a), None) => Some((a.0, a.1, name.len())),
-        (None, Some(b)) => Some((b.0, b.1, py.len())),
+        (Some(a), None) => Some((a.0, a.1, name.len(), name.as_bytes())),
+        (None, Some(b)) => Some((b.0, b.1, py.len(), py.as_bytes())),
         (None, None) => None,
     };
-    if let Some((first, gaps, hlen)) = chosen {
+    if let Some((first, gaps, hlen, hay)) = chosen {
         let exact = first == 0 && hlen == qb.len();
+        // 词首边界: 匹配紧跟空格/分隔符 → 视同强匹配。让 "chrome" 命中 "Google Chrome" 里 "Chrome" 的
+        // 词首, 不被那些恰好整段叫 "chrome" 的缓存文件夹(全等)死压。
+        let word_start = first > 0
+            && matches!(
+                hay.get(first as usize - 1),
+                Some(b' ' | b'-' | b'_' | b'.' | b'(' | b'[' | b'/' | b'\\')
+            );
         let pfx = if exact {
             4000 // 全等
         } else if first == 0 {
             2500 // 前缀
+        } else if gaps == 0 && word_start {
+            2200 // 词首连续子串(多词名按词命中)
         } else if gaps == 0 {
             1600 // 连续子串
         } else {
@@ -940,23 +1002,161 @@ fn tag_factor(snap: &crate::tags::TagSnapshot, path: &str) -> (i64, bool) {
     (1000, false)
 }
 
-// 单条全量打分(二段, 仅幸存者): match × prefix × frecency × type × depth × tag × pin。pin 含重要文件夹
-// (1.8×)与置顶标签(≥4.0×, 让弱匹配也冒头)。定点整数, 乘完右移。Hide → None。
+// 路径深度因子: 浅=真加成(>1×), 深=衰减(<1×), 单调。旧版只在 depth>4 才罚、≤4 全平 → 浅层常用
+// 文件夹拿不到优势。锚点: 盘根/顶层(d≤2)1500; 三层(d=3)1380; 四层(d=4)1260; 之后每层 -110、触底 600。
+// depth-4(1260) 对 depth-10(600) ≈ 2.1×, 足以翻"同名同 frecency"的浅层 vs 末端并列。
+#[inline]
+fn depth_factor(depth: i64) -> i64 {
+    match depth {
+        0 | 1 | 2 => 1500,
+        3 => 1380,
+        4 => 1260,
+        d => (1260 - (d - 4) * 110).max(600),
+    }
+}
+
+// 真实 %USERPROFILE% 下"人常去"的规范文件夹(Desktop/Documents/Downloads/…)及其内容给乘性加权, 让
+// "downloads" 出你自己的 Downloads, 而不是更浅的 C:\Users\Default\Downloads / C:\ProgramData\Documents。
+// 只认真实主目录(不碰 AppData/Program Files/应用 .lnk), 故不影响应用优先。仅二段调用。
+fn user_home_fp(path: &str) -> i64 {
+    use std::sync::OnceLock;
+    static PREFIXES: OnceLock<Vec<String>> = OnceLock::new();
+    let prefixes = PREFIXES.get_or_init(|| {
+        let home = std::env::var("USERPROFILE")
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .replace('\\', "/");
+        if home.is_empty() {
+            return Vec::new();
+        }
+        [
+            "desktop", "documents", "downloads", "pictures", "videos", "music", "onedrive",
+        ]
+        .iter()
+        .map(|d| format!("{}/{}", home, d))
+        .collect()
+    });
+    if prefixes.is_empty() {
+        return 1000;
+    }
+    let lower = path.to_ascii_lowercase().replace('\\', "/");
+    if prefixes
+        .iter()
+        .any(|p| lower == *p || lower.starts_with(&format!("{}/", p)))
+    {
+        1300
+    } else {
+        1000
+    }
+}
+
+// 在 hay 里找 needle 的首个「连续」出现(大小写不敏感)。多词 AND 必须用连续子串(Everything 语义):
+// submatch 的子序列太松 —— 长路径里 p…o…o…f 几乎必中, 会让 "poof src tauri" 错配一堆无关应用。
+#[inline]
+fn find_substr(needle: &[u8], hay: &[u8]) -> Option<usize> {
+    if needle.is_empty() || needle.len() > hay.len() {
+        return None;
+    }
+    hay.windows(needle.len())
+        .position(|w| w.eq_ignore_ascii_case(needle))
+}
+
+// 单个 term 连续子串命中的档位。pos=起点; is_path=命中落在路径段(而非文件名)。
+#[inline]
+fn substr_tier(term: &[u8], hay: &[u8], pos: usize, is_path: bool) -> (i64, i64) {
+    let exact = pos == 0 && term.len() == hay.len();
+    let word_start = pos == 0
+        || matches!(
+            hay.get(pos - 1),
+            Some(b' ' | b'-' | b'_' | b'.' | b'(' | b'[' | b'/' | b'\\')
+        );
+    let pfx = if exact {
+        4000
+    } else if is_path {
+        if word_start { 2200 } else { 1200 } // 路径段命中: 段首=强, 段中=弱
+    } else if pos == 0 {
+        2500 // 文件名前缀
+    } else if word_start {
+        2200 // 文件名词首
+    } else {
+        1600 // 文件名中段
+    };
+    let mn = (1000 - (pos.min(60) as i64) * 3).clamp(300, 1000);
+    (mn, pfx)
+}
+
+// 单个 term 在 name → pinyin → path 里取最优连续子串命中(全不中 → None)。
+#[inline]
+fn term_quality(term: &[u8], nb: &[u8], pyb: &[u8], pb: &[u8]) -> Option<(i64, i64)> {
+    if let Some(p) = find_substr(term, nb) {
+        return Some(substr_tier(term, nb, p, false));
+    }
+    if !pyb.is_empty() {
+        if let Some(p) = find_substr(term, pyb) {
+            return Some(substr_tier(term, pyb, p, false));
+        }
+    }
+    find_substr(term, pb).map(|p| substr_tier(term, pb, p, true))
+}
+
+// 多词 AND 匹配(Everything 语义): 每个 term 必须各自「连续子串」命中(name|pinyin|path 取最优档),
+// 全中才返回 → "aiworkspace app" 命中 D:\P4\main\AIWorkSpace\app, 但无关应用不会被子序列误配。
+// combine: pfx 取各 term 最小档(最弱词定档), mn 取均值。单词(!multi)直通旧 match_quality, 逐字节不变
+// (护住已上线的应用优先 + 扩展名搜索)。
+#[inline]
+fn match_terms(
+    terms: &[Vec<u8>],
+    name: &str,
+    py: &str,
+    path: &str,
+    browse: bool,
+    score_path: bool,
+    multi: bool,
+) -> Option<(i64, i64)> {
+    if !multi {
+        let qb: &[u8] = terms.first().map(|v| v.as_slice()).unwrap_or(&[]);
+        return match_quality(qb, name, py, path, browse, score_path);
+    }
+    let (nb, pyb, pb) = (name.as_bytes(), py.as_bytes(), path.as_bytes());
+    let mut mn_sum: i64 = 0;
+    let mut pfx_min: i64 = i64::MAX;
+    for t in terms {
+        // `?` 短路: 第一个不中的 term 直接判负, 后续 term 与长路径都不再扫 → 热循环可控。
+        let (mn, pfx) = term_quality(t, nb, pyb, pb)?;
+        mn_sum += mn;
+        pfx_min = pfx_min.min(pfx);
+    }
+    Some((mn_sum / terms.len() as i64, pfx_min))
+}
+
+// 单条全量打分(二段, 仅幸存者): match × prefix × frecency × type × depth × loc × tag × pin。pin 含重要
+// 文件夹(1.8×)与置顶标签(≥4.0×, 让弱匹配也冒头)。定点整数, 乘完右移。Hide → None。
 #[allow(clippy::too_many_arguments)]
 fn score_entry(
     kind: &str,
     name: &str,
     path: &str,
     py: &str,
-    qb: &[u8],
+    terms: &[Vec<u8>],
     browse: bool,
     score_path: bool,
+    ext_mode: Option<&str>,
     gains: &HashMap<&str, i64>,
     overrides: &HashMap<String, i8>,
     important: &[String],
     tagsnap: &crate::tags::TagSnapshot,
 ) -> Option<u32> {
-    let (mn_fp, pfx_fp) = match_quality(qb, name, py, path, browse, score_path)?;
+    let (mn_fp, pfx_fp) = match ext_mode {
+        // 扩展名模式: 命中 = 非文件夹且 name 以 .ext 结尾; mn/pfx 恒定, 排序全交给 frecency×类型×深度。
+        Some(ext) => {
+            if kind != "folder" && name_has_ext(name, ext) {
+                (1000, 1000)
+            } else {
+                return None;
+            }
+        }
+        None => match_terms(terms, name, py, path, browse, score_path, terms.len() > 1)?,
+    };
     let ov = overrides.get(path).copied().unwrap_or(0);
     if ov == -2 {
         return None; // Hide
@@ -964,7 +1164,10 @@ fn score_entry(
     let use_fp = *gains.get(path).unwrap_or(&1000);
     let type_fp = type_factor_fp(kind, name);
     let depth = path.bytes().filter(|&b| b == b'\\' || b == b'/').count() as i64;
-    let depth_fp = 1_000_000 / (1000 + 40 * (depth - 4).max(0));
+    // 应用(开始菜单 .lnk)路径天生很深(…\Start Menu\Programs\…), 但深度对"注册应用"毫无意义 —— 给固定
+    // 高权, 别让深度惩罚把它压到同名的 Program Files 文件夹之下(否则 "chrome" 会出文件夹而非应用)。
+    let depth_fp = if kind == "app" { 1300 } else { depth_factor(depth) };
+    let loc_fp = user_home_fp(path); // 你自己主目录的常用文件夹加权(downloads/documents 出你的而非 Default)
     let (tag_fp, pinned_tag) = tag_factor(tagsnap, path);
     let mut pin_fp: i64 = match ov {
         2 => 6000,
@@ -985,14 +1188,16 @@ fn score_entry(
     s = s * use_fp / 1000;
     s = s * type_fp / 1000;
     s = s * depth_fp / 1000;
+    s = s * loc_fp / 1000;
     s = s * tag_fp / 1000;
     s = s * pin_fp / 1000;
     Some(s.max(1) as u32)
 }
 
 // 解析 query: 抽出 `#tag` 过滤词(AND), 其余拼回模糊文本。裸 `#wip` → 纯标签浏览(text 空)。
-fn parse_query(q: &str) -> (String, Vec<String>) {
+fn parse_query(q: &str) -> (String, Vec<String>, Vec<String>) {
     let mut tags: Vec<String> = Vec::new();
+    let mut terms: Vec<String> = Vec::new();
     let mut text = String::new();
     for tok in q.split_whitespace() {
         if let Some(t) = tok.strip_prefix('#') {
@@ -1004,9 +1209,10 @@ fn parse_query(q: &str) -> (String, Vec<String>) {
                 text.push(' ');
             }
             text.push_str(tok);
+            terms.push(tok.to_lowercase()); // 逐词保留(Everything 式空格=AND), 不拼回含空格的单串
         }
     }
-    (text, tags)
+    (text, terms, tags)
 }
 
 #[tauri::command]
@@ -1015,8 +1221,10 @@ pub fn search(query: String, limit: usize) -> Vec<SearchHit> {
     if q.is_empty() {
         return Vec::new();
     }
-    let (text, req_tags) = parse_query(q);
+    let (text, term_strs, req_tags) = parse_query(q);
     let browse = text.trim().is_empty(); // 纯 #tag 浏览(无模糊文本)
+    // 扩展名过滤模式(".exe" / "*.exe" → 只出该扩展名的文件); 与 #tag 互斥(带 tag 时按常规模糊)。
+    let ext_mode: Option<String> = if req_tags.is_empty() { ext_query(&text) } else { None };
     if browse && req_tags.is_empty() {
         return Vec::new();
     }
@@ -1050,9 +1258,15 @@ pub fn search(query: String, limit: usize) -> Vec<SearchHit> {
     let guard = INDEX.lock().unwrap();
     let index = guard.as_ref().unwrap();
 
+    // 多词 AND 词表(空格分词); 单词 = 旧行为逐字节不变。按长度降序 → 最具选择性的 term 先 gate,
+    // 配合 `?` 短路最大化早拒(AND 可交换, 排序不影响结果)。
+    let mut terms: Vec<Vec<u8>> = term_strs.iter().map(|s| s.clone().into_bytes()).collect();
+    terms.sort_by(|a, b| b.len().cmp(&a.len()));
+    let multi_term = terms.len() > 1;
     // only score the (long) full path when the text looks path-shaped / multi-keyword;
     // a plain single word matches against the name only — far fewer scores → fast.
-    let score_path = text.contains('/') || text.contains('\\') || text.contains(' ');
+    // 多词查询本质是"找个地方", 必走路径打分(每个 term 可落在任意祖先段)。
+    let score_path = multi_term || text.contains('/') || text.contains('\\');
 
     // 两段式打分。索引达数百万条, 短查询('c')会命中其中绝大多数 —— 若每条都算全套乘性档位(类型扩展名
     // 提取/路径深度遍历/重要文件夹前缀比对), 短查询会慢到秒级。故:
@@ -1060,10 +1274,9 @@ pub fn search(query: String, limit: usize) -> Vec<SearchHit> {
     //                       用 min-heap 留 top-K' 候选。这步与旧的快筛同量级。
     //   二段(仅 ≤K' 幸存者): 全量重打分(+ type/depth/标签/继承/重要文件夹/置顶标签), 排序取 limit。
     // 二段档位最多 ~1.8×, K' 缓冲(=4×limit, ≥200)足以让该被档位顶上来的项进候选, 不丢真该靠前的结果。
-    let qb: Vec<u8> = text.to_lowercase().into_bytes();
-    // 候选缓冲: 给二段档位(≤1.8×)留追赶空间, 但别太大 —— heap 容量越大、min 越低, 越多候选触发
-    // pop/push, 短查询('c')会churn 爆炸。2×limit 够覆盖二段重排, 又不拖慢热循环。
-    let kbuf = (limit * 2).max(80);
+    // 候选缓冲: 给二段档位留追赶空间, 但与展示 limit 解耦并封顶 —— 前端现在请求 ~300 做滚动加载,
+    // 若 kbuf 随之涨到几百, 短查询('c')的 heap pop/push churn 会爆炸而无收益。clamp(80,600) 够用。
+    let kbuf = (limit * 2).clamp(80, 600);
     let gains_empty = gains.is_empty();
     let over_empty = overrides.is_empty();
     let final_heap = index
@@ -1071,8 +1284,8 @@ pub fn search(query: String, limit: usize) -> Vec<SearchHit> {
         .enumerate()
         .fold(
             BinaryHeap::<Reverse<(u32, usize)>>::new,
-            |mut heap, (idx, (_kind, name, path, py))| {
-                let (name, path) = (name.as_str(), path.as_str());
+            |mut heap, (idx, (kind, name, path, py))| {
+                let (kind, name, path) = (kind.as_str(), name.as_str(), path.as_str());
                 // #tag 过滤(直接标签, AND) —— 不满足直接早退。
                 if !req_tags.is_empty() {
                     match tagsnap.paths.get(path) {
@@ -1087,11 +1300,20 @@ pub fn search(query: String, limit: usize) -> Vec<SearchHit> {
                         None => return heap,
                     }
                 }
-                let (mn_fp, pfx_fp) =
-                    match match_quality(&qb, name, py, path, browse, score_path) {
+                let (mn_fp, pfx_fp) = match ext_mode.as_deref() {
+                    Some(ext) => {
+                        if kind != "folder" && name_has_ext(name, ext) {
+                            (1000, 1000)
+                        } else {
+                            return heap;
+                        }
+                    }
+                    None => match match_terms(&terms, name, py, path, browse, score_path, multi_term)
+                    {
                         Some(x) => x,
                         None => return heap,
-                    };
+                    },
+                };
                 // 多数条目既无 override 又无 usage —— 跳过 HashMap 查(省掉对长 path 的哈希)。
                 let ov = if over_empty {
                     0
@@ -1111,7 +1333,19 @@ pub fn search(query: String, limit: usize) -> Vec<SearchHit> {
                     -1 => 400,
                     _ => 1000,
                 };
-                let cheap = (mn_fp * pfx_fp / 1000 * use_fp / 1000 * pin_base / 1000).max(1) as u32;
+                // 扩展名模式 mn/pfx 恒定 → 把 type/depth 也并入闸门分, 否则并列里会随机丢掉浅层常用 exe。
+                let cheap = if ext_mode.is_some() {
+                    let type_fp = type_factor_fp(kind, name);
+                    let depth = path.bytes().filter(|&b| b == b'\\' || b == b'/').count() as i64;
+                    let depth_fp = depth_factor(depth);
+                    (use_fp * pin_base / 1000 * type_fp / 1000 * depth_fp / 1000).max(1) as u32
+                } else {
+                    // 一段闸门分并入 kind 级类型权(app 2.6× 等), 否则应用会在一段就被全等同名的缓存文件夹
+                    // 挤出候选、永远到不了二段加权。文件的扩展名细分留二段精算(一段不解析扩展名, 保持 O(1))。
+                    let type_quick = type_base(kind).unwrap_or(1000);
+                    (mn_fp * pfx_fp / 1000 * use_fp / 1000 * pin_base / 1000 * type_quick / 1000)
+                        .max(1) as u32
+                };
                 push_topk(&mut heap, kbuf, cheap, idx);
                 heap
             },
@@ -1128,8 +1362,8 @@ pub fn search(query: String, limit: usize) -> Vec<SearchHit> {
         .filter_map(|Reverse((_, idx))| {
             let (kind, name, path, py) = &index[idx];
             score_entry(
-                kind, name, path, py, &qb, browse, score_path, &gains, overrides, &important,
-                &tagsnap,
+                kind, name, path, py, &terms, browse, score_path, ext_mode.as_deref(), &gains,
+                overrides, &important, &tagsnap,
             )
             .map(|s| (s, idx))
         })
@@ -1208,6 +1442,64 @@ pub fn reveal_path(path: String) -> Result<(), String> {
     }
 }
 
+// 重建日志: 同时打 stderr 和 %TEMP%\poof-reindex.log —— 提权运行(GUI 子系统, 无控制台)看不到 stderr,
+// 靠这个文件确认每盘走的是 MFT 还是遍历, 以及是否真出全量。
+fn ilog(msg: &str) {
+    eprintln!("{msg}");
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(std::env::temp_dir().join("poof-reindex.log"))
+    {
+        let _ = writeln!(f, "{} {}", now_secs(), msg);
+    }
+}
+
+/// 全量重建索引并持久化后退出。跑: poof.exe --reindex(普通用户=遍历全盘)或「以管理员运行」(走 MFT,
+/// Everything 级、秒出全量)。build_index 会逐盘打印用的是 MFT 还是遍历 —— 据此判断本机提权后 MFT 是否
+/// 真能读卷(公司 EDR 可能连管理员都拦)。普通 poof 之后 load_persisted 直接吃这份新索引。
+pub fn reindex_cli() {
+    use std::time::Instant;
+    let t0 = Instant::now();
+    ilog("[reindex] 开始全量重建…");
+    let idx = build_index();
+    let n = idx.len();
+    persist(&idx);
+    ilog(&format!(
+        "[reindex] 完成: {} 条, 总用时 {:?} → 已写 index.tsv",
+        n,
+        t0.elapsed()
+    ));
+    println!("{n}");
+}
+
+/// 把磁盘上的持久化索引热换进 INDEX(提权重建完成后, 运行中的普通 poof 据此立刻吃上新索引, 不必重启)。
+pub fn reload_persisted() -> Option<usize> {
+    let idx = load_persisted()?;
+    let n = idx.len();
+    *INDEX.lock().unwrap() = Some(idx);
+    Some(n)
+}
+
+/// 命令行搜索探针: poof.exe --search "<query>" → 载入持久化索引, 跑真·search() 路径, 打印前 ~20 名
+/// 命中为 `kind:name :: path`(每行一条), 供无头的"用户视角"基准 —— 用纯英文查询常见文件/应用/文件夹,
+/// 直接看它们落在第几位。与 --bench-search 同款载入(真应用二进制内跑, 原生 DLL 正常加载)。
+pub fn run_search_cli(query: &str) {
+    let idx = load_persisted().unwrap_or_else(build_index);
+    let n = idx.len();
+    *INDEX.lock().unwrap() = Some(idx);
+    let hits = search(query.to_string(), 20);
+    eprintln!("=== 索引 {} 条 · 查询 {:?} · {} 命中 ===", n, query, hits.len());
+    if hits.is_empty() {
+        println!("(无命中)");
+        return;
+    }
+    for h in &hits {
+        println!("{}:{} :: {}", h.kind, h.name, h.path);
+    }
+}
+
 // 逐字拼音输入的真实模拟基准。跑: poof.exe --bench-search(由 lib.rs run() 开头的参数检查触发,
 // 在真·应用二进制里跑 → 原生 DLL 正常加载; cargo test 的独立测试 exe 会 STATUS_ENTRYPOINT_NOT_FOUND)。
 pub fn bench_search() {
@@ -1263,6 +1555,13 @@ pub fn bench_search() {
     for w in ["config", "ceshi", "readme", "git"] {
         let r = search(w.to_string(), 5);
         println!("  抽查 '{}': {}", w, r.iter().map(|h| h.name.clone()).collect::<Vec<_>>().join(" | "));
+    }
+    // ---- 本次改动验收: 应用优先(chrome/code 首条应是 app) + 扩展名过滤(.exe/.xlsx 应全是该扩展名) ----
+    println!("--- 应用优先 / 扩展名过滤 抽查(kind:name)---");
+    for w in ["chrome", "code", ".exe", ".xlsx", "*.pdf"] {
+        let r = search(w.to_string(), 6);
+        let show: Vec<String> = r.iter().map(|h| format!("{}:{}", h.kind, h.name)).collect();
+        println!("  '{}' → {}", w, show.join("  |  "));
     }
 
     // ---- 统一验收断言(不写盘, 不动用户真实 usage.json) ----

@@ -24,7 +24,7 @@ import {
   FolderInput,
 } from "lucide-react";
 import { TerminalView } from "./Terminal";
-import { copyText, notesDocDel, notesMdDel } from "../lib";
+import { copyText, notesDocDel, notesMdDel, notesRoot } from "../lib";
 import { TagChip } from "../lib/tagchip";
 import { insertAiBlock, AiBlockSpec, mountAiToolbarButton, killAllAiTerminals } from "../blocks/aiblock";
 import {
@@ -46,7 +46,7 @@ import { installFileWriteback, installMdPreviewToggle, insertFileIntoNote } from
 import { installBoundSync } from "./boundSource";
 import { isBoundSubDoc } from "./boundRegistry";
 import { flushNotesStore, getCachedTitle, setCachedTitle } from "./fileNotesStore";
-import { scheduleNoteExport, rebuildNotesIndex, backfillExports } from "./noteExport";
+import { scheduleNoteExport, rebuildNotesIndex, backfillExports, exportNoteToMd } from "./noteExport";
 import { installMarkdownPaste } from "./markdownPaste";
 import { installOmniRefJump } from "./omniLink";
 import { BrowsePanel } from "./BrowsePanel";
@@ -718,6 +718,24 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
 
   const activeTitle = metas.find((m) => m.id === activeId)?.title || "未命名笔记";
 
+  // 复制当前笔记的 .md 绝对路径(而非不透明的 poof-note:// 链接) —— 发给 AI 可直接读文件,
+  // 文件名即笔记 id(omni notes 仍可由此反推编辑)。复制前先懒导出一次, 保证 .md 是最新的。
+  async function copyNoteMdPath(id: string): Promise<void> {
+    try {
+      const doc = c.getDoc(id);
+      if (doc) await exportNoteToMd(doc, c); // 确保 docs/<id>.md 已落且最新
+    } catch {
+      /* 导出失败也无妨: 已有的 .md 仍可用 */
+    }
+    let root = "E:/WindowsWorkspace/poof-notes";
+    try {
+      root = await notesRoot();
+    } catch {
+      /* 用默认根 */
+    }
+    await copyText(`${root.replace(/\\/g, "/")}/docs/${id}.md`);
+  }
+
   return (
     <div
       className={"notes-ws " + mode + (full ? " full" : "")}
@@ -770,9 +788,9 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
         </button>
         <button
           className="notes-bar-btn"
-          title="复制当前笔记链接(发给 AI：poof-note://… · AI 可 omni notes show/search/编辑)"
+          title="复制当前笔记的 .md 文件路径(发给 AI 可直接读：…/poof-notes/docs/<id>.md · 文件名即 id, omni notes 仍可编辑)"
           disabled={!activeId}
-          onClick={() => { if (activeId) void copyText(`poof-note://${activeId}`); }}
+          onClick={() => { if (activeId) void copyNoteMdPath(activeId); }}
         >
           <Link2 size={15} />
         </button>

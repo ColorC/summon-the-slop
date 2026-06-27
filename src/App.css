@@ -474,6 +474,14 @@ body,
   width: 18px;
   color: #aab0bd;
 }
+/* 真实文件/应用图标: 18×18, 等比不裁切, 像素对齐保清晰 */
+.sr-ico {
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+  display: block;
+  image-rendering: -webkit-optimize-contrast;
+}
 .sr.ai .sr-kind {
   color: #c7c9ff;
 }

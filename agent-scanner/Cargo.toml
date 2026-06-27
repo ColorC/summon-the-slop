@@ -1,0 +1,22 @@
+[package]
+name = "agent-scanner"
+version = "0.1.0"
+edition = "2021"
+description = "Machine-level AI agent-session scanner/index/watcher. Scans ~/.claude + ~/.codex, exposes a JSON index over localhost HTTP. Standalone crate; poof embeds the lib."
+
+[lib]
+name = "agent_scanner"
+path = "src/lib.rs"
+
+[[bin]]
+name = "agent-scanner"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tiny_http = "0.12"
+notify = "6"
+
+[profile.release]
+opt-level = 2
