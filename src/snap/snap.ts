@@ -366,8 +366,9 @@ function compositePng(): string {
 // 坐标是"裁剪后图像像素"(原点=裁剪框左上, 与导出的 PNG 一一对应), 便于 AI 直接读懂"箭头从哪到哪、
 // 框住哪块区域、写了什么字"。形状的 pts 是全帧画布坐标, 减去裁剪原点(ox,oy)得到裁剪相对坐标。
 interface PointAt { name: string; control_type: string; rect: [number, number, number, number]; }
-// 统一捕获: 这张结构化截图压在哪个 omni 实体上(material/计划/笔记/项目/任务)。Rust omni_capture 返回。
-interface OmniResult { omni_uri: string | null; note_id: string | null; }
+// 统一捕获: 这张结构化截图压在哪个实体上。给 AI 看的是 文件路径 + 完整描述(模型直接看得懂),
+// 不用 omni:// 这种自造规范。Rust omni_capture 返回。
+interface OmniResult { omni_uri: string | null; note_id: string | null; target_path: string | null; description: string | null; }
 const TOOL_CN: Record<string, string> = {
   rect: "矩形", ellipse: "椭圆", arrow: "箭头", line: "直线",
   pen: "画笔", highlight: "荧光标记", mosaic: "马赛克遮挡", text: "文字",
@@ -399,16 +400,18 @@ function buildMarkdown(imgPath: string, shapes: Shape[], ox: number, oy: number,
   L.push(`size: ${w}x${h}`);
   L.push(`dpi_scale: ${cap!.scale}`);
   if (ts) L.push(`captured_at: ${ts}`);
-  // 统一捕获: 这张截图压在哪个 omni 实体上(自动解析, dashboard 没在跑则不带此行)。
-  if (omni && omni.omni_uri) L.push(`omni_target: ${omni.omni_uri}`);
-  if (omni && omni.note_id) L.push(`omni_note: ${omni.note_id}`);
+  // 统一捕获: 这张截图压在哪个实体上 —— 文件路径 + 完整描述(模型直接看得懂, 不用 omni:// 自造规范)。
+  // dashboard 没在跑 / 没解析出则不带这些行。
+  if (omni && omni.description) L.push(`target: ${omni.description}`);
+  if (omni && omni.target_path) L.push(`target_file: ${omni.target_path}`);
+  if (omni && omni.note_id) L.push(`target_note: ${omni.note_id}`);
   L.push("coord_space: image-pixels  # 裁剪后图像像素, 原点左上, +x 右 / +y 下");
   L.push("---");
   L.push("");
   L.push(`![标注截图](${imgPath})`);
-  if (omni && omni.omni_uri) {
+  if (omni && omni.description) {
     L.push("");
-    L.push(`**指向实体**: \`${omni.omni_uri}\`${omni.note_id ? `（已挂札记 ${omni.note_id}）` : ""}`);
+    L.push(`**指向**: ${omni.description}${omni.target_path ? `（文件 \`${omni.target_path}\`）` : ""}${omni.note_id ? `（已挂札记 ${omni.note_id}）` : ""}`);
   }
   L.push("");
   L.push(`## 标注（${shapes.length}）`);
@@ -467,8 +470,8 @@ async function doAction(act: string) {
         ]).catch(() => shapes.map(() => null)),
         Promise.race([
           invoke<OmniResult>("omni_capture", { x: Math.round((pl + pr) / 2), y: Math.round((pt + pb) / 2), l: pl, t: pt, r: pr, b: pb, comment, pngBase64: png }),
-          new Promise<OmniResult>((res) => setTimeout(() => res({ omni_uri: null, note_id: null }), 3000)),
-        ]).catch(() => ({ omni_uri: null, note_id: null }) as OmniResult),
+          new Promise<OmniResult>((res) => setTimeout(() => res({ omni_uri: null, note_id: null, target_path: null, description: null }), 3000)),
+        ]).catch(() => ({ omni_uri: null, note_id: null, target_path: null, description: null }) as OmniResult),
       ]);
       const md = buildMarkdown(path, shapes, ox, oy, cw, ch, hits, omni);
       let mdPath = path.replace(/\.png$/i, ".md"); // fallback

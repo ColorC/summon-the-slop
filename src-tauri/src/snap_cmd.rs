@@ -330,11 +330,14 @@ struct CaptureProbe {
     win_title: String,
 }
 
-/// 统一捕获结果: 这张结构化截图压在哪个 omni 实体上 + (有评论时)挂的札记 id。
+/// 统一捕获结果。给 AI 看的是 文件路径 + 完整描述(不暴露 omni:// 这种模型陌生的自造规范);
+/// omni_uri 只留作内部句柄。description 形如「审阅台的审阅材料:「标题」· 对应文件 docs/...」。
 #[derive(serde::Serialize, Default)]
 pub struct OmniResult {
     pub omni_uri: Option<String>,
     pub note_id: Option<String>,
+    pub target_path: Option<String>,
+    pub description: Option<String>,
 }
 
 /// 探测屏幕点 (x,y) 下面是什么(跳过 poof 自己的覆盖层)。用 UIA 树遍历(不 hit-test, 因截图覆盖层在最上)
@@ -434,6 +437,8 @@ pub async fn omni_capture(
                     Some(v) => OmniResult {
                         omni_uri: v.get("omni_uri").and_then(|x| x.as_str()).map(str::to_string),
                         note_id: v.get("note_id").and_then(|x| x.as_str()).map(str::to_string),
+                        target_path: v.get("path").and_then(|x| x.as_str()).map(str::to_string),
+                        description: v.get("description").and_then(|x| x.as_str()).map(str::to_string),
                     },
                     None => OmniResult::default(),
                 },
