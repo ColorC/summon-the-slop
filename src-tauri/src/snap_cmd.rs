@@ -390,7 +390,7 @@ fn probe_target_sync(skip: &[isize], x: i32, y: i32) -> CaptureProbe {
             doc = Some((area, e.rect));
         }
         if e.control_type.contains("Window") && !e.name.is_empty()
-            && win.map(|(a, _)| area > a).unwrap_or(true)
+            && win.as_ref().map(|(a, _)| area > *a).unwrap_or(true)
         {
             win = Some((area, e.name.clone()));
         }
@@ -418,7 +418,7 @@ pub async fn omni_capture(
         use tauri::Manager;
         let mut skip: Vec<isize> = Vec::new();
         for (label, w) in app.webview_windows() {
-            if (label == "snap" || label == "recbar") {
+            if label == "snap" || label == "recbar" {
                 if let Ok(h) = w.hwnd() {
                     skip.push(h.0 as isize);
                 }
