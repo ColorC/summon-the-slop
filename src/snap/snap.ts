@@ -7,7 +7,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Annotator, Tool, type Shape, type Pt } from "./anno";
-import { sendCaptureToOmni, promptCaptureMeta } from "./omniSend";
 
 interface Capture { width: number; height: number; x: number; y: number; scale: number; }
 interface Rect { l: number; t: number; r: number; b: number; }
@@ -367,6 +366,8 @@ function compositePng(): string {
 // 坐标是"裁剪后图像像素"(原点=裁剪框左上, 与导出的 PNG 一一对应), 便于 AI 直接读懂"箭头从哪到哪、
 // 框住哪块区域、写了什么字"。形状的 pts 是全帧画布坐标, 减去裁剪原点(ox,oy)得到裁剪相对坐标。
 interface PointAt { name: string; control_type: string; rect: [number, number, number, number]; }
+// 统一捕获: 这张结构化截图压在哪个 omni 实体上(material/计划/笔记/项目/任务)。Rust omni_capture 返回。
+interface OmniResult { omni_uri: string | null; note_id: string | null; }
 const TOOL_CN: Record<string, string> = {
   rect: "矩形", ellipse: "椭圆", arrow: "箭头", line: "直线",
   pen: "画笔", highlight: "荧光标记", mosaic: "马赛克遮挡", text: "文字",
@@ -388,7 +389,7 @@ function resolvePointScreen(s: Shape): [number, number] {
 }
 // 详细 Markdown —— 存进 .md 文件(详情都在文件里); 剪贴板只放 [[该文件路径]], 粘贴时短。
 // 「指向」只在解析出【有名字】的真实元素时才附(否则全是没用的 [Group] (无名))。坐标 = 裁剪相对像素。
-function buildMarkdown(imgPath: string, shapes: Shape[], ox: number, oy: number, w: number, h: number, hits: (PointAt | null)[]): string {
+function buildMarkdown(imgPath: string, shapes: Shape[], ox: number, oy: number, w: number, h: number, hits: (PointAt | null)[], omni?: OmniResult | null): string {
   const P = (p: Pt) => `(${p.x - ox},${p.y - oy})`;
   const ts = (() => { try { return new Date().toISOString(); } catch { return ""; } })();
   const L: string[] = [];
@@ -398,10 +399,17 @@ function buildMarkdown(imgPath: string, shapes: Shape[], ox: number, oy: number,
   L.push(`size: ${w}x${h}`);
   L.push(`dpi_scale: ${cap!.scale}`);
   if (ts) L.push(`captured_at: ${ts}`);
+  // 统一捕获: 这张截图压在哪个 omni 实体上(自动解析, dashboard 没在跑则不带此行)。
+  if (omni && omni.omni_uri) L.push(`omni_target: ${omni.omni_uri}`);
+  if (omni && omni.note_id) L.push(`omni_note: ${omni.note_id}`);
   L.push("coord_space: image-pixels  # 裁剪后图像像素, 原点左上, +x 右 / +y 下");
   L.push("---");
   L.push("");
   L.push(`![标注截图](${imgPath})`);
+  if (omni && omni.omni_uri) {
+    L.push("");
+    L.push(`**指向实体**: \`${omni.omni_uri}\`${omni.note_id ? `（已挂札记 ${omni.note_id}）` : ""}`);
+  }
   L.push("");
   L.push(`## 标注（${shapes.length}）`);
   if (!shapes.length) L.push("_（无标注，仅截图）_");
@@ -442,21 +450,27 @@ async function doAction(act: string) {
   const png = compositePng();
   try {
     if (act === "md") {
-      // 复制为 Markdown: 存 PNG → 解析每个标注指向的真实 UI 元素 → 拼【详细】Markdown → 写成 .md 文件;
-      // 剪贴板只放 [[该 .md 路径]](粘贴时短, 详情都在文件里, AI 顺链接读)。
+      // 复制为 Markdown: 存 PNG → 解析每个标注指向的真实 UI 元素 + 整张截图压在哪个 omni 实体上
+      // → 拼【详细】Markdown(含 omni 实体解析) → 写成 .md 文件; 剪贴板只放 [[该 .md 路径]]。
+      // 评论不另起输入框: 直接复用截图里的文字标注。omni 解析走 Rust(server-to-server, 无 CORS),
+      // best-effort —— dashboard 没在跑就安静跳过, 绝不报错、绝不卡住导出。
       const path = await invoke<string>("save_image", { pngBase64: png });
       const { ox, oy, w: cw, h: ch } = cropMeta();
       const shapes = shapesInCrop(annot.getShapes(), ox, oy, cw, ch);
-      let hits: (PointAt | null)[] = shapes.map(() => null);
-      try {
-        const pts = shapes.map(resolvePointScreen);
-        // 超时兜底: UIA 遍历最多等 1.5s, 超时就降级成无「指向」—— 绝不让解析卡住截图复制/关闭。
-        hits = await Promise.race([
+      const comment = shapes.filter((s) => s.tool === "text" && s.text).map((s) => (s.text || "").trim()).filter(Boolean).join("\n");
+      // 并行: 每个标注指向的元素 + 整张截图的 omni 实体(都带超时兜底)。
+      const pts = shapes.map(resolvePointScreen);
+      const [hits, omni] = await Promise.all([
+        Promise.race([
           invoke<(PointAt | null)[]>("resolve_points_at", { points: pts }),
           new Promise<(PointAt | null)[]>((res) => setTimeout(() => res(shapes.map(() => null)), 1500)),
-        ]);
-      } catch {}
-      const md = buildMarkdown(path, shapes, ox, oy, cw, ch, hits);
+        ]).catch(() => shapes.map(() => null)),
+        Promise.race([
+          invoke<OmniResult>("omni_capture", { x: Math.round((pl + pr) / 2), y: Math.round((pt + pb) / 2), l: pl, t: pt, r: pr, b: pb, comment, pngBase64: png }),
+          new Promise<OmniResult>((res) => setTimeout(() => res({ omni_uri: null, note_id: null }), 3000)),
+        ]).catch(() => ({ omni_uri: null, note_id: null }) as OmniResult),
+      ]);
+      const md = buildMarkdown(path, shapes, ox, oy, cw, ch, hits, omni);
       let mdPath = path.replace(/\.png$/i, ".md"); // fallback
       try { mdPath = await invoke<string>("save_markdown", { md, pngPath: path }); } catch {}
       await invoke("copy_text", { text: `[[${mdPath}]]` }); // 剪贴板 = 文件链接, 不是长内容
@@ -476,19 +490,6 @@ async function doAction(act: string) {
     } else if (act === "ocr") {
       const text = await invoke<string>("ocr_region", { pngBase64: png });
       showPanel("OCR 结果", `<div class="pv" style="white-space:pre-wrap">${esc(text) || "(无文字)"}</div>`);
-    } else if (act === "omni") {
-      // 评论 → omni: 采集评论/三态, 让 dashboard 按屏幕位置识别这一块属于哪个实体并挂札记。
-      const meta = await promptCaptureMeta();
-      if (!meta) return; // 取消
-      await invoke("save_image", { pngBase64: png }); // 同时留一份本地历史
-      try {
-        const res = await sendCaptureToOmni({ pngBase64: png, rect: [pl, pt, pr, pb], comment: meta.comment, verdict: meta.verdict, modality: "still" });
-        const where = res.omni_uri ? `已指向 ${esc(res.omni_uri)}` : "未识别到 omni 实体（已作为截图留底）";
-        showPanel("已发送到 omni", `<div class="pv">${where}${res.note_id ? `<br>札记 ${esc(res.note_id)}` : ""}</div>`);
-        setTimeout(() => closeSnap(), 1300);
-      } catch (e) {
-        showPanel("发送失败", `<div class="pv">${esc(String(e))}<br>(dashboard 没在跑? 默认 127.0.0.1:8210)</div>`);
-      }
     }
   } catch (err) {
     showPanel("提示", `<div class="pv">${esc(String(err))}</div>`);
@@ -499,10 +500,6 @@ async function doAction(act: string) {
 // recorder captures the LIVE desktop (a short delay lets the hidden overlay clear before frame 0).
 async function startRegionRecord(pl: number, pt: number, pr: number, pb: number, hwnd: number) {
   if (!cap) return;
-  // 统一捕获: 录屏也是一种 modality。在开录瞬间把这一块解析到 omni 实体并挂一条 video 捕获,
-  // 让"录制了哪个 material/计划/笔记/项目/任务"有据可查(目标按开录瞬间锚定, 见 plan 开放问题)。
-  // 非阻塞: dashboard 没跑也不影响录制。
-  sendCaptureToOmni({ pngBase64: "", rect: [pl, pt, pr, pb], comment: "[录屏] 开始录制此区域", modality: "video" }).catch(() => {});
   // brief confirmation in the snap panel (no extra window) before closing + recording
   showPanel("● 开始录屏", `<div class="pv">${hwnd ? "正在录制选中的<b>窗口</b>(它移动也会跟着录)" : "正在录制选中<b>区域</b>"}。<br>到录制条点 <b>■ 停止</b>,或按 <b>Ctrl + Alt + R</b> 结束。</div>`);
   await new Promise((r) => setTimeout(r, 950));
@@ -598,7 +595,6 @@ window.addEventListener("keydown", (e) => {
   if (mode === "selected") {
     // 回车 / 双击 / Ctrl+C = 复制为 Markdown(结构化标注+路径, 喂 AI); Ctrl+Shift+C = 复制纯图片
     if ((e.ctrlKey || e.metaKey) && e.shiftKey && (k === "c" || k === "C")) { e.preventDefault(); doAction("copy"); return; }
-    if ((e.ctrlKey || e.metaKey) && k === "Enter") { e.preventDefault(); doAction("omni"); return; }
     if (k === "Enter") { e.preventDefault(); doAction("md"); return; }
     if ((e.ctrlKey || e.metaKey) && (k === "c" || k === "C")) { e.preventDefault(); doAction("md"); return; }
     if ((e.ctrlKey || e.metaKey) && (k === "s" || k === "S")) { e.preventDefault(); doAction("save"); return; }

@@ -322,73 +322,131 @@ pub fn save_markdown(md: String, png_path: String) -> Result<String, String> {
     Ok(s.strip_prefix(r"\\?\").map(|x| x.to_string()).unwrap_or(s))
 }
 
-/// 统一捕获 · 目标探针结果。给 dashboard 的捕获解析器提供:
+/// 统一捕获 · 目标探针结果(内部)。
 /// - content_origin: 光标下浏览器/webview 内容区(Document)左上角的物理像素坐标(坐标换算原点)。
 /// - win_title: 顶层窗口标题(供按标题匹配 omni 表面信标)。
-/// - url: 预留(暂空, 走标题匹配)。
-#[derive(serde::Serialize)]
-pub struct CaptureProbe {
-    pub content_origin: Option<[i32; 2]>,
-    pub win_title: String,
-    pub url: String,
+struct CaptureProbe {
+    content_origin: Option<[i32; 2]>,
+    win_title: String,
 }
 
-/// 探测屏幕点 (x,y) 下面是什么(跳过 poof 自己的覆盖层)。给统一捕获解析器用:
-/// 用 UIA 树遍历(不 hit-test, 因截图覆盖层在最上)找包含该点的 Document 元素 → 其左上角即内容区原点;
-/// 找包含该点的最大 Window 元素 → 其名字即窗口标题。见 plan UNIVERSAL-CAPTURE 第二层坐标映射。
+/// 统一捕获结果: 这张结构化截图压在哪个 omni 实体上 + (有评论时)挂的札记 id。
+#[derive(serde::Serialize, Default)]
+pub struct OmniResult {
+    pub omni_uri: Option<String>,
+    pub note_id: Option<String>,
+}
+
+/// 探测屏幕点 (x,y) 下面是什么(跳过 poof 自己的覆盖层)。用 UIA 树遍历(不 hit-test, 因截图覆盖层在最上)
+/// 找包含该点的 Document 元素 → 其左上角即内容区原点; 找包含该点的最大 Window 元素 → 其名字即窗口标题。
+#[cfg(windows)]
+fn probe_target_sync(skip: &[isize], x: i32, y: i32) -> CaptureProbe {
+    let els = crate::uia::elements_excluding(skip, 6000, 800);
+    let contains = |e: &crate::uia::ElementInfo| {
+        let [l, t, r, b] = e.rect;
+        x >= l && x < r && y >= t && y < b && r > l && b > t
+    };
+    let mut doc: Option<(i64, [i32; 4])> = None;
+    let mut win: Option<(i64, String)> = None;
+    for e in els.iter() {
+        if !contains(e) {
+            continue;
+        }
+        let [l, t, r, b] = e.rect;
+        let area = (r - l) as i64 * (b - t) as i64;
+        if e.control_type.contains("Document") && doc.map(|(a, _)| area < a).unwrap_or(true) {
+            doc = Some((area, e.rect));
+        }
+        if e.control_type.contains("Window") && !e.name.is_empty()
+            && win.map(|(a, _)| area > a).unwrap_or(true)
+        {
+            win = Some((area, e.name.clone()));
+        }
+    }
+    CaptureProbe {
+        content_origin: doc.map(|(_, rc)| [rc[0], rc[1]]),
+        win_title: win.map(|(_, n)| n).unwrap_or_default(),
+    }
+}
+
+fn omni_endpoint() -> String {
+    std::env::var("OMNI_CAPTURE_ENDPOINT").unwrap_or_else(|_| "http://127.0.0.1:8210".to_string())
+}
+
+/// 统一捕获: 把一次(结构化)截图解析到它压在的 omni 实体, 并在有评论(=截图里的文字标注)时挂一条札记。
+/// 服务端到服务端(ureq, 无 CORS); 全程 best-effort —— dashboard 没在跑 / 解析不出都安静返回空, 绝不报错、
+/// 绝不卡住截图导出。评论复用截图里的文字, 不另起输入框; 结果(omni_uri)折进结构化 Markdown。
 #[tauri::command]
-pub async fn capture_probe(app: tauri::AppHandle, x: i32, y: i32) -> CaptureProbe {
+pub async fn omni_capture(
+    app: tauri::AppHandle, x: i32, y: i32, l: i32, t: i32, r: i32, b: i32,
+    comment: String, png_base64: String,
+) -> OmniResult {
     #[cfg(windows)]
     {
         use tauri::Manager;
         let mut skip: Vec<isize> = Vec::new();
         for (label, w) in app.webview_windows() {
-            if label == "snap" || label == "recbar" {
+            if (label == "snap" || label == "recbar") {
                 if let Ok(h) = w.hwnd() {
                     skip.push(h.0 as isize);
                 }
             }
         }
         tauri::async_runtime::spawn_blocking(move || {
-            let els = crate::uia::elements_excluding(&skip, 6000, 800);
-            let contains = |e: &crate::uia::ElementInfo| {
-                let [l, t, r, b] = e.rect;
-                x >= l && x < r && y >= t && y < b && r > l && b > t
+            let probe = probe_target_sync(&skip, x, y);
+            let origin = probe
+                .content_origin
+                .map(|o| serde_json::json!([o[0], o[1]]))
+                .unwrap_or(serde_json::Value::Null);
+            let base = omni_endpoint();
+            let agent = ureq::AgentBuilder::new()
+                .timeout_connect(std::time::Duration::from_millis(1200))
+                .timeout_read(std::time::Duration::from_millis(2500))
+                .build();
+            let comment = comment.trim().to_string();
+            // 有评论 → 走 /captures(解析 + 挂札记到实体); 无评论 → 走 /resolve(只读, 不落盘不建札记)。
+            let (url, body) = if !comment.is_empty() {
+                let img = if png_base64.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::Value::String(format!("data:image/png;base64,{png_base64}"))
+                };
+                (
+                    format!("{base}/api/boss-sight/captures"),
+                    serde_json::json!({
+                        "capture_kind": "capture", "modality": "still", "comment": comment,
+                        "image_data_url": img, "screen_rect": [l, t, r, b],
+                        "content_origin": origin, "title": probe.win_title, "enqueue": false,
+                    }),
+                )
+            } else {
+                (
+                    format!("{base}/api/boss-sight/captures/resolve"),
+                    serde_json::json!({
+                        "screen_rect": [l, t, r, b], "content_origin": origin,
+                        "title": probe.win_title,
+                    }),
+                )
             };
-            // 内容区原点: 包含该点、control_type 含 "Document" 的元素中取最小面积(真正的文档)。
-            let mut doc: Option<(i64, [i32; 4])> = None;
-            // 窗口标题: 包含该点、control_type 含 "Window" 的元素中取最大面积(顶层窗口)。
-            let mut win: Option<(i64, String)> = None;
-            for e in els.iter() {
-                if !contains(e) {
-                    continue;
-                }
-                let [l, t, r, b] = e.rect;
-                let area = (r - l) as i64 * (b - t) as i64;
-                if e.control_type.contains("Document") {
-                    if doc.map(|(a, _)| area < a).unwrap_or(true) {
-                        doc = Some((area, e.rect));
-                    }
-                }
-                if e.control_type.contains("Window") && !e.name.is_empty() {
-                    if win.map(|(a, _)| area > a).unwrap_or(true) {
-                        win = Some((area, e.name.clone()));
-                    }
-                }
-            }
-            CaptureProbe {
-                content_origin: doc.map(|(_, rc)| [rc[0], rc[1]]),
-                win_title: win.map(|(_, n)| n).unwrap_or_default(),
-                url: String::new(),
+            let body_str = serde_json::to_string(&body).unwrap_or_default();
+            match agent.post(&url).set("Content-Type", "application/json").send_string(&body_str) {
+                Ok(resp) => match resp.into_string().ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()) {
+                    Some(v) => OmniResult {
+                        omni_uri: v.get("omni_uri").and_then(|x| x.as_str()).map(str::to_string),
+                        note_id: v.get("note_id").and_then(|x| x.as_str()).map(str::to_string),
+                    },
+                    None => OmniResult::default(),
+                },
+                Err(_) => OmniResult::default(),
             }
         })
         .await
-        .unwrap_or(CaptureProbe { content_origin: None, win_title: String::new(), url: String::new() })
+        .unwrap_or_default()
     }
     #[cfg(not(windows))]
     {
-        let _ = (app, x, y);
-        CaptureProbe { content_origin: None, win_title: String::new(), url: String::new() }
+        let _ = (app, x, y, l, t, r, b, comment, png_base64);
+        OmniResult::default()
     }
 }
 
