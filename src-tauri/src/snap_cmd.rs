@@ -330,14 +330,25 @@ struct CaptureProbe {
     win_title: String,
 }
 
+/// 页内一个被这张截图压到的实体(材料/计划/笔记/项目/任务)。
+#[derive(serde::Serialize, Default)]
+pub struct ContainedEntity {
+    pub title: Option<String>,
+    pub path: Option<String>,
+    pub description: Option<String>,
+}
+
 /// 统一捕获结果。给 AI 看的是 文件路径 + 完整描述(不暴露 omni:// 这种模型陌生的自造规范);
-/// omni_uri 只留作内部句柄。description 形如「审阅台的审阅材料:「标题」· 对应文件 docs/...」。
+/// omni_uri 只留作内部句柄。还回 在哪个页面(page_*) + 这一块里有哪些材料(contained)。
 #[derive(serde::Serialize, Default)]
 pub struct OmniResult {
     pub omni_uri: Option<String>,
     pub note_id: Option<String>,
     pub target_path: Option<String>,
     pub description: Option<String>,
+    pub page_title: Option<String>,
+    pub page_url: Option<String>,
+    pub contained: Vec<ContainedEntity>,
 }
 
 /// 探测屏幕点 (x,y) 下面是什么(跳过 poof 自己的覆盖层)。用 UIA 树遍历(不 hit-test, 因截图覆盖层在最上)
@@ -434,11 +445,23 @@ pub async fn omni_capture(
             let body_str = serde_json::to_string(&body).unwrap_or_default();
             match agent.post(&url).set("Content-Type", "application/json").send_string(&body_str) {
                 Ok(resp) => match resp.into_string().ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()) {
-                    Some(v) => OmniResult {
-                        omni_uri: v.get("omni_uri").and_then(|x| x.as_str()).map(str::to_string),
-                        note_id: v.get("note_id").and_then(|x| x.as_str()).map(str::to_string),
-                        target_path: v.get("path").and_then(|x| x.as_str()).map(str::to_string),
-                        description: v.get("description").and_then(|x| x.as_str()).map(str::to_string),
+                    Some(v) => {
+                        let page = v.get("page");
+                        OmniResult {
+                            omni_uri: v.get("omni_uri").and_then(|x| x.as_str()).map(str::to_string),
+                            note_id: v.get("note_id").and_then(|x| x.as_str()).map(str::to_string),
+                            target_path: v.get("path").and_then(|x| x.as_str()).map(str::to_string),
+                            description: v.get("description").and_then(|x| x.as_str()).map(str::to_string),
+                            page_title: page.and_then(|p| p.get("title")).and_then(|x| x.as_str()).map(str::to_string),
+                            page_url: page.and_then(|p| p.get("url")).and_then(|x| x.as_str()).map(str::to_string),
+                            contained: v.get("contained").and_then(|x| x.as_array()).map(|arr| {
+                                arr.iter().map(|e| ContainedEntity {
+                                    title: e.get("title").and_then(|x| x.as_str()).map(str::to_string),
+                                    path: e.get("path").and_then(|x| x.as_str()).map(str::to_string),
+                                    description: e.get("description").and_then(|x| x.as_str()).map(str::to_string),
+                                }).collect()
+                            }).unwrap_or_default(),
+                        }
                     },
                     None => OmniResult::default(),
                 },

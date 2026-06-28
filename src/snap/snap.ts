@@ -366,9 +366,16 @@ function compositePng(): string {
 // 坐标是"裁剪后图像像素"(原点=裁剪框左上, 与导出的 PNG 一一对应), 便于 AI 直接读懂"箭头从哪到哪、
 // 框住哪块区域、写了什么字"。形状的 pts 是全帧画布坐标, 减去裁剪原点(ox,oy)得到裁剪相对坐标。
 interface PointAt { name: string; control_type: string; rect: [number, number, number, number]; }
-// 统一捕获: 这张结构化截图压在哪个实体上。给 AI 看的是 文件路径 + 完整描述(模型直接看得懂),
-// 不用 omni:// 这种自造规范。Rust omni_capture 返回。
-interface OmniResult { omni_uri: string | null; note_id: string | null; target_path: string | null; description: string | null; }
+// 统一捕获: 这张结构化截图在哪个页面、压在哪个实体、这一块里有哪些材料。给 AI 看的是 文件路径 +
+// 完整描述(模型直接看得懂), 不用 omni:// 自造规范。Rust omni_capture 返回。
+interface ContainedEntity { title: string | null; path: string | null; description: string | null; }
+interface OmniResult {
+  omni_uri: string | null; note_id: string | null;
+  target_path: string | null; description: string | null;
+  page_title: string | null; page_url: string | null;
+  contained: ContainedEntity[];
+}
+const EMPTY_OMNI: OmniResult = { omni_uri: null, note_id: null, target_path: null, description: null, page_title: null, page_url: null, contained: [] };
 const TOOL_CN: Record<string, string> = {
   rect: "矩形", ellipse: "椭圆", arrow: "箭头", line: "直线",
   pen: "画笔", highlight: "荧光标记", mosaic: "马赛克遮挡", text: "文字",
@@ -400,8 +407,9 @@ function buildMarkdown(imgPath: string, shapes: Shape[], ox: number, oy: number,
   L.push(`size: ${w}x${h}`);
   L.push(`dpi_scale: ${cap!.scale}`);
   if (ts) L.push(`captured_at: ${ts}`);
-  // 统一捕获: 这张截图压在哪个实体上 —— 文件路径 + 完整描述(模型直接看得懂, 不用 omni:// 自造规范)。
+  // 统一捕获: 在哪个页面 + 压在哪个实体 —— 文件路径 + 完整描述(模型直接看得懂, 不用 omni:// 自造规范)。
   // dashboard 没在跑 / 没解析出则不带这些行。
+  if (omni && (omni.page_title || omni.page_url)) L.push(`page: ${omni.page_title || ""}${omni.page_url ? ` (${omni.page_url})` : ""}`.trim());
   if (omni && omni.description) L.push(`target: ${omni.description}`);
   if (omni && omni.target_path) L.push(`target_file: ${omni.target_path}`);
   if (omni && omni.note_id) L.push(`target_note: ${omni.note_id}`);
@@ -412,6 +420,15 @@ function buildMarkdown(imgPath: string, shapes: Shape[], ox: number, oy: number,
   if (omni && omni.description) {
     L.push("");
     L.push(`**指向**: ${omni.description}${omni.target_path ? `（文件 \`${omni.target_path}\`）` : ""}${omni.note_id ? `（已挂札记 ${omni.note_id}）` : ""}`);
+  }
+  // 这一块里有哪些材料(页内被这张截图压到的实体, 按重叠多少排)。
+  if (omni && omni.contained && omni.contained.length) {
+    L.push("");
+    L.push("## 这一块里有哪些材料");
+    L.push("");
+    omni.contained.slice(0, 12).forEach((c) => {
+      L.push(`- ${c.description || c.title || "(实体)"}${c.path ? ` — \`${c.path}\`` : ""}`);
+    });
   }
   L.push("");
   L.push(`## 标注（${shapes.length}）`);
@@ -461,7 +478,7 @@ async function doAction(act: string) {
       const { ox, oy, w: cw, h: ch } = cropMeta();
       const shapes = shapesInCrop(annot.getShapes(), ox, oy, cw, ch);
       const comment = shapes.filter((s) => s.tool === "text" && s.text).map((s) => (s.text || "").trim()).filter(Boolean).join("\n");
-      // 并行: 每个标注指向的元素 + 整张截图的 omni 实体(都带超时兜底)。
+      // 并行(都带超时兜底): 每个标注指向的元素 + 整张截图的实体解析(在哪个页面/哪个材料)。
       const pts = shapes.map(resolvePointScreen);
       const [hits, omni] = await Promise.all([
         Promise.race([
@@ -470,8 +487,8 @@ async function doAction(act: string) {
         ]).catch(() => shapes.map(() => null)),
         Promise.race([
           invoke<OmniResult>("omni_capture", { x: Math.round((pl + pr) / 2), y: Math.round((pt + pb) / 2), l: pl, t: pt, r: pr, b: pb, comment, pngBase64: png }),
-          new Promise<OmniResult>((res) => setTimeout(() => res({ omni_uri: null, note_id: null, target_path: null, description: null }), 3000)),
-        ]).catch(() => ({ omni_uri: null, note_id: null, target_path: null, description: null }) as OmniResult),
+          new Promise<OmniResult>((res) => setTimeout(() => res(EMPTY_OMNI), 3000)),
+        ]).catch(() => EMPTY_OMNI),
       ]);
       const md = buildMarkdown(path, shapes, ox, oy, cw, ch, hits, omni);
       let mdPath = path.replace(/\.png$/i, ".md"); // fallback
