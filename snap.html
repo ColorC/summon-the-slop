@@ -22,6 +22,9 @@
       <div id="loupeInfo" class="loupeInfo"></div>
     </div>
     <div id="panel" class="panel hidden"></div>
+    <!-- 画板(BlockSuite edgeless): 截图当背景, 原生画板标注。Enter 完成, Esc 退出。 -->
+    <div id="board" class="hidden" style="position:fixed;inset:0;z-index:50;background:#0f0f0f"></div>
+    <div id="boardhint" class="hidden" style="position:fixed;left:50%;top:10px;transform:translateX(-50%);z-index:51;background:#141210;color:#e7e9ee;font:12px system-ui;padding:6px 12px;border-radius:8px;border:1px solid #2a2a2a">画板模式 · 原生标注(移动/缩放/删/连线)· <b>Enter</b> 完成 · <b>Esc</b> 退出</div>
     <div id="toolbar" class="toolbar hidden">
       <button data-tool="move" class="on" title="移动/调整 (M)">✥</button>
       <button data-tool="rect" title="矩形 (R)">▭</button>
@@ -39,6 +42,8 @@
       <button data-color="#0a84ff" class="swatch" style="background:#0a84ff"></button>
       <button data-color="#ffffff" class="swatch" style="background:#ffffff"></button>
       <button data-color="#1c1c1e" class="swatch" style="background:#1c1c1e"></button>
+      <span class="tsep"></span>
+      <button data-act="board" title="画板模式：用 BlockSuite 原生画板标注（移动/缩放/定点删/连线/带背景文字）(B)">画板</button>
       <span class="tsep"></span>
       <button data-act="undo" title="撤销 (Ctrl+Z)">↶</button>
       <button data-act="redo" title="重做 (Ctrl+Y)">↷</button>

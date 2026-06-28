@@ -7,6 +7,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Annotator, Tool, type Shape, type Pt } from "./anno";
+import { SnapBoard, type BoardShape } from "./board";
 
 interface Capture { width: number; height: number; x: number; y: number; scale: number; }
 interface Rect { l: number; t: number; r: number; b: number; }
@@ -24,7 +25,10 @@ const textIn = $("textIn") as HTMLInputElement;
 const sctx = scr.getContext("2d", { willReadFrequently: true })!;
 const lctx = loupeCanvas.getContext("2d")!;
 const annot = new Annotator(annoEl, scr);
+const boardEl = $("board"), boardHint = $("boardhint");
 
+let board: SnapBoard | null = null;
+let boardMode = false;
 let cap: Capture | null = null;
 let dpr = 1;
 let mode: "idle" | "selected" = "idle";
@@ -61,7 +65,15 @@ const norm = (a: { x: number; y: number }, b: { x: number; y: number }): Rect =>
 // Critical before capture: the window is on-screen (always-on-top), so DXGI would grab
 // our own old screenshot/mask if we left anything painted.
 function clearForCapture() {
-  for (const el of [mask, selEl, hot, toolbar, panel, sizebadge, loupe, chx, chy, textIn]) el.classList.add("hidden");
+  // 画板若开着, 先卸掉(防止跨截图泄漏 BlockSuite 实例)。
+  if (boardMode || board) {
+    boardMode = false;
+    try { board?.unmount(); } catch { /* ignore */ }
+    board = null;
+    boardEl.classList.add("hidden"); boardEl.innerHTML = "";
+    annoEl.style.display = "";
+  }
+  for (const el of [mask, selEl, hot, toolbar, panel, sizebadge, loupe, chx, chy, textIn, boardHint]) el.classList.add("hidden");
   handlesEl.innerHTML = "";
   sctx.clearRect(0, 0, scr.width, scr.height);
   annoEl.getContext("2d")!.clearRect(0, 0, annoEl.width, annoEl.height);
@@ -213,9 +225,9 @@ function updateCross(cx: number, cy: number) {
 // ---- pointer state machine ------------------------------------------------
 
 function onDown(e: MouseEvent) {
-  if (!cap || e.button !== 0) return;
+  if (!cap || e.button !== 0 || boardMode) return; // 画板模式: 输入归 BlockSuite
   const tgt = e.target as HTMLElement;
-  if (tgt.closest("#toolbar,#panel,#textIn")) return; // their own handlers
+  if (tgt.closest("#toolbar,#panel,#textIn,#board")) return; // their own handlers
   commitTextIfOpen();
   if (mode === "selected") {
     if (tgt.classList.contains("handle")) { action = "resize"; resizeEdge = tgt.dataset.dir || ""; origSel = { ...sel }; down = { x: e.clientX, y: e.clientY }; return; }
@@ -240,7 +252,7 @@ function onDown(e: MouseEvent) {
 }
 
 function onMove(e: MouseEvent) {
-  if (!cap) return;
+  if (!cap || boardMode) return;
   const x = e.clientX, y = e.clientY;
   if (action === "create" && down) {
     sel = norm(down, { x, y });
@@ -301,7 +313,7 @@ function highlightWindowAt(cx: number, cy: number) {
 }
 
 function onUp(e: MouseEvent) {
-  if (!cap) return;
+  if (!cap || boardMode) return;
   if (action === "create" && down) {
     const moved = Math.abs(e.clientX - down.x) + Math.abs(e.clientY - down.y);
     const dragged = norm(down, { x: e.clientX, y: e.clientY });
@@ -552,6 +564,76 @@ async function startRegionRecord(pl: number, pt: number, pr: number, pb: number,
   } catch {}
 }
 
+// ---- 画板模式 (BlockSuite edgeless) ---------------------------------------
+// 选区截图当背景, 用 poof 已在用的 BlockSuite 画板原生标注; 导出读画板元素 → 同一条结构化 MD + omni 流。
+
+/** 选区的纯截图(无标注)PNG base64 + 尺寸, 给画板当背景图块。 */
+function cropScreenPng(): { b64: string; w: number; h: number } {
+  const [pl, pt, pr, pb] = cropPhys();
+  const w = pr - pl, h = pb - pt;
+  const c = document.createElement("canvas"); c.width = w; c.height = h;
+  const cx = c.getContext("2d")!;
+  cx.drawImage(scr, pl - cap!.x, pt - cap!.y, w, h, 0, 0, w, h);
+  return { b64: c.toDataURL("image/png").split(",")[1], w, h };
+}
+
+async function enterBoard() {
+  if (!cap || mode !== "selected" || boardMode) return;
+  commitTextIfOpen();
+  const crop = cropScreenPng();
+  boardMode = true;
+  toolbar.classList.add("hidden");
+  annoEl.style.display = "none";
+  boardEl.classList.remove("hidden");
+  boardHint.classList.remove("hidden");
+  board = new SnapBoard();
+  try {
+    await board.mount(boardEl, crop.b64, crop.w, crop.h);
+  } catch (e) {
+    showPanel("画板加载失败", `<div class="pv">${esc(String(e))}</div>`);
+    exitBoard();
+  }
+}
+
+function exitBoard() {
+  boardMode = false;
+  try { board?.unmount(); } catch { /* ignore */ }
+  board = null;
+  boardEl.classList.add("hidden"); boardEl.innerHTML = "";
+  boardHint.classList.add("hidden");
+  annoEl.style.display = "";
+  if (mode === "selected") showToolbar();
+}
+
+/** 画板导出: 读画板元素 + 合成 PNG → 同一条结构化 MD(含 omni 实体解析 + 逐条评论归材料)。 */
+async function doBoardExport() {
+  if (!board || !cap) return;
+  try {
+    const png = await board.renderAnnotatedPng();
+    const shapes = board.getShapes();
+    const [pl, pt, pr, pb] = cropPhys();
+    // 文字标注(评论)→ 屏幕物理坐标(裁剪原点 + 图块像素), 给后端按位置归材料。
+    const annotations = shapes
+      .filter((s: BoardShape) => s.tool === "text" && (s.text || "").trim())
+      .map((s: BoardShape) => ({ x: Math.round(pl + s.pts[0].x), y: Math.round(pt + s.pts[0].y), text: (s.text || "").trim() }));
+    const comment = annotations.map((a) => a.text).join("\n");
+    const path = await invoke<string>("save_image", { pngBase64: png });
+    const omni = await Promise.race([
+      invoke<OmniResult>("omni_capture", { x: Math.round((pl + pr) / 2), y: Math.round((pt + pb) / 2), l: pl, t: pt, r: pr, b: pb, comment, pngBase64: png, annotations }),
+      new Promise<OmniResult>((res) => setTimeout(() => res(EMPTY_OMNI), 3500)),
+    ]).catch(() => EMPTY_OMNI);
+    // 画板 shapes 已是裁剪像素坐标(图块 0,0 1:1) → buildMarkdown 用 ox=oy=0。
+    const md = buildMarkdown(path, shapes as unknown as Shape[], 0, 0, pr - pl, pb - pt, shapes.map(() => null), omni);
+    let mdPath = path.replace(/\.png$/i, ".md");
+    try { mdPath = await invoke<string>("save_markdown", { md, pngPath: path }); } catch { /* keep fallback */ }
+    await invoke("copy_text", { text: `[[${mdPath}]]` });
+  } catch (e) {
+    showPanel("画板导出失败", `<div class="pv">${esc(String(e))}</div>`);
+  }
+  exitBoard();
+  await closeSnap();
+}
+
 // ---- history panel --------------------------------------------------------
 
 function showPanel(title: string, bodyHtml: string) {
@@ -610,6 +692,7 @@ toolbar.addEventListener("click", (e) => {
   if (act === "undo") annot.undo();
   else if (act === "redo") annot.redo();
   else if (act === "history") showHistory();
+  else if (act === "board") enterBoard();
   else doAction(act);
 });
 
@@ -624,6 +707,12 @@ function onEscape() {
 window.addEventListener("keydown", (e) => {
   if (document.activeElement === textIn) return;
   const k = e.key;
+  // 画板模式: Enter 完成导出, Esc 退出回普通标注。其它键交给 BlockSuite 画板自己处理。
+  if (boardMode) {
+    if (k === "Enter" && !e.shiftKey) { e.preventDefault(); doBoardExport(); }
+    else if (k === "Escape") { e.preventDefault(); exitBoard(); }
+    return;
+  }
   if (k === "Escape") { e.preventDefault(); onEscape(); return; }
   if (recordMode) {
     // 录制模式: Enter records the hovered window, or the full screen if nothing is highlighted
@@ -645,6 +734,7 @@ window.addEventListener("keydown", (e) => {
     // 定点删: 选中某个形状后按 Delete/Backspace 删它(不必整体撤销)。
     if ((k === "Delete" || k === "Backspace") && annot.getSelected() >= 0) { e.preventDefault(); annot.deleteSelected(); return; }
     if (k === "F3") { e.preventDefault(); doAction("pin"); return; }
+    if ((k === "b" || k === "B") && !e.ctrlKey && !e.altKey && !e.metaKey) { e.preventDefault(); enterBoard(); return; }
     if (!e.ctrlKey && !e.altKey && !e.metaKey) {
       const map: Record<string, Tool | "move"> = { m: "move", r: "rect", o: "ellipse", a: "arrow", l: "line", p: "pen", h: "highlight", k: "mosaic", t: "text" };
       const nt = map[k.toLowerCase()];
