@@ -369,13 +369,15 @@ interface PointAt { name: string; control_type: string; rect: [number, number, n
 // 统一捕获: 这张结构化截图在哪个页面、压在哪个实体、这一块里有哪些材料。给 AI 看的是 文件路径 +
 // 完整描述(模型直接看得懂), 不用 omni:// 自造规范。Rust omni_capture 返回。
 interface ContainedEntity { title: string | null; path: string | null; description: string | null; }
+interface PointTarget { text: string | null; description: string | null; path: string | null; note_id: string | null; }
 interface OmniResult {
   omni_uri: string | null; note_id: string | null;
   target_path: string | null; description: string | null;
   page_title: string | null; page_url: string | null;
   contained: ContainedEntity[];
+  point_targets: PointTarget[];
 }
-const EMPTY_OMNI: OmniResult = { omni_uri: null, note_id: null, target_path: null, description: null, page_title: null, page_url: null, contained: [] };
+const EMPTY_OMNI: OmniResult = { omni_uri: null, note_id: null, target_path: null, description: null, page_title: null, page_url: null, contained: [], point_targets: [] };
 const TOOL_CN: Record<string, string> = {
   rect: "矩形", ellipse: "椭圆", arrow: "箭头", line: "直线",
   pen: "画笔", highlight: "荧光标记", mosaic: "马赛克遮挡", text: "文字",
@@ -420,6 +422,16 @@ function buildMarkdown(imgPath: string, shapes: Shape[], ox: number, oy: number,
   if (omni && omni.description) {
     L.push("");
     L.push(`**指向**: ${omni.description}${omni.target_path ? `（文件 \`${omni.target_path}\`）` : ""}${omni.note_id ? `（已挂札记 ${omni.note_id}）` : ""}`);
+  }
+  // 每条评论挂到了哪条材料(点 1: 按文字标注的位置各自归材料, 并已写进该材料的真评论)。
+  if (omni && omni.point_targets && omni.point_targets.length) {
+    L.push("");
+    L.push("## 评论挂到哪条材料");
+    L.push("");
+    omni.point_targets.forEach((p) => {
+      const where = p.description || "(没压在具体材料上, 作页面评论)";
+      L.push(`- 评论「${p.text || ""}」→ ${where}${p.path ? ` — \`${p.path}\`` : ""}${p.note_id ? `（已挂札记 ${p.note_id}）` : ""}`);
+    });
   }
   // 这一块里有哪些材料(页内被这张截图压到的实体, 按重叠多少排)。
   if (omni && omni.contained && omni.contained.length) {
@@ -477,8 +489,11 @@ async function doAction(act: string) {
       const path = await invoke<string>("save_image", { pngBase64: png });
       const { ox, oy, w: cw, h: ch } = cropMeta();
       const shapes = shapesInCrop(annot.getShapes(), ox, oy, cw, ch);
-      const comment = shapes.filter((s) => s.tool === "text" && s.text).map((s) => (s.text || "").trim()).filter(Boolean).join("\n");
-      // 并行(都带超时兜底): 每个标注指向的元素 + 整张截图的实体解析(在哪个页面/哪个材料)。
+      // 每条文字标注 = 一条评论, 带它的屏幕坐标(给后端按位置精确归材料, 点 1)。
+      const textShapes = shapes.filter((s) => s.tool === "text" && (s.text || "").trim());
+      const comment = textShapes.map((s) => (s.text || "").trim()).join("\n");
+      const annotations = textShapes.map((s) => { const [ax, ay] = resolvePointScreen(s); return { x: ax, y: ay, text: (s.text || "").trim() }; });
+      // 并行(都带超时兜底): 每个标注指向的元素 + 整张截图的实体解析(页面/材料/逐条评论归材料)。
       const pts = shapes.map(resolvePointScreen);
       const [hits, omni] = await Promise.all([
         Promise.race([
@@ -486,8 +501,8 @@ async function doAction(act: string) {
           new Promise<(PointAt | null)[]>((res) => setTimeout(() => res(shapes.map(() => null)), 1500)),
         ]).catch(() => shapes.map(() => null)),
         Promise.race([
-          invoke<OmniResult>("omni_capture", { x: Math.round((pl + pr) / 2), y: Math.round((pt + pb) / 2), l: pl, t: pt, r: pr, b: pb, comment, pngBase64: png }),
-          new Promise<OmniResult>((res) => setTimeout(() => res(EMPTY_OMNI), 3000)),
+          invoke<OmniResult>("omni_capture", { x: Math.round((pl + pr) / 2), y: Math.round((pt + pb) / 2), l: pl, t: pt, r: pr, b: pb, comment, pngBase64: png, annotations }),
+          new Promise<OmniResult>((res) => setTimeout(() => res(EMPTY_OMNI), 3500)),
         ]).catch(() => EMPTY_OMNI),
       ]);
       const md = buildMarkdown(path, shapes, ox, oy, cw, ch, hits, omni);

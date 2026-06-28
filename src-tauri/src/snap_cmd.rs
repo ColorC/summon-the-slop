@@ -338,6 +338,23 @@ pub struct ContainedEntity {
     pub description: Option<String>,
 }
 
+/// 一条文字标注(评论)+ 它的屏幕坐标。给后端按每条位置精确归材料(点 1)。
+#[derive(serde::Deserialize)]
+pub struct AnnotationIn {
+    pub x: f64,
+    pub y: f64,
+    pub text: String,
+}
+
+/// 单条评论解析到的目标(挂在哪条材料 + 已建的札记 id)。
+#[derive(serde::Serialize, Default)]
+pub struct PointTarget {
+    pub text: Option<String>,
+    pub description: Option<String>,
+    pub path: Option<String>,
+    pub note_id: Option<String>,
+}
+
 /// 统一捕获结果。给 AI 看的是 文件路径 + 完整描述(不暴露 omni:// 这种模型陌生的自造规范);
 /// omni_uri 只留作内部句柄。还回 在哪个页面(page_*) + 这一块里有哪些材料(contained)。
 #[derive(serde::Serialize, Default)]
@@ -349,6 +366,7 @@ pub struct OmniResult {
     pub page_title: Option<String>,
     pub page_url: Option<String>,
     pub contained: Vec<ContainedEntity>,
+    pub point_targets: Vec<PointTarget>,
 }
 
 /// 探测屏幕点 (x,y) 下面是什么(跳过 poof 自己的覆盖层)。用 UIA 树遍历(不 hit-test, 因截图覆盖层在最上)
@@ -393,7 +411,7 @@ fn omni_endpoint() -> String {
 #[tauri::command]
 pub async fn omni_capture(
     app: tauri::AppHandle, x: i32, y: i32, l: i32, t: i32, r: i32, b: i32,
-    comment: String, png_base64: String,
+    comment: String, png_base64: String, annotations: Vec<AnnotationIn>,
 ) -> OmniResult {
     #[cfg(windows)]
     {
@@ -418,8 +436,14 @@ pub async fn omni_capture(
                 .timeout_read(std::time::Duration::from_millis(2500))
                 .build();
             let comment = comment.trim().to_string();
-            // 有评论 → 走 /captures(解析 + 挂札记到实体); 无评论 → 走 /resolve(只读, 不落盘不建札记)。
-            let (url, body) = if !comment.is_empty() {
+            // 逐条文字标注(评论)→ JSON, 后端按每条位置精确归材料(点 1)。
+            let anns_json: Vec<serde_json::Value> = annotations
+                .iter()
+                .map(|a| serde_json::json!({"x": a.x, "y": a.y, "text": a.text}))
+                .collect();
+            let has_anns = !anns_json.is_empty();
+            // 有评论(整体)或逐条标注 → 走 /captures(解析 + 挂札记到实体); 否则 → /resolve(只读)。
+            let (url, body) = if !comment.is_empty() || has_anns {
                 let img = if png_base64.is_empty() {
                     serde_json::Value::Null
                 } else {
@@ -429,6 +453,7 @@ pub async fn omni_capture(
                     format!("{base}/api/boss-sight/captures"),
                     serde_json::json!({
                         "capture_kind": "capture", "modality": "still", "comment": comment,
+                        "annotations": anns_json,
                         "image_data_url": img, "screen_rect": [l, t, r, b],
                         "content_origin": origin, "title": probe.win_title, "enqueue": false,
                     }),
@@ -461,6 +486,14 @@ pub async fn omni_capture(
                                     description: e.get("description").and_then(|x| x.as_str()).map(str::to_string),
                                 }).collect()
                             }).unwrap_or_default(),
+                            point_targets: v.get("point_targets").and_then(|x| x.as_array()).map(|arr| {
+                                arr.iter().filter(|e| e.is_object()).map(|e| PointTarget {
+                                    text: e.get("text").and_then(|x| x.as_str()).map(str::to_string),
+                                    description: e.get("description").and_then(|x| x.as_str()).map(str::to_string),
+                                    path: e.get("path").and_then(|x| x.as_str()).map(str::to_string),
+                                    note_id: e.get("note_id").and_then(|x| x.as_str()).map(str::to_string),
+                                }).collect()
+                            }).unwrap_or_default(),
                         }
                     },
                     None => OmniResult::default(),
@@ -473,7 +506,7 @@ pub async fn omni_capture(
     }
     #[cfg(not(windows))]
     {
-        let _ = (app, x, y, l, t, r, b, comment, png_base64);
+        let _ = (app, x, y, l, t, r, b, comment, png_base64, annotations);
         OmniResult::default()
     }
 }
