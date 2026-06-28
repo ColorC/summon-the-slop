@@ -22,9 +22,6 @@
       <div id="loupeInfo" class="loupeInfo"></div>
     </div>
     <div id="panel" class="panel hidden"></div>
-    <!-- 画板(BlockSuite edgeless): 截图当背景, 原生画板标注。Enter 完成, Esc 退出。 -->
-    <div id="board" class="hidden" style="position:fixed;inset:0;z-index:50;background:#0f0f0f"></div>
-    <div id="boardhint" class="hidden" style="position:fixed;left:50%;top:10px;transform:translateX(-50%);z-index:51;background:#141210;color:#e7e9ee;font:12px system-ui;padding:6px 12px;border-radius:8px;border:1px solid #2a2a2a">画板模式 · 原生标注(移动/缩放/删/连线)· <b>Enter</b> 完成 · <b>Esc</b> 退出</div>
     <div id="toolbar" class="toolbar hidden">
       <button data-tool="move" class="on" title="移动/调整 (M)">✥</button>
       <button data-tool="rect" title="矩形 (R)">▭</button>
@@ -43,8 +40,6 @@
       <button data-color="#ffffff" class="swatch" style="background:#ffffff"></button>
       <button data-color="#1c1c1e" class="swatch" style="background:#1c1c1e"></button>
       <span class="tsep"></span>
-      <button data-act="board" title="画板模式：用 BlockSuite 原生画板标注（移动/缩放/定点删/连线/带背景文字）(B)">画板</button>
-      <span class="tsep"></span>
       <button data-act="undo" title="撤销 (Ctrl+Z)">↶</button>
       <button data-act="redo" title="重做 (Ctrl+Y)">↷</button>
       <span class="tsep"></span>
@@ -55,7 +50,7 @@
       <button data-act="copy" title="复制纯图片 (Ctrl+Shift+C)">复制图</button>
       <button data-act="md" title="复制为 Markdown：截图元信息 + 每个标注（箭头/框/文字）的结构化坐标 + 自动解析这一块压在哪个 omni 实体上（审阅材料/计划/笔记/项目/任务），喂给 AI 读 (Enter / 双击 / Ctrl+C)">复制 MD</button>
     </div>
-    <div id="hint" class="hint hidden">拖拽框选　·　画完点选形状可拖动 / 拖角改大小 / Delete 删除　·　Enter 复制 MD（标注+实体解析喂 AI）　·　Ctrl+Shift+C 复制图　·　F3 贴图　·　Ctrl+S 保存　·　Esc 取消</div>
+    <div id="hint" class="hint hidden">拖拽框选　·　画完即可点选/拖动/拖把手改大小/双击改文字/方向键微移/Delete 删/滚轮调粗细　·　Enter 复制 MD　·　Ctrl+Z 撤销　·　F3 贴图　·　Esc 取消</div>
     <script type="module" src="/src/snap/snap.ts"></script>
   </body>
 </html>

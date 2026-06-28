@@ -7,7 +7,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Annotator, Tool, type Shape, type Pt } from "./anno";
-import { SnapBoard, type BoardShape } from "./board";
 
 interface Capture { width: number; height: number; x: number; y: number; scale: number; }
 interface Rect { l: number; t: number; r: number; b: number; }
@@ -25,17 +24,16 @@ const textIn = $("textIn") as HTMLInputElement;
 const sctx = scr.getContext("2d", { willReadFrequently: true })!;
 const lctx = loupeCanvas.getContext("2d")!;
 const annot = new Annotator(annoEl, scr);
-const boardEl = $("board"), boardHint = $("boardhint");
 
-let board: SnapBoard | null = null;
-let boardMode = false;
 let cap: Capture | null = null;
 let dpr = 1;
 let mode: "idle" | "selected" = "idle";
 let action: "none" | "create" | "move" | "resize" | "draw" | "dragshape" | "resizeshape" = "none";
 let dragShapeIdx = -1; // 拖动已画形状时, 被拖的形状下标
 let resizeEdge = "";
-let shapeResizeHandle = ""; // 改某个已画形状大小时, 拖的是哪个角把手(nw/ne/sw/se)
+let shapeResizeHandle = ""; // 改某个已画形状大小时, 拖的是哪个把手
+let gestureSnapped = false;  // 一次拖动只压一条撤销历史(首次移动时压)
+let textEditIdx = -1;        // 双击改文字: 正在编辑的 text 形状下标(-1=新建)
 let tool: Tool | "move" = "move";
 let down: { x: number; y: number } | null = null;
 let origSel: Rect = { l: 0, t: 0, r: 0, b: 0 };
@@ -65,15 +63,7 @@ const norm = (a: { x: number; y: number }, b: { x: number; y: number }): Rect =>
 // Critical before capture: the window is on-screen (always-on-top), so DXGI would grab
 // our own old screenshot/mask if we left anything painted.
 function clearForCapture() {
-  // 画板若开着, 先卸掉(防止跨截图泄漏 BlockSuite 实例)。
-  if (boardMode || board) {
-    boardMode = false;
-    try { board?.unmount(); } catch { /* ignore */ }
-    board = null;
-    boardEl.classList.add("hidden"); boardEl.innerHTML = "";
-    annoEl.style.display = "";
-  }
-  for (const el of [mask, selEl, hot, toolbar, panel, sizebadge, loupe, chx, chy, textIn, boardHint]) el.classList.add("hidden");
+  for (const el of [mask, selEl, hot, toolbar, panel, sizebadge, loupe, chx, chy, textIn]) el.classList.add("hidden");
   handlesEl.innerHTML = "";
   sctx.clearRect(0, 0, scr.width, scr.height);
   annoEl.getContext("2d")!.clearRect(0, 0, annoEl.width, annoEl.height);
@@ -224,22 +214,31 @@ function updateCross(cx: number, cy: number) {
 
 // ---- pointer state machine ------------------------------------------------
 
+/** 把手方向 → 鼠标光标(成熟工具的缩放向反馈)。 */
+function handleCursor(dir: string): string {
+  if (dir === "nw" || dir === "se") return "nwse-resize";
+  if (dir === "ne" || dir === "sw") return "nesw-resize";
+  if (dir === "n" || dir === "s") return "ns-resize";
+  if (dir === "e" || dir === "w") return "ew-resize";
+  return "crosshair"; // e0/e1 端点
+}
+
 function onDown(e: MouseEvent) {
-  if (!cap || e.button !== 0 || boardMode) return; // 画板模式: 输入归 BlockSuite
+  if (!cap || e.button !== 0) return;
   const tgt = e.target as HTMLElement;
-  if (tgt.closest("#toolbar,#panel,#textIn,#board")) return; // their own handlers
+  if (tgt.closest("#toolbar,#panel,#textIn")) return; // their own handlers
   commitTextIfOpen();
   if (mode === "selected") {
     if (tgt.classList.contains("handle")) { action = "resize"; resizeEdge = tgt.dataset.dir || ""; origSel = { ...sel }; down = { x: e.clientX, y: e.clientY }; return; }
     const inside = e.clientX >= sel.l && e.clientX <= sel.r && e.clientY >= sel.t && e.clientY <= sel.b;
     if (inside) {
       // 画板交互: ① 点中选中形状的角把手 → 改大小; ② 点中已画形状 → 选中并直接拖; ③ 点空 → 清选。
-      if (tool !== "text") {
+      {
         const handle = annot.handleAt(e.clientX, e.clientY);
-        if (handle) { action = "resizeshape"; shapeResizeHandle = handle; down = { x: e.clientX, y: e.clientY }; return; }
+        if (handle) { action = "resizeshape"; shapeResizeHandle = handle; gestureSnapped = false; down = { x: e.clientX, y: e.clientY }; return; }
         const hit = annot.hitTest(e.clientX, e.clientY);
-        if (hit >= 0) { annot.select(hit); action = "dragshape"; dragShapeIdx = hit; down = { x: e.clientX, y: e.clientY }; return; }
-        annot.clearSelection();
+        if (hit >= 0) { annot.select(hit); action = "dragshape"; dragShapeIdx = hit; gestureSnapped = false; down = { x: e.clientX, y: e.clientY }; return; }
+        if (tool !== "text") annot.clearSelection();
       }
       if (tool === "text") { openTextInput(e.clientX, e.clientY); return; }
       if (tool === "move") { action = "move"; origSel = { ...sel }; down = { x: e.clientX, y: e.clientY }; return; }
@@ -252,7 +251,7 @@ function onDown(e: MouseEvent) {
 }
 
 function onMove(e: MouseEvent) {
-  if (!cap || boardMode) return;
+  if (!cap) return;
   const x = e.clientX, y = e.clientY;
   if (action === "create" && down) {
     sel = norm(down, { x, y });
@@ -280,15 +279,25 @@ function onMove(e: MouseEvent) {
     return;
   }
   if (action === "dragshape" && down) {
+    if (!gestureSnapped) { annot.snapshot(); gestureSnapped = true; } // 一次拖动一条历史
     annot.moveShapeBy(dragShapeIdx, x - down.x, y - down.y);
     down = { x, y }; // 增量平移
     return;
   }
   if (action === "resizeshape" && down) {
+    if (!gestureSnapped) { annot.snapshot(); gestureSnapped = true; }
     annot.resizeSelected(shapeResizeHandle, x, y);
     return;
   }
-  if (action === "draw") { annot.onMove(x, y); return; }
+  if (action === "draw") { annot.onMove(x, y, e.shiftKey); return; }
+  // 选中态空闲悬停: 光标反馈(把手=缩放向, 元素=移动)。
+  if (mode === "selected" && action === "none") {
+    const h = annot.handleAt(x, y);
+    if (h) hot.style.cursor = handleCursor(h);
+    else if (annot.hitTest(x, y) >= 0) hot.style.cursor = "move";
+    else hot.style.cursor = tool === "text" ? "text" : tool === "move" ? "default" : "crosshair";
+    return;
+  }
   // idle hover
   if (mode === "idle") {
     if (recordMode) { highlightWindowAt(x, y); return; } // record mode: outline the window under cursor
@@ -313,7 +322,7 @@ function highlightWindowAt(cx: number, cy: number) {
 }
 
 function onUp(e: MouseEvent) {
-  if (!cap || boardMode) return;
+  if (!cap) return;
   if (action === "create" && down) {
     const moved = Math.abs(e.clientX - down.x) + Math.abs(e.clientY - down.y);
     const dragged = norm(down, { x: e.clientX, y: e.clientY });
@@ -335,7 +344,7 @@ function onUp(e: MouseEvent) {
     return;
   }
   if (action === "draw") annot.onUp();
-  action = "none"; down = null;
+  action = "none"; down = null; gestureSnapped = false;
 }
 
 function positionToolbar() { if (mode === "selected") showToolbar(); }
@@ -343,6 +352,7 @@ function positionToolbar() { if (mode === "selected") showToolbar(); }
 // ---- inline text tool -----------------------------------------------------
 
 function openTextInput(cx: number, cy: number) {
+  textEditIdx = -1;
   textAt = { x: cx, y: cy };
   textIn.value = "";
   textIn.style.color = annot.color;
@@ -350,15 +360,28 @@ function openTextInput(cx: number, cy: number) {
   textIn.classList.remove("hidden");
   setTimeout(() => textIn.focus(), 0);
 }
+/** 双击已有文字 → 内联框预填它的内容, 编辑后替换(空则删)。 */
+function openTextEdit(idx: number) {
+  const info = annot.textInfo(idx);
+  if (!info) return;
+  textEditIdx = idx;
+  textAt = { x: info.cssX, y: info.cssY };
+  textIn.value = info.text;
+  textIn.style.color = info.color;
+  Object.assign(textIn.style, { left: info.cssX + "px", top: info.cssY + "px" });
+  textIn.classList.remove("hidden");
+  setTimeout(() => { textIn.focus(); textIn.select(); }, 0);
+}
 function commitTextIfOpen() {
   if (textIn.classList.contains("hidden")) return;
-  if (textAt && textIn.value) annot.addText(textAt.x, textAt.y, textIn.value, annot.color);
-  textIn.classList.add("hidden"); textAt = null;
+  if (textEditIdx >= 0) annot.updateText(textEditIdx, textIn.value);
+  else if (textAt && textIn.value) annot.addText(textAt.x, textAt.y, textIn.value, annot.color);
+  textIn.classList.add("hidden"); textAt = null; textEditIdx = -1;
 }
 textIn.addEventListener("keydown", (e) => {
   e.stopPropagation();
   if (e.key === "Enter") { commitTextIfOpen(); window.focus(); }
-  else if (e.key === "Escape") { textIn.classList.add("hidden"); textAt = null; window.focus(); }
+  else if (e.key === "Escape") { textIn.classList.add("hidden"); textAt = null; textEditIdx = -1; window.focus(); }
 });
 textIn.addEventListener("blur", () => commitTextIfOpen());
 
@@ -564,76 +587,6 @@ async function startRegionRecord(pl: number, pt: number, pr: number, pb: number,
   } catch {}
 }
 
-// ---- 画板模式 (BlockSuite edgeless) ---------------------------------------
-// 选区截图当背景, 用 poof 已在用的 BlockSuite 画板原生标注; 导出读画板元素 → 同一条结构化 MD + omni 流。
-
-/** 选区的纯截图(无标注)PNG base64 + 尺寸, 给画板当背景图块。 */
-function cropScreenPng(): { b64: string; w: number; h: number } {
-  const [pl, pt, pr, pb] = cropPhys();
-  const w = pr - pl, h = pb - pt;
-  const c = document.createElement("canvas"); c.width = w; c.height = h;
-  const cx = c.getContext("2d")!;
-  cx.drawImage(scr, pl - cap!.x, pt - cap!.y, w, h, 0, 0, w, h);
-  return { b64: c.toDataURL("image/png").split(",")[1], w, h };
-}
-
-async function enterBoard() {
-  if (!cap || mode !== "selected" || boardMode) return;
-  commitTextIfOpen();
-  const crop = cropScreenPng();
-  boardMode = true;
-  toolbar.classList.add("hidden");
-  annoEl.style.display = "none";
-  boardEl.classList.remove("hidden");
-  boardHint.classList.remove("hidden");
-  board = new SnapBoard();
-  try {
-    await board.mount(boardEl, crop.b64, crop.w, crop.h);
-  } catch (e) {
-    showPanel("画板加载失败", `<div class="pv">${esc(String(e))}</div>`);
-    exitBoard();
-  }
-}
-
-function exitBoard() {
-  boardMode = false;
-  try { board?.unmount(); } catch { /* ignore */ }
-  board = null;
-  boardEl.classList.add("hidden"); boardEl.innerHTML = "";
-  boardHint.classList.add("hidden");
-  annoEl.style.display = "";
-  if (mode === "selected") showToolbar();
-}
-
-/** 画板导出: 读画板元素 + 合成 PNG → 同一条结构化 MD(含 omni 实体解析 + 逐条评论归材料)。 */
-async function doBoardExport() {
-  if (!board || !cap) return;
-  try {
-    const png = await board.renderAnnotatedPng();
-    const shapes = board.getShapes();
-    const [pl, pt, pr, pb] = cropPhys();
-    // 文字标注(评论)→ 屏幕物理坐标(裁剪原点 + 图块像素), 给后端按位置归材料。
-    const annotations = shapes
-      .filter((s: BoardShape) => s.tool === "text" && (s.text || "").trim())
-      .map((s: BoardShape) => ({ x: Math.round(pl + s.pts[0].x), y: Math.round(pt + s.pts[0].y), text: (s.text || "").trim() }));
-    const comment = annotations.map((a) => a.text).join("\n");
-    const path = await invoke<string>("save_image", { pngBase64: png });
-    const omni = await Promise.race([
-      invoke<OmniResult>("omni_capture", { x: Math.round((pl + pr) / 2), y: Math.round((pt + pb) / 2), l: pl, t: pt, r: pr, b: pb, comment, pngBase64: png, annotations }),
-      new Promise<OmniResult>((res) => setTimeout(() => res(EMPTY_OMNI), 3500)),
-    ]).catch(() => EMPTY_OMNI);
-    // 画板 shapes 已是裁剪像素坐标(图块 0,0 1:1) → buildMarkdown 用 ox=oy=0。
-    const md = buildMarkdown(path, shapes as unknown as Shape[], 0, 0, pr - pl, pb - pt, shapes.map(() => null), omni);
-    let mdPath = path.replace(/\.png$/i, ".md");
-    try { mdPath = await invoke<string>("save_markdown", { md, pngPath: path }); } catch { /* keep fallback */ }
-    await invoke("copy_text", { text: `[[${mdPath}]]` });
-  } catch (e) {
-    showPanel("画板导出失败", `<div class="pv">${esc(String(e))}</div>`);
-  }
-  exitBoard();
-  await closeSnap();
-}
-
 // ---- history panel --------------------------------------------------------
 
 function showPanel(title: string, bodyHtml: string) {
@@ -685,6 +638,7 @@ toolbar.addEventListener("click", (e) => {
   if (el.dataset.color) {
     annot.color = el.dataset.color;
     toolbar.querySelectorAll("[data-color]").forEach((b) => b.classList.toggle("on", b === el));
+    annot.setSelectedColor(el.dataset.color); // 有选中则改选中元素的颜色(内部 snapshot)
     return;
   }
   const act = el.dataset.act;
@@ -692,7 +646,6 @@ toolbar.addEventListener("click", (e) => {
   if (act === "undo") annot.undo();
   else if (act === "redo") annot.redo();
   else if (act === "history") showHistory();
-  else if (act === "board") enterBoard();
   else doAction(act);
 });
 
@@ -700,19 +653,14 @@ function onEscape() {
   // 一次 Esc 直接退出。只有当前正开着浮层/文字输入时, Esc 先关那个(仍是一次一动作)。
   // 重新框选改用"在选区外点一下"(onDown 会 enterIdle), 不再占用 Esc。
   if (!panel.classList.contains("hidden")) { panel.classList.add("hidden"); return; }
-  if (!textIn.classList.contains("hidden")) { textIn.classList.add("hidden"); textAt = null; return; }
+  if (!textIn.classList.contains("hidden")) { textIn.classList.add("hidden"); textAt = null; textEditIdx = -1; return; }
+  if (annot.getSelected() >= 0) { annot.clearSelection(); return; } // 先取消选中, 再按一次才退出
   closeSnap();
 }
 
 window.addEventListener("keydown", (e) => {
   if (document.activeElement === textIn) return;
   const k = e.key;
-  // 画板模式: Enter 完成导出, Esc 退出回普通标注。其它键交给 BlockSuite 画板自己处理。
-  if (boardMode) {
-    if (k === "Enter" && !e.shiftKey) { e.preventDefault(); doBoardExport(); }
-    else if (k === "Escape") { e.preventDefault(); exitBoard(); }
-    return;
-  }
   if (k === "Escape") { e.preventDefault(); onEscape(); return; }
   if (recordMode) {
     // 录制模式: Enter records the hovered window, or the full screen if nothing is highlighted
@@ -729,12 +677,19 @@ window.addEventListener("keydown", (e) => {
     if (k === "Enter") { e.preventDefault(); doAction("md"); return; }
     if ((e.ctrlKey || e.metaKey) && (k === "c" || k === "C")) { e.preventDefault(); doAction("md"); return; }
     if ((e.ctrlKey || e.metaKey) && (k === "s" || k === "S")) { e.preventDefault(); doAction("save"); return; }
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (k === "z" || k === "Z")) { e.preventDefault(); annot.redo(); return; }
     if ((e.ctrlKey || e.metaKey) && (k === "z" || k === "Z")) { e.preventDefault(); annot.undo(); return; }
     if ((e.ctrlKey || e.metaKey) && (k === "y" || k === "Y")) { e.preventDefault(); annot.redo(); return; }
-    // 定点删: 选中某个形状后按 Delete/Backspace 删它(不必整体撤销)。
+    // 定点删: 选中某个形状后按 Delete/Backspace 删它。
     if ((k === "Delete" || k === "Backspace") && annot.getSelected() >= 0) { e.preventDefault(); annot.deleteSelected(); return; }
+    // 方向键微移选中(Shift = 大步 10px)。
+    if (annot.getSelected() >= 0 && (k === "ArrowUp" || k === "ArrowDown" || k === "ArrowLeft" || k === "ArrowRight")) {
+      e.preventDefault();
+      const step = e.shiftKey ? 10 : 1;
+      annot.nudgeSelected(k === "ArrowLeft" ? -step : k === "ArrowRight" ? step : 0, k === "ArrowUp" ? -step : k === "ArrowDown" ? step : 0);
+      return;
+    }
     if (k === "F3") { e.preventDefault(); doAction("pin"); return; }
-    if ((k === "b" || k === "B") && !e.ctrlKey && !e.altKey && !e.metaKey) { e.preventDefault(); enterBoard(); return; }
     if (!e.ctrlKey && !e.altKey && !e.metaKey) {
       const map: Record<string, Tool | "move"> = { m: "move", r: "rect", o: "ellipse", a: "arrow", l: "line", p: "pen", h: "highlight", k: "mosaic", t: "text" };
       const nt = map[k.toLowerCase()];
@@ -749,6 +704,8 @@ window.addEventListener("keydown", (e) => {
 // double-click inside the selection copies as Markdown (record mode records on single click)
 document.addEventListener("dblclick", (e) => {
   if (recordMode || mode !== "selected") return;
+  const ti = annot.textAt(e.clientX, e.clientY);
+  if (ti >= 0) { openTextEdit(ti); return; } // 双击文字 → 改内容
   const inside = e.clientX >= sel.l && e.clientX <= sel.r && e.clientY >= sel.t && e.clientY <= sel.b;
   if (inside) doAction("md");
 });
@@ -759,5 +716,13 @@ window.addEventListener("contextmenu", (e) => { e.preventDefault(); onEscape(); 
 document.addEventListener("mousedown", onDown);
 document.addEventListener("mousemove", onMove);
 document.addEventListener("mouseup", onUp);
+
+// 滚轮调粗细/字号: 有选中改选中元素, 否则改后续新建的默认(成熟工具习惯)。
+document.addEventListener("wheel", (e) => {
+  if (!cap || mode !== "selected" || recordMode) return;
+  if ((e.target as HTMLElement).closest("#toolbar,#panel")) return;
+  e.preventDefault();
+  annot.adjustWidth(e.deltaY < 0 ? 1 : -1);
+}, { passive: false });
 
 listen<boolean>("snap-summon", (e) => { recordMode = e.payload === true; doCapture(); });
