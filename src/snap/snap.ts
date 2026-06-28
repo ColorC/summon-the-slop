@@ -28,9 +28,10 @@ const annot = new Annotator(annoEl, scr);
 let cap: Capture | null = null;
 let dpr = 1;
 let mode: "idle" | "selected" = "idle";
-let action: "none" | "create" | "move" | "resize" | "draw" | "dragshape" = "none";
+let action: "none" | "create" | "move" | "resize" | "draw" | "dragshape" | "resizeshape" = "none";
 let dragShapeIdx = -1; // 拖动已画形状时, 被拖的形状下标
 let resizeEdge = "";
+let shapeResizeHandle = ""; // 改某个已画形状大小时, 拖的是哪个角把手(nw/ne/sw/se)
 let tool: Tool | "move" = "move";
 let down: { x: number; y: number } | null = null;
 let origSel: Rect = { l: 0, t: 0, r: 0, b: 0 };
@@ -220,11 +221,13 @@ function onDown(e: MouseEvent) {
     if (tgt.classList.contains("handle")) { action = "resize"; resizeEdge = tgt.dataset.dir || ""; origSel = { ...sel }; down = { x: e.clientX, y: e.clientY }; return; }
     const inside = e.clientX >= sel.l && e.clientX <= sel.r && e.clientY >= sel.t && e.clientY <= sel.b;
     if (inside) {
-      // 任何工具(文字除外)下: 点中已画形状(像素上/框上)→ 直接拖它, 不必切到移动模式。
-      // 移动模式只是没点中形状时移动选区框 = 更顺手, 但不是"想挪就必须切过去"。
+      // 画板交互: ① 点中选中形状的角把手 → 改大小; ② 点中已画形状 → 选中并直接拖; ③ 点空 → 清选。
       if (tool !== "text") {
+        const handle = annot.handleAt(e.clientX, e.clientY);
+        if (handle) { action = "resizeshape"; shapeResizeHandle = handle; down = { x: e.clientX, y: e.clientY }; return; }
         const hit = annot.hitTest(e.clientX, e.clientY);
-        if (hit >= 0) { action = "dragshape"; dragShapeIdx = hit; down = { x: e.clientX, y: e.clientY }; return; }
+        if (hit >= 0) { annot.select(hit); action = "dragshape"; dragShapeIdx = hit; down = { x: e.clientX, y: e.clientY }; return; }
+        annot.clearSelection();
       }
       if (tool === "text") { openTextInput(e.clientX, e.clientY); return; }
       if (tool === "move") { action = "move"; origSel = { ...sel }; down = { x: e.clientX, y: e.clientY }; return; }
@@ -267,6 +270,10 @@ function onMove(e: MouseEvent) {
   if (action === "dragshape" && down) {
     annot.moveShapeBy(dragShapeIdx, x - down.x, y - down.y);
     down = { x, y }; // 增量平移
+    return;
+  }
+  if (action === "resizeshape" && down) {
+    annot.resizeSelected(shapeResizeHandle, x, y);
     return;
   }
   if (action === "draw") { annot.onMove(x, y); return; }
@@ -635,6 +642,8 @@ window.addEventListener("keydown", (e) => {
     if ((e.ctrlKey || e.metaKey) && (k === "s" || k === "S")) { e.preventDefault(); doAction("save"); return; }
     if ((e.ctrlKey || e.metaKey) && (k === "z" || k === "Z")) { e.preventDefault(); annot.undo(); return; }
     if ((e.ctrlKey || e.metaKey) && (k === "y" || k === "Y")) { e.preventDefault(); annot.redo(); return; }
+    // 定点删: 选中某个形状后按 Delete/Backspace 删它(不必整体撤销)。
+    if ((k === "Delete" || k === "Backspace") && annot.getSelected() >= 0) { e.preventDefault(); annot.deleteSelected(); return; }
     if (k === "F3") { e.preventDefault(); doAction("pin"); return; }
     if (!e.ctrlKey && !e.altKey && !e.metaKey) {
       const map: Record<string, Tool | "move"> = { m: "move", r: "rect", o: "ellipse", a: "arrow", l: "line", p: "pen", h: "highlight", k: "mosaic", t: "text" };

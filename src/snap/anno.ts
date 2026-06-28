@@ -30,6 +30,7 @@ export class Annotator {
     this.shapes = [];
     this.draft = null;
     this.redoStack = [];
+    this.selected = -1;
     this.enabled = false;
     this.redraw();
   }
@@ -69,6 +70,84 @@ export class Annotator {
       p.x += dx;
       p.y += dy;
     }
+    this.redraw();
+  }
+
+  // ── 画板能力: 选中 / 改大小 / 删除(文字背景见 drawShape) ──────────────
+  /** 当前选中的形状下标(-1=无)。选中后画虚框 + 四角把手, 可改大小、可删。 */
+  selected = -1;
+
+  /** 选中某形状(点中就选, 点空清选)。返回选中下标。 */
+  selectAt(cssX: number, cssY: number): number {
+    this.selected = this.hitTest(cssX, cssY);
+    this.redraw();
+    return this.selected;
+  }
+  select(idx: number) { this.selected = idx; this.redraw(); }
+  clearSelection() { if (this.selected !== -1) { this.selected = -1; this.redraw(); } }
+  getSelected(): number { return this.selected; }
+
+  /** 删掉选中的形状(定点删, 不必整体撤销)。返回是否删了。 */
+  deleteSelected(): boolean {
+    if (this.selected < 0 || this.selected >= this.shapes.length) return false;
+    const [removed] = this.shapes.splice(this.selected, 1);
+    if (removed) this.redoStack.push(removed);
+    this.selected = -1;
+    this.redraw();
+    return true;
+  }
+
+  /** 形状包围盒(画布物理像素)。文字按字体实测宽高。 */
+  private bboxCanvas(idx: number): { l: number; t: number; r: number; b: number } {
+    const s = this.shapes[idx];
+    if (s.tool === "text") {
+      const a = s.pts[0];
+      const fs = Math.round(18 * this.dpr);
+      this.ctx.save();
+      this.ctx.font = `${fs}px "Microsoft YaHei", sans-serif`;
+      const w = Math.max(this.ctx.measureText(s.text || "").width, fs);
+      this.ctx.restore();
+      const pad = 4 * this.dpr;
+      return { l: a.x - pad, t: a.y - pad, r: a.x + w + pad, b: a.y + fs * 1.35 + pad };
+    }
+    let l = Infinity, r = -Infinity, t = Infinity, b = -Infinity;
+    for (const p of s.pts) { l = Math.min(l, p.x); r = Math.max(r, p.x); t = Math.min(t, p.y); b = Math.max(b, p.y); }
+    return { l, t, r, b };
+  }
+
+  private handleSize() { return Math.max(7, 5 * this.dpr); }
+
+  /** 选中形状的四角把手命中(返回 'nw'|'ne'|'sw'|'se' 或 null)。供 snap.ts 判断点到把手就改大小。 */
+  handleAt(cssX: number, cssY: number): string | null {
+    if (this.selected < 0) return null;
+    const s = this.shapes[this.selected];
+    if (s.tool === "text") return null; // 文字只移动不改大小(改字号意义不大)
+    const x = cssX * this.dpr, y = cssY * this.dpr;
+    const bb = this.bboxCanvas(this.selected);
+    const hs = this.handleSize() * 1.8;
+    const corners: [string, number, number][] = [
+      ["nw", bb.l, bb.t], ["ne", bb.r, bb.t], ["sw", bb.l, bb.b], ["se", bb.r, bb.b],
+    ];
+    for (const [dir, hx, hy] of corners) {
+      if (Math.abs(x - hx) <= hs && Math.abs(y - hy) <= hs) return dir;
+    }
+    return null;
+  }
+
+  /** 拖一个角把手改大小: 对边为锚, 整形按比例缩放(rect/椭圆/线/箭头/笔/荧光/马赛克统一适用)。 */
+  resizeSelected(handle: string, cssX: number, cssY: number) {
+    const i = this.selected;
+    if (i < 0) return;
+    const s = this.shapes[i];
+    if (s.tool === "text") return;
+    const bb = this.bboxCanvas(i);
+    const ax = handle.includes("w") ? bb.r : bb.l;   // 拖西边 → 东边为锚
+    const ay = handle.includes("n") ? bb.b : bb.t;
+    const cx = cssX * this.dpr, cy = cssY * this.dpr;
+    const oldW = Math.max(1, bb.r - bb.l), oldH = Math.max(1, bb.b - bb.t);
+    const newW = Math.max(8 * this.dpr, Math.abs(cx - ax)), newH = Math.max(8 * this.dpr, Math.abs(cy - ay));
+    const sx = newW / oldW, sy = newH / oldH;
+    for (const p of s.pts) { p.x = ax + (p.x - ax) * sx; p.y = ay + (p.y - ay) * sy; }
     this.redraw();
   }
 
@@ -115,6 +194,30 @@ export class Annotator {
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     for (const s of this.shapes) this.drawShape(s);
     if (this.draft) this.drawShape(this.draft);
+    this.drawSelection();
+  }
+
+  /** 选中的形状画虚线框 + 四角把手, 像画板一样可拖角改大小。文字只画移动框(不改大小)。 */
+  private drawSelection() {
+    if (this.selected < 0 || this.selected >= this.shapes.length) return;
+    const ctx = this.ctx;
+    const bb = this.bboxCanvas(this.selected);
+    const isText = this.shapes[this.selected].tool === "text";
+    ctx.save();
+    ctx.strokeStyle = "#0a84ff";
+    ctx.lineWidth = Math.max(1, this.dpr);
+    ctx.setLineDash([5 * this.dpr, 4 * this.dpr]);
+    ctx.strokeRect(bb.l, bb.t, bb.r - bb.l, bb.b - bb.t);
+    ctx.setLineDash([]);
+    if (!isText) {
+      const hs = this.handleSize();
+      ctx.fillStyle = "#fff";
+      for (const [hx, hy] of [[bb.l, bb.t], [bb.r, bb.t], [bb.l, bb.b], [bb.r, bb.b]] as [number, number][]) {
+        ctx.fillRect(hx - hs, hy - hs, hs * 2, hs * 2);
+        ctx.strokeRect(hx - hs, hy - hs, hs * 2, hs * 2);
+      }
+    }
+    ctx.restore();
   }
 
   private drawShape(s: Shape) {
@@ -141,12 +244,37 @@ export class Annotator {
       }
       case "mosaic": this.mosaic(a, b); break;
       case "text": {
-        ctx.font = `${Math.round(18 * this.dpr)}px "Microsoft YaHei", sans-serif`;
+        const fs = Math.round(18 * this.dpr);
+        ctx.font = `${fs}px "Microsoft YaHei", sans-serif`;
         ctx.textBaseline = "top";
-        ctx.fillText(s.text || "", a.x, a.y); break;
+        const txt = s.text || "";
+        const tw = ctx.measureText(txt).width;
+        const pad = 5 * this.dpr, rad = 5 * this.dpr;
+        // 文字背景: 半透明深底 + 细描边, 让任意截图上文字都看得清(用户: 文字没背景)。
+        this.roundRect(a.x - pad, a.y - pad, tw + pad * 2, fs * 1.35 + pad * 2, rad);
+        ctx.fillStyle = "rgba(20,18,16,0.72)";
+        ctx.fill();
+        ctx.lineWidth = Math.max(1, this.dpr);
+        ctx.strokeStyle = "rgba(255,255,255,0.18)";
+        ctx.stroke();
+        ctx.fillStyle = s.color;
+        ctx.fillText(txt, a.x, a.y);
+        break;
       }
     }
     ctx.restore();
+  }
+
+  private roundRect(x: number, y: number, w: number, h: number, r: number) {
+    const ctx = this.ctx;
+    const rr = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
   }
 
   private poly(pts: Pt[]) {
