@@ -367,6 +367,8 @@ pub struct OmniResult {
     pub page_url: Option<String>,
     pub contained: Vec<ContainedEntity>,
     pub point_targets: Vec<PointTarget>,
+    // UIA 直出的窗口标题, 不管信标解析成不成都带上 —— 保证 MD 永远知道"截的是哪个窗口/页"。
+    pub window_title: Option<String>,
 }
 
 /// 探测屏幕点 (x,y) 下面是什么(跳过 poof 自己的覆盖层)。用 UIA 树遍历(不 hit-test, 因截图覆盖层在最上)
@@ -426,6 +428,8 @@ pub async fn omni_capture(
         }
         tauri::async_runtime::spawn_blocking(move || {
             let probe = probe_target_sync(&skip, x, y);
+            // 窗口标题 UIA 直出, 不管信标解析成不成都带上 —— MD 永远知道截的是哪个窗口/页。
+            let wt = probe.win_title.clone();
             let origin = probe
                 .content_origin
                 .map(|o| serde_json::json!([o[0], o[1]]))
@@ -468,7 +472,7 @@ pub async fn omni_capture(
                 )
             };
             let body_str = serde_json::to_string(&body).unwrap_or_default();
-            match agent.post(&url).set("Content-Type", "application/json").send_string(&body_str) {
+            let mut result = match agent.post(&url).set("Content-Type", "application/json").send_string(&body_str) {
                 Ok(resp) => match resp.into_string().ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()) {
                     Some(v) => {
                         let page = v.get("page");
@@ -494,12 +498,15 @@ pub async fn omni_capture(
                                     note_id: e.get("note_id").and_then(|x| x.as_str()).map(str::to_string),
                                 }).collect()
                             }).unwrap_or_default(),
+                            window_title: v.get("window_title").and_then(|x| x.as_str()).map(str::to_string),
                         }
                     },
                     None => OmniResult::default(),
                 },
                 Err(_) => OmniResult::default(),
-            }
+            };
+            if !wt.is_empty() { result.window_title = Some(wt); }
+            result
         })
         .await
         .unwrap_or_default()

@@ -418,8 +418,9 @@ interface OmniResult {
   page_title: string | null; page_url: string | null;
   contained: ContainedEntity[];
   point_targets: PointTarget[];
+  window_title: string | null; // UIA 直出窗口标题(信标不在也有), 保证 MD 永远知道截的是哪个窗口/页
 }
-const EMPTY_OMNI: OmniResult = { omni_uri: null, note_id: null, target_path: null, description: null, page_title: null, page_url: null, contained: [], point_targets: [] };
+const EMPTY_OMNI: OmniResult = { omni_uri: null, note_id: null, target_path: null, description: null, page_title: null, page_url: null, contained: [], point_targets: [], window_title: null };
 const TOOL_CN: Record<string, string> = {
   rect: "矩形", ellipse: "椭圆", arrow: "箭头", line: "直线",
   pen: "画笔", highlight: "荧光标记", mosaic: "马赛克遮挡", text: "文字",
@@ -453,6 +454,7 @@ function buildMarkdown(imgPath: string, shapes: Shape[], ox: number, oy: number,
   if (ts) L.push(`captured_at: ${ts}`);
   // 统一捕获: 在哪个页面 + 压在哪个实体 —— 文件路径 + 完整描述(模型直接看得懂, 不用 omni:// 自造规范)。
   // dashboard 没在跑 / 没解析出则不带这些行。
+  if (omni && omni.window_title) L.push(`window: ${omni.window_title}`); // 永远带: 截的是哪个窗口/页
   if (omni && (omni.page_title || omni.page_url)) L.push(`page: ${omni.page_title || ""}${omni.page_url ? ` (${omni.page_url})` : ""}`.trim());
   if (omni && omni.description) L.push(`target: ${omni.description}`);
   if (omni && omni.target_path) L.push(`target_file: ${omni.target_path}`);
