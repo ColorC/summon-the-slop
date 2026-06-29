@@ -518,6 +518,42 @@ pub async fn omni_capture(
     }
 }
 
+/// 自检: poof.exe --test-omni-md <l> <t> <r> <b> —— 在给定屏幕矩形上跑真 UIA 探针 + dashboard /resolve,
+/// 打印 窗口标题 / 内容区原点 / 解析出的 page·target。用来在真页面上(无头/有头浏览器摆到屏上)端到端
+/// 验证 poof→dashboard 整条链, 不用 GUI 拖拽。
+#[cfg(windows)]
+pub fn test_omni_md(l: i32, t: i32, r: i32, b: i32) {
+    use std::io::Write;
+    let (cx, cy) = ((l + r) / 2, (t + b) / 2);
+    // CLI 独立跑, 没有 poof 自己的覆盖层要跳过 → skip 空。
+    let probe = probe_target_sync(&[], cx, cy);
+    println!(
+        "probe @({cx},{cy}): win_title={:?} content_origin={:?}",
+        probe.win_title, probe.content_origin
+    );
+    let origin = probe
+        .content_origin
+        .map(|o| serde_json::json!([o[0], o[1]]))
+        .unwrap_or(serde_json::Value::Null);
+    let base = omni_endpoint();
+    let body = serde_json::json!({
+        "screen_rect": [l, t, r, b], "content_origin": origin, "title": probe.win_title,
+    });
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_millis(1500))
+        .timeout_read(std::time::Duration::from_millis(3000))
+        .build();
+    match agent
+        .post(&format!("{base}/api/boss-sight/captures/resolve"))
+        .set("Content-Type", "application/json")
+        .send_string(&body.to_string())
+    {
+        Ok(resp) => println!("/resolve => {}", resp.into_string().unwrap_or_default()),
+        Err(e) => println!("/resolve ERR: {e}"),
+    }
+    let _ = std::io::stdout().flush();
+}
+
 /// "这个标注指向哪个 UI 元素" 的解析结果。
 #[derive(serde::Serialize)]
 pub struct PointAt {

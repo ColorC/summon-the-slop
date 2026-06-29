@@ -295,6 +295,15 @@ fn request_full_reindex(app: tauri::AppHandle, force: bool) -> Result<String, St
             }
         }
 
+        // 提权前先把 poof 全屏置顶覆盖层藏掉 —— 否则 UAC 对话框会被它盖住/抢焦点, 看着就像"卡死"。
+        // 重建完成后用户用 Ctrl·Ctrl 重新召出即可。
+        {
+            use tauri::Manager;
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.hide();
+            }
+        }
+
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let verb: Vec<u16> = std::ffi::OsStr::new("runas")
             .encode_wide()
@@ -912,9 +921,42 @@ pub fn run() {
         snap_cmd::test_snap_pipeline();
         std::process::exit(0);
     }
+    // 统一捕获端到端自检: poof.exe --test-omni-md <l> <t> <r> <b> → 在真页面上跑 UIA 探针 + dashboard
+    // /resolve, 打印 窗口标题/内容区原点/page·target。验 poof→dashboard 整条链, 不用 GUI 拖拽。
+    #[cfg(windows)]
+    if std::env::args().any(|a| a == "--test-omni-md") {
+        let nums: Vec<i32> = std::env::args()
+            .skip_while(|a| a != "--test-omni-md")
+            .skip(1)
+            .take(4)
+            .filter_map(|x| x.parse::<i32>().ok())
+            .collect();
+        if nums.len() == 4 {
+            snap_cmd::test_omni_md(nums[0], nums[1], nums[2], nums[3]);
+        } else {
+            println!("usage: poof.exe --test-omni-md <l> <t> <r> <b>");
+        }
+        std::process::exit(0);
+    }
     // 性能基准: poof.exe --bench-search → 逐字拼音搜索计时后退出(在单实例/Builder 之前, 不被单实例拦)。
     if std::env::args().any(|a| a == "--bench-search") {
         search::bench_search();
+        std::process::exit(0);
+    }
+    // 对比验证: poof.exe --arena-verify → 现引擎 vs arena 引擎 在真索引上的结果一致性 + 计时。
+    #[cfg(windows)]
+    if std::env::args().any(|a| a == "--arena-verify") {
+        search::arena_verify();
+        std::process::exit(0);
+    }
+    // 架构验证: poof.exe --bench-arena <N> → 合成 N 行紧凑 arena 并 SIMD 并行扫描计时(证明 11M 能 <100ms)。
+    #[cfg(windows)]
+    if std::env::args().any(|a| a == "--bench-arena") {
+        let n = std::env::args()
+            .nth(2)
+            .and_then(|x| x.parse::<usize>().ok())
+            .unwrap_or(11_000_000);
+        search::bench_arena(n);
         std::process::exit(0);
     }
     // 全量重建索引(管理员运行则走 MFT 秒级全量): poof.exe --reindex → 建+持久化+退出。
