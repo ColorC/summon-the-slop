@@ -554,6 +554,70 @@ pub fn test_omni_md(l: i32, t: i32, r: i32, b: i32) {
     let _ = std::io::stdout().flush();
 }
 
+/// 自检: poof.exe --capture-md <l> <t> <r> <b> —— 端到端产出一份【真截图 MD】(无 GUI 拖拽、无输入注入):
+/// 抓当前屏 → 裁剪存 PNG → 真 UIA 探针 + dashboard /resolve → 拼 MD(window/page/target/target_file + 图)
+/// → 写进 poof-shots。和 GUI「复制 MD」产出同一种文件, 只是选区用参数给。打印 .md 路径 + 内容。
+#[cfg(windows)]
+pub fn capture_md(l: i32, t: i32, r: i32, b: i32) {
+    use std::io::Write;
+    // 1) 抓屏 + 裁剪 + 存 PNG(真像素)
+    let (rgba, fw, fh, fox, foy, _scale) = match crate::capture::capture_primary_raw() {
+        Ok(v) => v,
+        Err(e) => { println!("capture failed: {e}"); return; }
+    };
+    let full = match image::RgbaImage::from_raw(fw, fh, rgba) {
+        Some(i) => i, None => { println!("frame build failed"); return; }
+    };
+    let cl = (l - fox).clamp(0, fw as i32) as u32;
+    let ct = (t - foy).clamp(0, fh as i32) as u32;
+    let cw = ((r - l).max(1) as u32).min(fw - cl);
+    let ch = ((b - t).max(1) as u32).min(fh - ct);
+    let crop = image::imageops::crop_imm(&full, cl, ct, cw, ch).to_image();
+    let dir = shots_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let stem = format!("captest-{}", now_ns());
+    let png_path = dir.join(format!("{stem}.png"));
+    if let Err(e) = crop.save(&png_path) { println!("png save failed: {e}"); return; }
+
+    // 2) 真 UIA 探针 + dashboard /resolve
+    let (cx, cy) = ((l + r) / 2, (t + b) / 2);
+    let probe = probe_target_sync(&[], cx, cy);
+    let origin = probe.content_origin.map(|o| serde_json::json!([o[0], o[1]])).unwrap_or(serde_json::Value::Null);
+    let base = omni_endpoint();
+    let body = serde_json::json!({"screen_rect":[l,t,r,b], "content_origin": origin, "title": probe.win_title});
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_millis(1500))
+        .timeout_read(std::time::Duration::from_millis(3000)).build();
+    let v: serde_json::Value = agent
+        .post(&format!("{base}/api/boss-sight/captures/resolve"))
+        .set("Content-Type", "application/json").send_string(&body.to_string())
+        .ok().and_then(|r| r.into_string().ok()).and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(serde_json::Value::Null);
+
+    // 3) 拼 MD(与 snap.ts buildMarkdown 同样的 window/page/target/target_file 行)
+    let get = |k: &str| v.get(k).and_then(|x| x.as_str()).map(|s| s.to_string());
+    let page_title = v.get("page").and_then(|p| p.get("title")).and_then(|x| x.as_str());
+    let page_url = v.get("page").and_then(|p| p.get("url")).and_then(|x| x.as_str());
+    let mut md = String::new();
+    md.push_str("---\nkind: annotated-screenshot\n");
+    md.push_str(&format!("image: {}\n", png_path.display()));
+    md.push_str(&format!("size: {cw}x{ch}\n"));
+    if !probe.win_title.is_empty() { md.push_str(&format!("window: {}\n", probe.win_title)); }
+    if let Some(pt) = page_title {
+        md.push_str(&format!("page: {}{}\n", pt, page_url.map(|u| format!(" ({u})")).unwrap_or_default()));
+    }
+    if let Some(d) = get("description") { md.push_str(&format!("target: {d}\n")); }
+    if let Some(p) = get("path") { md.push_str(&format!("target_file: {p}\n")); }
+    md.push_str("---\n\n");
+    md.push_str(&format!("![标注截图]({})\n", png_path.display()));
+
+    let md_path = dir.join(format!("{stem}.md"));
+    if let Err(e) = std::fs::write(&md_path, &md) { println!("md write failed: {e}"); return; }
+    println!("MD_PATH={}", md_path.display());
+    println!("----- MD -----\n{md}");
+    let _ = std::io::stdout().flush();
+}
+
 /// "这个标注指向哪个 UI 元素" 的解析结果。
 #[derive(serde::Serialize)]
 pub struct PointAt {

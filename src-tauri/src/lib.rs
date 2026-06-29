@@ -938,6 +938,21 @@ pub fn run() {
         }
         std::process::exit(0);
     }
+    // 端到端产出真截图 MD: poof.exe --capture-md <l> <t> <r> <b> → 抓屏+裁剪+UIA解析+拼MD写盘, 打印路径+内容。
+    #[cfg(windows)]
+    if std::env::args().any(|a| a == "--capture-md") {
+        let nums: Vec<i32> = std::env::args()
+            .skip_while(|a| a != "--capture-md")
+            .skip(1).take(4)
+            .filter_map(|x| x.parse::<i32>().ok())
+            .collect();
+        if nums.len() == 4 {
+            snap_cmd::capture_md(nums[0], nums[1], nums[2], nums[3]);
+        } else {
+            println!("usage: poof.exe --capture-md <l> <t> <r> <b>");
+        }
+        std::process::exit(0);
+    }
     // 性能基准: poof.exe --bench-search → 逐字拼音搜索计时后退出(在单实例/Builder 之前, 不被单实例拦)。
     if std::env::args().any(|a| a == "--bench-search") {
         search::bench_search();
