@@ -371,35 +371,76 @@ pub struct OmniResult {
     pub window_title: Option<String>,
 }
 
-/// 探测屏幕点 (x,y) 下面是什么(跳过 poof 自己的覆盖层)。用 UIA 树遍历(不 hit-test, 因截图覆盖层在最上)
-/// 找包含该点的 Document 元素 → 其左上角即内容区原点; 找包含该点的最大 Window 元素 → 其名字即窗口标题。
+/// z-order 最靠前的、可见、非 poof、含该点的【顶层窗口】(rect + 标题)。EnumWindows 按 z-order 返回,
+/// 第一个命中即最顶。修掉"按面积选窗"的误判(背后最大化的 Codex/Excel 比目标大就会抢走)。
+#[cfg(windows)]
+fn topmost_window_at(skip: &[isize], x: i32, y: i32) -> Option<([i32; 4], String)> {
+    use windows::core::BOOL;
+    use windows::Win32::Foundation::{HWND, LPARAM, RECT};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowRect, GetWindowTextW, IsIconic, IsWindowVisible,
+    };
+    struct Ctx<'a> { skip: &'a [isize], x: i32, y: i32, out: Option<([i32; 4], String)> }
+    unsafe extern "system" fn cb(hwnd: HWND, lp: LPARAM) -> BOOL {
+        let ctx = &mut *(lp.0 as *mut Ctx);
+        if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
+            return BOOL(1);
+        }
+        if ctx.skip.contains(&(hwnd.0 as isize)) {
+            return BOOL(1);
+        }
+        let mut rc = RECT::default();
+        if GetWindowRect(hwnd, &mut rc).is_err() {
+            return BOOL(1);
+        }
+        if ctx.x < rc.left || ctx.x >= rc.right || ctx.y < rc.top || ctx.y >= rc.bottom {
+            return BOOL(1);
+        }
+        let mut buf = [0u16; 512];
+        let n = GetWindowTextW(hwnd, &mut buf);
+        let title = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
+        if title.trim().is_empty() {
+            return BOOL(1); // 跳过无标题(tooltip/分层装饰窗等), 找真正的应用窗
+        }
+        ctx.out = Some(([rc.left, rc.top, rc.right, rc.bottom], title));
+        BOOL(0) // 命中即停 —— z-order 最顶
+    }
+    let mut ctx = Ctx { skip, x, y, out: None };
+    unsafe { let _ = EnumWindows(Some(cb), LPARAM(&mut ctx as *mut _ as isize)); }
+    ctx.out
+}
+
+/// 探测屏幕点 (x,y) 下面是什么(跳过 poof 自己的覆盖层)。窗口标题取 z-order 最顶的非 poof 窗;内容区原点
+/// 取【属于该顶层窗】的最小 Document(UIA 遍历, 不 hit-test, 因截图覆盖层在最上)。
 #[cfg(windows)]
 fn probe_target_sync(skip: &[isize], x: i32, y: i32) -> CaptureProbe {
+    let top = topmost_window_at(skip, x, y);
+    let win_title = top.as_ref().map(|(_, t)| t.clone()).unwrap_or_default();
+    let win_rect = top.as_ref().map(|(r, _)| *r);
     let els = crate::uia::elements_excluding(skip, 6000, 800);
-    let contains = |e: &crate::uia::ElementInfo| {
-        let [l, t, r, b] = e.rect;
-        x >= l && x < r && y >= t && y < b && r > l && b > t
-    };
     let mut doc: Option<(i64, [i32; 4])> = None;
-    let mut win: Option<(i64, String)> = None;
     for e in els.iter() {
-        if !contains(e) {
+        let [l, t, r, b] = e.rect;
+        if !(x >= l && x < r && y >= t && y < b && r > l && b > t) {
             continue;
         }
-        let [l, t, r, b] = e.rect;
-        let area = (r - l) as i64 * (b - t) as i64;
-        if e.control_type.contains("Document") && doc.map(|(a, _)| area < a).unwrap_or(true) {
-            doc = Some((area, e.rect));
+        if !e.control_type.contains("Document") {
+            continue;
         }
-        if e.control_type.contains("Window") && !e.name.is_empty()
-            && win.as_ref().map(|(a, _)| area > *a).unwrap_or(true)
-        {
-            win = Some((area, e.name.clone()));
+        // 只认属于 z-order 最顶那个窗的 Document(在它的 rect 内), 避免取到背后大窗的文档。
+        if let Some(wr) = win_rect {
+            if l < wr[0] - 2 || t < wr[1] - 2 || r > wr[2] + 2 || b > wr[3] + 2 {
+                continue;
+            }
+        }
+        let area = (r - l) as i64 * (b - t) as i64;
+        if doc.map(|(a, _)| area < a).unwrap_or(true) {
+            doc = Some((area, e.rect));
         }
     }
     CaptureProbe {
         content_origin: doc.map(|(_, rc)| [rc[0], rc[1]]),
-        win_title: win.map(|(_, n)| n).unwrap_or_default(),
+        win_title,
     }
 }
 
