@@ -38,7 +38,27 @@ const Rec = {
 };
 self.__poofRec = Rec; // exposed on the SW global for tests/introspection (not reachable from web pages)
 
+// 统一捕获 · 通用 DOM 元素上报: content-script 报"光标下元素", SW 转发到 poof(content-script 不能跨源 fetch)。
+let _cfg = null;
+function withCfg(cb) {
+  if (_cfg) return cb(_cfg);
+  chrome.storage.local.get(["port", "token"], (c) => {
+    _cfg = { port: c.port || 8732, token: c.token || "" };
+    cb(_cfg);
+  });
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, reply) => {
+  if (msg.type === "ELEMENT") {
+    withCfg((c) => {
+      fetch("http://127.0.0.1:" + c.port + "/element", {
+        method: "POST",
+        headers: { Authorization: "Bearer " + c.token, "Content-Type": "application/json" },
+        body: JSON.stringify(msg.data),
+      }).catch(() => {});
+    });
+    return;
+  }
   if (msg.type === "START") {
     chrome.storage.local.get(["port", "token"], (cfg) => {
       chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {

@@ -442,7 +442,8 @@ function resolvePointScreen(s: Shape): [number, number] {
 }
 // 详细 Markdown —— 存进 .md 文件(详情都在文件里); 剪贴板只放 [[该文件路径]], 粘贴时短。
 // 「指向」只在解析出【有名字】的真实元素时才附(否则全是没用的 [Group] (无名))。坐标 = 裁剪相对像素。
-function buildMarkdown(imgPath: string, shapes: Shape[], ox: number, oy: number, w: number, h: number, hits: (PointAt | null)[], omni?: OmniResult | null): string {
+interface DomEl { url?: string; title?: string; tag?: string; id?: string; cls?: string; text?: string; selector?: string; omni_uri?: string; omni_kind?: string; omni_title?: string; }
+function buildMarkdown(imgPath: string, shapes: Shape[], ox: number, oy: number, w: number, h: number, hits: (PointAt | null)[], omni?: OmniResult | null, domEl?: DomEl | null): string {
   const P = (p: Pt) => `(${p.x - ox},${p.y - oy})`;
   const ts = (() => { try { return new Date().toISOString(); } catch { return ""; } })();
   const L: string[] = [];
@@ -459,6 +460,14 @@ function buildMarkdown(imgPath: string, shapes: Shape[], ox: number, oy: number,
   if (omni && omni.description) L.push(`target: ${omni.description}`);
   if (omni && omni.target_path) L.push(`target_file: ${omni.target_path}`);
   if (omni && omni.note_id) L.push(`target_note: ${omni.note_id}`);
+  // 通用 DOM 元素解析(浏览器扩展上报光标下元素, 不靠埋点): 任意网页都能知道指的是哪个元素。
+  if (domEl && domEl.tag) {
+    const tag = `${domEl.tag}${domEl.id ? "#" + domEl.id : ""}`;
+    const txt = (domEl.text || "").replace(/\s+/g, " ").trim().slice(0, 90);
+    L.push(`element: ${tag}${txt ? ` "${txt}"` : ""}`);
+    if (domEl.selector) L.push(`element_selector: ${domEl.selector}`);
+    if (domEl.omni_uri) L.push(`element_omni: ${domEl.omni_uri}`); // 该元素本身埋了语义
+  }
   L.push("coord_space: image-pixels  # 裁剪后图像像素, 原点左上, +x 右 / +y 下");
   L.push("---");
   L.push("");
@@ -549,7 +558,10 @@ async function doAction(act: string) {
           new Promise<OmniResult>((res) => setTimeout(() => res(EMPTY_OMNI), 3500)),
         ]).catch(() => EMPTY_OMNI),
       ]);
-      const md = buildMarkdown(path, shapes, ox, oy, cw, ch, hits, omni);
+      // 通用 DOM 元素(扩展上报的光标下元素, 2.5s 内有效) —— 不靠埋点也知道指的是哪个元素。
+      let domEl: DomEl | null = null;
+      try { const raw = await invoke<string | null>("dom_element_now"); domEl = raw ? JSON.parse(raw) : null; } catch { domEl = null; }
+      const md = buildMarkdown(path, shapes, ox, oy, cw, ch, hits, omni, domEl);
       let mdPath = path.replace(/\.png$/i, ".md"); // fallback
       try { mdPath = await invoke<string>("save_markdown", { md, pngPath: path }); } catch {}
       await invoke("copy_text", { text: `[[${mdPath}]]` }); // 剪贴板 = 文件链接, 不是长内容

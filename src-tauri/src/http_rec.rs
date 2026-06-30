@@ -11,6 +11,18 @@ use tiny_http::{Header, Method, Response, Server};
 const ADDR: &str = "127.0.0.1:8732";
 static TOKEN: OnceLock<String> = OnceLock::new();
 
+// 统一捕获 · 通用 DOM 解析: 浏览器扩展持续上报"光标下元素"(JSON), 存最新一条 + 时间戳。
+// 给 poof 统一捕获/诊断读 —— 不靠埋点也能知道任意网页上你指的是哪个元素。
+static LATEST_ELEMENT: std::sync::Mutex<Option<(u128, String)>> = std::sync::Mutex::new(None);
+
+/// 最近一次扩展上报的光标下元素(JSON), 仅当在 within_ms 毫秒内(过期视为无)。
+pub fn latest_element(within_ms: u128) -> Option<String> {
+    let g = LATEST_ELEMENT.lock().ok()?;
+    let (ts, json) = g.as_ref()?;
+    let age_ms = now_ns().saturating_sub(*ts) / 1_000_000;
+    if age_ms <= within_ms { Some(json.clone()) } else { None }
+}
+
 fn token_path() -> std::path::PathBuf {
     std::path::Path::new(&std::env::var("USERPROFILE").unwrap_or_default())
         .join(".poof")
@@ -147,6 +159,15 @@ fn handle(method: &Method, url: &str, body: &str) -> (u16, String) {
             {
                 (200, "[]".into())
             }
+        }
+        // 统一捕获 · 通用 DOM 元素上报: 扩展(经 SW)把光标下元素 JSON 喂进来, 存最新一条。
+        "/element" => {
+            if !body.trim().is_empty() {
+                if let Ok(mut g) = LATEST_ELEMENT.lock() {
+                    *g = Some((now_ns(), body.to_string()));
+                }
+            }
+            (200, "{}".into())
         }
         _ => (404, "{}".into()),
     }

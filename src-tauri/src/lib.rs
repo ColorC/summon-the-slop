@@ -61,12 +61,70 @@ fn log_line(s: &str) {
     }
 }
 
+// 当前进程工作集内存(MB) —— 生命周期日志/OOM 诊断用。
+#[cfg(windows)]
+pub(crate) fn proc_mem_mb() -> u64 {
+    use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    unsafe {
+        let mut c: PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
+        c.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+        if GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) != 0 {
+            (c.WorkingSetSize / (1024 * 1024)) as u64
+        } else {
+            0
+        }
+    }
+}
+#[cfg(not(windows))]
+pub(crate) fn proc_mem_mb() -> u64 {
+    0
+}
+
+// 本进程是否提权(管理员)运行 —— 区分提权/非提权实例, 抓"双实例抢热键"。
+#[cfg(windows)]
+pub(crate) fn is_elevated() -> bool {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    unsafe {
+        let mut tok: windows_sys::Win32::Foundation::HANDLE = 0;
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut tok) == 0 {
+            return false;
+        }
+        let mut el: TOKEN_ELEVATION = std::mem::zeroed();
+        let mut ret = 0u32;
+        let ok = GetTokenInformation(
+            tok,
+            TokenElevation,
+            &mut el as *mut _ as *mut core::ffi::c_void,
+            std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+            &mut ret,
+        );
+        CloseHandle(tok);
+        ok != 0 && el.TokenIsElevated != 0
+    }
+}
+#[cfg(not(windows))]
+pub(crate) fn is_elevated() -> bool {
+    false
+}
+
 /// 全套日志: JS 侧(各 webview 窗口)把 console 报错 / 未捕获异常 / Promise 拒绝喂进来,
 /// 落进和原生日志同一条时间线, 便于在崩溃(原生 0xcfffffff 这类)前后对齐排查。
 #[tauri::command]
 fn log_js(line: String) {
     let s: String = line.chars().take(4000).collect();
     log_line(&format!("[js] {s}"));
+}
+
+/// 统一捕获 · 通用 DOM 解析: 取浏览器扩展最近上报的"光标下元素"(JSON, 2.5s 内有效)。
+/// 给诊断 HUD / 截图解析用 —— 不靠埋点也能知道任意网页上指的是哪个元素。
+#[tauri::command]
+fn dom_element_now() -> Option<String> {
+    http_rec::latest_element(2500)
 }
 
 #[cfg(windows)]
@@ -267,9 +325,19 @@ fn mft_state_write(s: &str) {
     let _ = std::fs::write(p, s);
 }
 
-/// 全量重建索引(提权走 MFT 秒级)。force=true: 手动按钮, 无条件弹 UAC。force=false: 自动触发, 据
-/// mft_state 决定 —— 已 ok/blocked 不再弹; 取消累计 ≥3 次也停。结果记进 mft_state + emit "reindex-done"。
-/// poof 本体保持非提权(配合 tauri dev + EDR), 只把"读卷"隔离到提权子进程 —— Everything 的服务模型。
+// poof 主 AppHandle —— 供后台线程(periodic refresh / 启动自动全量)触发 reindex 并 emit 事件。
+static APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
+
+/// 后台触发全量重建(借用 static AppHandle)。供 search 的 periodic refresh / 启动自动全量调用 —— 无需按钮。
+pub(crate) fn trigger_reindex(force: bool) {
+    if let Some(h) = APP_HANDLE.get() {
+        let _ = request_full_reindex(h.clone(), force);
+    }
+}
+
+/// 全量重建索引(提权走 MFT 秒级)。force=true: 周期刷新/手动, 无条件触发。force=false: 自动触发, 据是否
+/// 已有全量索引 + mft_state 决定。结果记进 mft_state + emit "reindex-done"。poof 本体可非提权运行, 只把
+/// "读卷"隔离到 window-less 提权子进程 —— Everything 的服务模型。本机 runas 静默(无 UAC 弹窗)。
 #[tauri::command]
 fn request_full_reindex(app: tauri::AppHandle, force: bool) -> Result<String, String> {
     #[cfg(windows)]
@@ -283,9 +351,11 @@ fn request_full_reindex(app: tauri::AppHandle, force: bool) -> Result<String, St
         use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
         let state = mft_state_read();
+        let have_full = crate::search::current_len() >= 8_000_000; // 已有 MFT 级全量索引
         if !force {
-            // 自动触发: 已定论(成功/被EDR拦)就别再弹; 取消太多次也停。
-            if state == "ok" || state == "blocked" {
+            // 已有全量索引且已定论(成功/被 EDR 拦)→ 不再触发。但若索引还不全(从没建过, 或被非提权遍历
+            // 覆盖过)则即便 state=ok 也要重建 —— 自动恢复全量。取消累计 ≥3 次仍停(避免无谓重试)。
+            if have_full && (state == "ok" || state == "blocked") {
                 return Ok(format!("settled:{state}"));
             }
             if let Some(n) = state.strip_prefix("declined:") {
@@ -295,14 +365,8 @@ fn request_full_reindex(app: tauri::AppHandle, force: bool) -> Result<String, St
             }
         }
 
-        // 提权前先把 poof 全屏置顶覆盖层藏掉 —— 否则 UAC 对话框会被它盖住/抢焦点, 看着就像"卡死"。
-        // 重建完成后用户用 Ctrl·Ctrl 重新召出即可。
-        {
-            use tauri::Manager;
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.hide();
-            }
-        }
+        // 本机实测: runas 静默提权(无 UAC 对话框)且提权进程落在用户会话(可见)。既无对话框要躲, 就不再
+        // 隐藏覆盖层 —— 启动自动重建时藏掉主窗反而是糟糕体验。重建在 window-less 子进程里跑, 不打扰前台。
 
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
         let verb: Vec<u16> = std::ffi::OsStr::new("runas")
@@ -1005,6 +1069,25 @@ pub fn run() {
         log_line(&format!("[PANIC] {info}\n{bt}"));
         prev_hook(info);
     }));
+    // ---- debug 生命周期日志: 抓"死的不明不白" ----
+    #[cfg(windows)]
+    {
+        let pid = std::process::id();
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        log_line(&format!(
+            "[life] START pid={} elevated={} mem={}MB args={:?}",
+            pid,
+            is_elevated(),
+            proc_mem_mb(),
+            args
+        ));
+        // 心跳: 每 30s 一行(还活着 + 工作集内存)。日志突然停而无 [life] EXIT = 崩溃(原生/OOM, 无 RunEvent);
+        // 有 [life] ExitRequested/Exit = 正常退出(可看是谁请求的)。配合 RunEvent 日志定位死因。
+        std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            log_line(&format!("[life] alive pid={} mem={}MB", pid, proc_mem_mb()));
+        });
+    }
     // single-instance enforces "never two poofs" — but ONLY in release. Under `tauri dev` the watcher
     // rebuilds and relaunches poof on every code change; with single-instance active, the freshly-built
     // instance sees the still-dying old instance's lock, defers to it, and exits — the watcher reads that
@@ -1033,8 +1116,29 @@ pub fn run() {
         .manage(record_cmd::RecState::default())
         .setup(|app| {
             let handle = app.handle().clone();
+            // 存全局 AppHandle, 供后台线程(periodic refresh / 启动自动全量)触发 reindex + emit。
+            let _ = APP_HANDLE.set(handle.clone());
             // warm the file-search index: load persisted instantly, then refresh in bg
             std::thread::spawn(|| search::warm_start());
+            // 自动全量: 非提权且尚无全量索引(从没建过 / 被遍历覆盖过)→ 启动后静默触发提权子进程走 MFT
+            // 建全量(本机 runas 无弹窗, 落用户会话)。一次到位且持久(不覆盖守卫保住), 无需任何按钮。
+            #[cfg(windows)]
+            {
+                let h = app.handle().clone();
+                std::thread::spawn(move || {
+                    // 先等持久化索引在 warm_start 里载入(它在另一线程), 最多等 ~60s。
+                    for _ in 0..120 {
+                        if crate::search::current_len() > 0 {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                    }
+                    if !is_elevated() && crate::search::current_len() < 8_000_000 {
+                        log_line("[life] 启动自动全量: 索引未达全量 → 静默提权 MFT 重建");
+                        let _ = request_full_reindex(h, false);
+                    }
+                });
+            }
             // warm the file-tag store (path→tags) so the first keystroke already weights tags
             std::thread::spawn(|| tags::warm());
             // P2: localhost HTTP collector for the 录像 extensions (own thread, blocking accept).
@@ -1119,6 +1223,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             log_js,
+            dom_element_now,
             run_shell,
             ask_ai,
             copy_text,
@@ -1219,8 +1324,29 @@ pub fn run() {
             clipclip::clip_clear,
             fileio::list_dir
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            // 生命周期: 记录退出原因, 解"死的不明不白" —— 干净退出会走这里; 原生崩溃/OOM 不会(心跳会戛然而止)。
+            use tauri::RunEvent;
+            match event {
+                RunEvent::ExitRequested { .. } => log_line("[life] EXIT RunEvent::ExitRequested"),
+                RunEvent::Exit => log_line("[life] EXIT RunEvent::Exit(事件循环结束)"),
+                RunEvent::WindowEvent { label, event, .. } => {
+                    use tauri::WindowEvent;
+                    match event {
+                        WindowEvent::CloseRequested { .. } => {
+                            log_line(&format!("[life] WindowEvent {label}: CloseRequested"))
+                        }
+                        WindowEvent::Destroyed => {
+                            log_line(&format!("[life] WindowEvent {label}: Destroyed"))
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
+        });
 }
 
 // Headless backend tests — runtime-verify the 抓取/截图/洞察 backend without any UI
