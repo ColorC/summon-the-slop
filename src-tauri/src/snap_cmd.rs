@@ -355,6 +355,33 @@ pub struct PointTarget {
     pub note_id: Option<String>,
 }
 
+/// 选区里的一个内容元素(通用 DOM 解析, 不靠埋点)。
+#[derive(serde::Serialize, Default, Clone)]
+pub struct ElementBrief {
+    pub tag: String,
+    pub text: String,
+    pub selector: String,
+    pub omni_uri: String,
+}
+#[cfg(windows)]
+fn parse_element_briefs(v: &serde_json::Value, key: &str) -> Vec<ElementBrief> {
+    v.get(key).and_then(|x| x.as_array()).map(|arr| {
+        arr.iter().filter(|e| e.is_object()).map(|e| ElementBrief {
+            tag: e.get("tag").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            text: e.get("text").and_then(|x| x.as_str()).unwrap_or("").replace('\n', " ").trim().chars().take(90).collect(),
+            selector: e.get("selector").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            omni_uri: e.get("omni_uri").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        }).collect()
+    }).unwrap_or_default()
+}
+/// 一个元素简报渲成一行 MD: `tag「文本」(→omni)`。
+fn brief_line(e: &ElementBrief) -> String {
+    let mut s = e.tag.clone();
+    if !e.text.is_empty() { s.push_str(&format!("「{}」", e.text)); }
+    if !e.omni_uri.is_empty() { s.push_str(&format!(" ⟶{}", e.omni_uri)); }
+    s
+}
+
 /// 统一捕获结果。给 AI 看的是 文件路径 + 完整描述(不暴露 omni:// 这种模型陌生的自造规范);
 /// omni_uri 只留作内部句柄。还回 在哪个页面(page_*) + 这一块里有哪些材料(contained)。
 #[derive(serde::Serialize, Default)]
@@ -372,6 +399,10 @@ pub struct OmniResult {
     // 通用 DOM 元素(信标报的光标下元素, 不靠埋点): 任意网页都能知道指的是哪个元素。
     pub element: Option<String>,     // "tag#id 「文本」"
     pub element_selector: Option<String>,
+    // 选区里的元素(纯几何, 不靠埋点): 完全在内 + 与选区重叠。
+    pub elements_contained: Vec<ElementBrief>,
+    pub elements_overlapping: Vec<ElementBrief>,
+    pub elements_truncated: bool,
 }
 
 /// 含该点 (x,y)、可见、非 poof 的【顶层窗口】们, 按 z-order(最顶在前)。EnumWindows 天然 z-order。
@@ -575,6 +606,9 @@ pub async fn omni_capture(
                                 Some(if txt.is_empty() { head } else { format!("{head} 「{txt}」") })
                             }),
                             element_selector: v.get("element").and_then(|el| el.get("selector")).and_then(|x| x.as_str()).map(str::to_string),
+                            elements_contained: parse_element_briefs(&v, "elements_contained"),
+                            elements_overlapping: parse_element_briefs(&v, "elements_overlapping"),
+                            elements_truncated: v.get("elements_truncated").and_then(|x| x.as_bool()).unwrap_or(false),
                         }
                     },
                     None => OmniResult::default(),
@@ -708,6 +742,20 @@ pub fn capture_md(l: i32, t: i32, r: i32, b: i32) {
     }
     md.push_str("---\n\n");
     md.push_str(&format!("![标注截图]({})\n", png_path.display()));
+    // 选区里的元素(纯几何, 不靠埋点): 完全在内 + 与选区重叠。
+    let el_in = parse_element_briefs(&v, "elements_contained");
+    let el_over = parse_element_briefs(&v, "elements_overlapping");
+    if !el_in.is_empty() {
+        md.push_str(&format!("\n## 选区内的元素（完全在内 {}）\n", el_in.len()));
+        for e in &el_in { md.push_str(&format!("- {}\n", brief_line(e))); }
+    }
+    if !el_over.is_empty() {
+        md.push_str(&format!("\n## 与选区重叠的元素（{}）\n", el_over.len()));
+        for e in &el_over { md.push_str(&format!("- {}\n", brief_line(e))); }
+    }
+    if v.get("elements_truncated").and_then(|x| x.as_bool()).unwrap_or(false) {
+        md.push_str("\n> 注: 页面内容元素较多, 上表已截断。\n");
+    }
 
     let md_path = dir.join(format!("{stem}.md"));
     if let Err(e) = std::fs::write(&md_path, &md) { println!("md write failed: {e}"); return; }

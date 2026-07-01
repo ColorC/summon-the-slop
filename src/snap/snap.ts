@@ -421,8 +421,18 @@ interface OmniResult {
   window_title: string | null; // UIA 直出窗口标题(信标不在也有), 保证 MD 永远知道截的是哪个窗口/页
   element?: string | null;          // 通用 DOM 元素(信标报的光标下元素, 不靠埋点): "tag#id 「文本」"
   element_selector?: string | null;
+  elements_contained?: ElementBrief[];   // 选区里完全在内的元素(纯几何)
+  elements_overlapping?: ElementBrief[]; // 与选区重叠但不完全在内的元素
+  elements_truncated?: boolean;
 }
-const EMPTY_OMNI: OmniResult = { omni_uri: null, note_id: null, target_path: null, description: null, page_title: null, page_url: null, contained: [], point_targets: [], window_title: null, element: null, element_selector: null };
+interface ElementBrief { tag: string; text: string; selector: string; omni_uri: string; }
+function briefLine(e: ElementBrief): string {
+  let s = e.tag || "";
+  if (e.text) s += `「${e.text}」`;
+  if (e.omni_uri) s += ` ⟶${e.omni_uri}`;
+  return s;
+}
+const EMPTY_OMNI: OmniResult = { omni_uri: null, note_id: null, target_path: null, description: null, page_title: null, page_url: null, contained: [], point_targets: [], window_title: null, element: null, element_selector: null, elements_contained: [], elements_overlapping: [], elements_truncated: false };
 const TOOL_CN: Record<string, string> = {
   rect: "矩形", ellipse: "椭圆", arrow: "箭头", line: "直线",
   pen: "画笔", highlight: "荧光标记", mosaic: "马赛克遮挡", text: "文字",
@@ -480,6 +490,23 @@ function buildMarkdown(imgPath: string, shapes: Shape[], ox: number, oy: number,
   if (omni && omni.description) {
     L.push("");
     L.push(`**指向**: ${omni.description}${omni.target_path ? `（文件 \`${omni.target_path}\`）` : ""}${omni.note_id ? `（已挂札记 ${omni.note_id}）` : ""}`);
+  }
+  // 选区里的元素(纯几何, 不靠埋点): 完全在内 + 与选区重叠。
+  const elIn = (omni && omni.elements_contained) || [];
+  const elOver = (omni && omni.elements_overlapping) || [];
+  if (elIn.length) {
+    L.push("");
+    L.push(`## 选区内的元素（完全在内 ${elIn.length}）`);
+    elIn.forEach((e) => L.push(`- ${briefLine(e)}`));
+  }
+  if (elOver.length) {
+    L.push("");
+    L.push(`## 与选区重叠的元素（${elOver.length}）`);
+    elOver.forEach((e) => L.push(`- ${briefLine(e)}`));
+  }
+  if (omni && omni.elements_truncated) {
+    L.push("");
+    L.push("> 注: 页面内容元素较多, 上表已截断。");
   }
   // 每条评论挂到了哪条材料(点 1: 按文字标注的位置各自归材料, 并已写进该材料的真评论)。
   if (omni && omni.point_targets && omni.point_targets.length) {
