@@ -369,6 +369,9 @@ pub struct OmniResult {
     pub point_targets: Vec<PointTarget>,
     // UIA 直出的窗口标题, 不管信标解析成不成都带上 —— 保证 MD 永远知道"截的是哪个窗口/页"。
     pub window_title: Option<String>,
+    // 通用 DOM 元素(信标报的光标下元素, 不靠埋点): 任意网页都能知道指的是哪个元素。
+    pub element: Option<String>,     // "tag#id 「文本」"
+    pub element_selector: Option<String>,
 }
 
 /// z-order 最靠前的、可见、非 poof、含该点的【顶层窗口】(rect + 标题)。EnumWindows 按 z-order 返回,
@@ -540,6 +543,16 @@ pub async fn omni_capture(
                                 }).collect()
                             }).unwrap_or_default(),
                             window_title: v.get("window_title").and_then(|x| x.as_str()).map(str::to_string),
+                            element: v.get("element").and_then(|el| {
+                                let tag = el.get("tag").and_then(|x| x.as_str()).unwrap_or("");
+                                if tag.is_empty() { return None; }
+                                let id = el.get("id").and_then(|x| x.as_str()).unwrap_or("");
+                                let txt = el.get("text").and_then(|x| x.as_str()).unwrap_or("").replace('\n', " ");
+                                let txt: String = txt.trim().chars().take(90).collect();
+                                let head = if id.is_empty() { tag.to_string() } else { format!("{tag}#{id}") };
+                                Some(if txt.is_empty() { head } else { format!("{head} 「{txt}」") })
+                            }),
+                            element_selector: v.get("element").and_then(|el| el.get("selector")).and_then(|x| x.as_str()).map(str::to_string),
                         }
                     },
                     None => OmniResult::default(),
@@ -649,6 +662,17 @@ pub fn capture_md(l: i32, t: i32, r: i32, b: i32) {
     }
     if let Some(d) = get("description") { md.push_str(&format!("target: {d}\n")); }
     if let Some(p) = get("path") { md.push_str(&format!("target_file: {p}\n")); }
+    // 通用 DOM 元素(信标报的光标下元素, 不靠埋点)
+    if let Some(el) = v.get("element").filter(|e| e.get("tag").and_then(|t| t.as_str()).map(|s| !s.is_empty()).unwrap_or(false)) {
+        let tag = el.get("tag").and_then(|x| x.as_str()).unwrap_or("");
+        let id = el.get("id").and_then(|x| x.as_str()).unwrap_or("");
+        let txt: String = el.get("text").and_then(|x| x.as_str()).unwrap_or("").replace('\n', " ").trim().chars().take(90).collect();
+        let head = if id.is_empty() { tag.to_string() } else { format!("{tag}#{id}") };
+        md.push_str(&format!("element: {head}{}\n", if txt.is_empty() { String::new() } else { format!(" \"{txt}\"") }));
+        if let Some(sel) = el.get("selector").and_then(|x| x.as_str()).filter(|s| !s.is_empty()) {
+            md.push_str(&format!("element_selector: {sel}\n"));
+        }
+    }
     md.push_str("---\n\n");
     md.push_str(&format!("![标注截图]({})\n", png_path.display()));
 

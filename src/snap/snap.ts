@@ -419,8 +419,10 @@ interface OmniResult {
   contained: ContainedEntity[];
   point_targets: PointTarget[];
   window_title: string | null; // UIA 直出窗口标题(信标不在也有), 保证 MD 永远知道截的是哪个窗口/页
+  element?: string | null;          // 通用 DOM 元素(信标报的光标下元素, 不靠埋点): "tag#id 「文本」"
+  element_selector?: string | null;
 }
-const EMPTY_OMNI: OmniResult = { omni_uri: null, note_id: null, target_path: null, description: null, page_title: null, page_url: null, contained: [], point_targets: [], window_title: null };
+const EMPTY_OMNI: OmniResult = { omni_uri: null, note_id: null, target_path: null, description: null, page_title: null, page_url: null, contained: [], point_targets: [], window_title: null, element: null, element_selector: null };
 const TOOL_CN: Record<string, string> = {
   rect: "矩形", ellipse: "椭圆", arrow: "箭头", line: "直线",
   pen: "画笔", highlight: "荧光标记", mosaic: "马赛克遮挡", text: "文字",
@@ -460,8 +462,11 @@ function buildMarkdown(imgPath: string, shapes: Shape[], ox: number, oy: number,
   if (omni && omni.description) L.push(`target: ${omni.description}`);
   if (omni && omni.target_path) L.push(`target_file: ${omni.target_path}`);
   if (omni && omni.note_id) L.push(`target_note: ${omni.note_id}`);
-  // 通用 DOM 元素解析(浏览器扩展上报光标下元素, 不靠埋点): 任意网页都能知道指的是哪个元素。
-  if (domEl && domEl.tag) {
+  // 通用 DOM 元素解析(光标下元素, 不靠埋点): omni 页面走信标(omni.element), 第三方页走扩展(domEl)。
+  if (omni && omni.element) {
+    L.push(`element: ${omni.element}`);
+    if (omni.element_selector) L.push(`element_selector: ${omni.element_selector}`);
+  } else if (domEl && domEl.tag) {
     const tag = `${domEl.tag}${domEl.id ? "#" + domEl.id : ""}`;
     const txt = (domEl.text || "").replace(/\s+/g, " ").trim().slice(0, 90);
     L.push(`element: ${tag}${txt ? ` "${txt}"` : ""}`);
