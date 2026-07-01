@@ -374,16 +374,17 @@ pub struct OmniResult {
     pub element_selector: Option<String>,
 }
 
-/// z-order 最靠前的、可见、非 poof、含该点的【顶层窗口】(rect + 标题)。EnumWindows 按 z-order 返回,
-/// 第一个命中即最顶。修掉"按面积选窗"的误判(背后最大化的 Codex/Excel 比目标大就会抢走)。
+/// 含该点 (x,y)、可见、非 poof 的【顶层窗口】们, 按 z-order(最顶在前)。EnumWindows 天然 z-order。
+/// 返回全部而非只第一个: 远程桌面的 OrayPrivacyWnd 这类透明覆盖窗在最上但无 Document, 真浏览器在其下 ——
+/// probe 挨个试才能找到有内容区的那个。修掉"按面积选窗"的老误判(背后最大化的大窗抢走)。
 #[cfg(windows)]
-fn topmost_window_at(skip: &[isize], x: i32, y: i32) -> Option<([i32; 4], String)> {
+fn windows_at(skip: &[isize], x: i32, y: i32) -> Vec<([i32; 4], String, isize)> {
     use windows::core::BOOL;
     use windows::Win32::Foundation::{HWND, LPARAM, RECT};
     use windows::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetWindowRect, GetWindowTextW, IsIconic, IsWindowVisible,
     };
-    struct Ctx<'a> { skip: &'a [isize], x: i32, y: i32, out: Option<([i32; 4], String)> }
+    struct Ctx<'a> { skip: &'a [isize], x: i32, y: i32, out: Vec<([i32; 4], String, isize)> }
     unsafe extern "system" fn cb(hwnd: HWND, lp: LPARAM) -> BOOL {
         let ctx = &mut *(lp.0 as *mut Ctx);
         if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
@@ -403,48 +404,69 @@ fn topmost_window_at(skip: &[isize], x: i32, y: i32) -> Option<([i32; 4], String
         let n = GetWindowTextW(hwnd, &mut buf);
         let title = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
         if title.trim().is_empty() {
-            return BOOL(1); // 跳过无标题(tooltip/分层装饰窗等), 找真正的应用窗
+            return BOOL(1); // 跳过无标题(tooltip/分层装饰窗等)
         }
-        ctx.out = Some(([rc.left, rc.top, rc.right, rc.bottom], title));
-        BOOL(0) // 命中即停 —— z-order 最顶
+        ctx.out.push(([rc.left, rc.top, rc.right, rc.bottom], title, hwnd.0 as isize));
+        if ctx.out.len() >= 8 { return BOOL(0); } // 够用即停(点下面不会压太多真窗)
+        BOOL(1)
     }
-    let mut ctx = Ctx { skip, x, y, out: None };
+    let mut ctx = Ctx { skip, x, y, out: Vec::new() };
     unsafe { let _ = EnumWindows(Some(cb), LPARAM(&mut ctx as *mut _ as isize)); }
     ctx.out
 }
 
 /// 探测屏幕点 (x,y) 下面是什么(跳过 poof 自己的覆盖层)。窗口标题取 z-order 最顶的非 poof 窗;内容区原点
 /// 取【属于该顶层窗】的最小 Document(UIA 遍历, 不 hit-test, 因截图覆盖层在最上)。
+// content_origin 缓存: 同一个窗口(hwnd+rect 未变)重复截图时免掉 UIA 查询 —— 用户连拍常见, 首次付费后续瞬回。
+#[cfg(windows)]
+static ORIGIN_CACHE: std::sync::Mutex<Option<(isize, [i32; 4], [i32; 2], u128)>> = std::sync::Mutex::new(None);
+#[cfg(windows)]
+const ORIGIN_CACHE_TTL_MS: u128 = 4000;
+
 #[cfg(windows)]
 fn probe_target_sync(skip: &[isize], x: i32, y: i32) -> CaptureProbe {
-    let top = topmost_window_at(skip, x, y);
-    let win_title = top.as_ref().map(|(_, t)| t.clone()).unwrap_or_default();
-    let win_rect = top.as_ref().map(|(r, _)| *r);
-    let els = crate::uia::elements_excluding(skip, 6000, 800);
-    let mut doc: Option<(i64, [i32; 4])> = None;
-    for e in els.iter() {
-        let [l, t, r, b] = e.rect;
-        if !(x >= l && x < r && y >= t && y < b && r > l && b > t) {
-            continue;
-        }
-        if !e.control_type.contains("Document") {
-            continue;
-        }
-        // 只认属于 z-order 最顶那个窗的 Document(在它的 rect 内), 避免取到背后大窗的文档。
-        if let Some(wr) = win_rect {
-            if l < wr[0] - 2 || t < wr[1] - 2 || r > wr[2] + 2 || b > wr[3] + 2 {
-                continue;
+    let wins = windows_at(skip, x, y);
+    let win_title = wins.first().map(|(_, t, _)| t.clone()).unwrap_or_default();
+    let top_key = wins.first().map(|(r, _, h)| (*h, *r)); // 缓存键: z-order 最顶窗(通常稳定)
+
+    // 1) 缓存命中(同顶窗、同位置、新鲜)→ 免 UIA
+    if let Some((h, wr)) = top_key {
+        if let Ok(g) = ORIGIN_CACHE.lock() {
+            if let Some((ch, crect, corg, ts)) = *g {
+                if ch == h && crect == wr && now_ns() / 1_000_000 - ts <= ORIGIN_CACHE_TTL_MS {
+                    return CaptureProbe { content_origin: Some(corg), win_title };
+                }
             }
         }
-        let area = (r - l) as i64 * (b - t) as i64;
-        if doc.map(|(a, _)| area < a).unwrap_or(true) {
-            doc = Some((area, e.rect));
+    }
+
+    // 2) 作用域查询: 对该点下的每个 z-order 窗口(共享一个 UIA 实例)找 Document, 第一个有内容区的即命中。
+    //    透明覆盖窗(OrayPrivacyWnd)没 Document 会被跳过 → 找到底下真浏览器。取代全桌面 6000 元素遍历(~1.5s)。
+    let mut origin = crate::uia::make_automation().ok().and_then(|auto| {
+        wins.iter().find_map(|(_, _, h)| crate::uia::content_origin_of_window_with(&auto, *h, x, y))
+    });
+
+    // 3) 兜底: 都没 Document(非浏览器/未就绪)→ 退回旧的全桌面遍历
+    if origin.is_none() {
+        let els = crate::uia::elements_excluding(skip, 6000, 800);
+        let mut doc: Option<(i64, [i32; 4])> = None;
+        for e in els.iter() {
+            let [l, t, r, b] = e.rect;
+            if !(x >= l && x < r && y >= t && y < b && r > l && b > t) { continue; }
+            if !e.control_type.contains("Document") { continue; }
+            let area = (r - l) as i64 * (b - t) as i64;
+            if doc.map(|(a, _)| area < a).unwrap_or(true) { doc = Some((area, e.rect)); }
+        }
+        origin = doc.map(|(_, rc)| [rc[0], rc[1]]);
+    }
+
+    // 4) 写缓存
+    if let (Some((h, wr)), Some(o)) = (top_key, origin) {
+        if let Ok(mut g) = ORIGIN_CACHE.lock() {
+            *g = Some((h, wr, o, now_ns() / 1_000_000));
         }
     }
-    CaptureProbe {
-        content_origin: doc.map(|(_, rc)| [rc[0], rc[1]]),
-        win_title,
-    }
+    CaptureProbe { content_origin: origin, win_title }
 }
 
 fn omni_endpoint() -> String {
@@ -614,11 +636,15 @@ pub fn test_omni_md(l: i32, t: i32, r: i32, b: i32) {
 #[cfg(windows)]
 pub fn capture_md(l: i32, t: i32, r: i32, b: i32) {
     use std::io::Write;
+    use std::time::Instant;
+    let t_all = Instant::now();
     // 1) 抓屏 + 裁剪 + 存 PNG(真像素)
+    let t_cap = Instant::now();
     let (rgba, fw, fh, fox, foy, _scale) = match crate::capture::capture_primary_raw() {
         Ok(v) => v,
         Err(e) => { println!("capture failed: {e}"); return; }
     };
+    eprintln!("[t] capture_primary_raw: {}ms", t_cap.elapsed().as_millis());
     let full = match image::RgbaImage::from_raw(fw, fh, rgba) {
         Some(i) => i, None => { println!("frame build failed"); return; }
     };
@@ -631,22 +657,29 @@ pub fn capture_md(l: i32, t: i32, r: i32, b: i32) {
     let _ = std::fs::create_dir_all(&dir);
     let stem = format!("captest-{}", now_ns());
     let png_path = dir.join(format!("{stem}.png"));
+    let t_png = Instant::now();
     if let Err(e) = crop.save(&png_path) { println!("png save failed: {e}"); return; }
+    eprintln!("[t] png crop+encode+save: {}ms", t_png.elapsed().as_millis());
 
     // 2) 真 UIA 探针 + dashboard /resolve
     let (cx, cy) = ((l + r) / 2, (t + b) / 2);
+    let t_probe = Instant::now();
     let probe = probe_target_sync(&[], cx, cy);
+    eprintln!("[t] UIA probe_target_sync: {}ms", t_probe.elapsed().as_millis());
     let origin = probe.content_origin.map(|o| serde_json::json!([o[0], o[1]])).unwrap_or(serde_json::Value::Null);
     let base = omni_endpoint();
     let body = serde_json::json!({"screen_rect":[l,t,r,b], "content_origin": origin, "title": probe.win_title});
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_millis(1500))
         .timeout_read(std::time::Duration::from_millis(3000)).build();
+    let t_res = Instant::now();
     let v: serde_json::Value = agent
         .post(&format!("{base}/api/boss-sight/captures/resolve"))
         .set("Content-Type", "application/json").send_string(&body.to_string())
         .ok().and_then(|r| r.into_string().ok()).and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or(serde_json::Value::Null);
+    eprintln!("[t] HTTP /resolve: {}ms", t_res.elapsed().as_millis());
+    eprintln!("[t] TOTAL capture_md: {}ms", t_all.elapsed().as_millis());
 
     // 3) 拼 MD(与 snap.ts buildMarkdown 同样的 window/page/target/target_file 行)
     let get = |k: &str| v.get(k).and_then(|x| x.as_str()).map(|s| s.to_string());

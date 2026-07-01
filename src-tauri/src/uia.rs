@@ -154,6 +154,42 @@ pub fn elements_excluding(skip: &[isize], total: usize, budget_ms: u128) -> Vec<
     out.into_inner().unwrap_or_default()
 }
 
+/// content_origin(浏览器内容区左上角, 物理像素)—— 直接从窗口 HWND 定位到它的 UIA 元素, 只在这一个窗口的子树里
+/// find_all(Document) 取包含 (x,y) 的最小 Document 的左上角。取代"从桌面根遍历 6000 个元素"(那要 ~1.5s):
+/// 作用域限定到单窗口 + 用 UIA 原生 find(provider 侧优化), 通常 <150ms。element_from_handle 不 hit-test,
+/// 所以 poof 截图覆盖层在最上也没关系。找不到 Document(非浏览器/未就绪)返回 None, 交给调用方走旧遍历兜底。
+#[cfg(windows)]
+pub fn content_origin_of_window(hwnd: isize, x: i32, y: i32) -> Option<[i32; 2]> {
+    let auto = UIAutomation::new().ok()?;
+    content_origin_of_window_with(&auto, hwnd, x, y)
+}
+
+/// 复用一个 UIAutomation 实例做作用域 Document 查询 —— probe 要对该点下的多个 z-order 窗口挨个试
+/// (远程桌面的 OrayPrivacyWnd 这类透明覆盖窗在最上但没有 Document, 浏览器在它下面), 共享实例免掉每窗一次 COM 初始化。
+#[cfg(windows)]
+pub fn content_origin_of_window_with(auto: &UIAutomation, hwnd: isize, x: i32, y: i32) -> Option<[i32; 2]> {
+    use uiautomation::types::{Handle, UIProperty};
+    use uiautomation::variants::Variant;
+    let el = auto.element_from_handle(Handle::from(hwnd)).ok()?;
+    let cond = auto
+        .create_property_condition(UIProperty::ControlType, Variant::from(50030i32), None)
+        .ok()?; // 50030 = UIA_DocumentControlTypeId
+    let docs = el.find_all(TreeScope::Subtree, &cond).ok()?;
+    let mut best: Option<(i64, [i32; 2])> = None;
+    for d in docs.iter() {
+        if let Ok(rc) = d.get_bounding_rectangle() {
+            let (l, t, r, b) = (rc.get_left(), rc.get_top(), rc.get_right(), rc.get_bottom());
+            if x >= l && x < r && y >= t && y < b && r > l && b > t {
+                let area = (r - l) as i64 * (b - t) as i64;
+                if best.map(|(a, _)| area < a).unwrap_or(true) {
+                    best = Some((area, [l, t]));
+                }
+            }
+        }
+    }
+    best.map(|(_, o)| o)
+}
+
 /// Reuse an existing UIAutomation (for the live inspector's box-select, which already
 /// holds one) to list named/valued elements intersecting a rect.
 pub fn elements_in_rect_with(auto: &UIAutomation, l: i32, t: i32, r: i32, b: i32, max: usize) -> Vec<ElementInfo> {
