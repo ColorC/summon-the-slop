@@ -26,6 +26,8 @@ portable-pty = "0.8"
 nucleo-matcher = "0.3"
 ignore = "0.4"
 rayon = "1"
+memchr = "2"   # SIMD 子串扫描(Everything 同款 strstr): 紧凑名字 arena 上 ~50GB/s, 支撑 11M 全量秒回
+memmap2 = "0.9" # 二进制索引 mmap 加载: 免去 read 整块 379MB 的双倍内存峰值, 按页惰性载入
 notify = "6"
 pinyin = "0.10"
 # screenshot (GDI 快照) + live-inspector 洞察 (capture/uia/ocr/inspect, ported from waiela)
@@ -51,6 +53,8 @@ windows-sys = { version = "0.52", features = [
   "Win32_System_SystemInformation",
   "Win32_System_LibraryLoader",
   "Win32_System_Threading",
+  "Win32_System_ProcessStatus",
+  "Win32_Security",
   "Win32_System_Registry",
   "Win32_System_DataExchange",
   "Win32_System_Memory",
@@ -68,6 +72,12 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.image]
 opt-level = 3
+# 搜索热路径: memchr 的 SIMD 子串 + poof 自身的扫描/堆循环, debug 下慢 5-10×。优化它们, 让 1100 万行
+# 紧凑 arena 扫描在 tauri dev(debug)里也能 <100ms; 其余 crate 照旧 debug, 日常编译不显著变慢。
+[profile.dev.package.memchr]
+opt-level = 3
+[profile.dev.package.poof]
+opt-level = 2
 [profile.dev.package.crc32fast]
 opt-level = 3
 [profile.dev.package.adler2]

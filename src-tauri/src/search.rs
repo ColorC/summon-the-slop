@@ -26,7 +26,9 @@ pub struct SearchHit {
 // (kind, name, path, pinyin) — pinyin is non-empty only for CJK names (full + initials),
 // so typing "ceshi" or "cs" finds 测试…
 type Entry = (String, String, String, String);
-static INDEX: Mutex<Option<Vec<Entry>>> = Mutex::new(None);
+static INDEX: Mutex<Option<Vec<Entry>>> = Mutex::new(None); // 旧引擎/合成测试用; 生产已切 ARENA
+// arena 引擎的活索引(切换后真正服务搜索)。RwLock: 扫描只读、多扫并发; 写仅 warm/load/活更新。
+static ARENA: std::sync::RwLock<Option<arena::Index>> = std::sync::RwLock::new(None);
 static BUILDING: AtomicBool = AtomicBool::new(false);
 static WATCHING: AtomicBool = AtomicBool::new(false);
 
@@ -656,6 +658,19 @@ fn index_dir() -> PathBuf {
 fn index_file() -> PathBuf {
     index_dir().join("index.tsv")
 }
+fn arena_file() -> PathBuf {
+    index_dir().join("index.bin")
+}
+// 优先加载二进制 arena; 没有就从旧 index.tsv 迁移一次(解析→建 arena→落 .bin)。
+fn load_arena_or_migrate() -> Option<arena::Index> {
+    if let Some(a) = arena::Index::load(&arena_file()) {
+        return Some(a);
+    }
+    let entries = load_persisted()?;
+    let a = arena::build(&entries);
+    let _ = a.save(&arena_file());
+    Some(a)
+}
 fn load_persisted() -> Option<Vec<Entry>> {
     let s = std::fs::read_to_string(index_file()).ok()?;
     let mut v = Vec::new();
@@ -692,37 +707,75 @@ fn persist(idx: &[Entry]) {
     }
 }
 
-// full fresh walk → persist → swap in. The query-time refresh core.
+// 全量重walk → 建 arena → 落二进制 → 换入。查询期刷新的核心。不再长期保留 Vec<Entry>(arena 已吃下, 省内存)。
 pub fn warm_index() {
-    let idx = build_index();
-    persist(&idx);
-    *INDEX.lock().unwrap() = Some(idx);
+    let t = std::time::Instant::now();
+    let aidx = arena::build_full(); // MFT 直建树(提权时)+ 遍历回退, 一步出 arena, 不再经 Vec<Entry>
+    let n = aidx.len();
+    // 不让"遍历回退"(非提权, 拿不到 MFT, 会掉掉一大半文件)覆盖一个明显更全的已载入索引
+    // (如提权 MFT 建的 11M 全量)。新结果比现有少 >10% → 判定为残缺回退, 保留旧的, 不换不存。
+    let prev = ARENA.read().unwrap().as_ref().map(|a| a.len()).unwrap_or(0);
+    if prev > 0 && n * 10 < prev * 9 {
+        ilog(&format!(
+            "[life] warm_index 放弃覆盖: 新建 {} 行 < 现有 {} 行(遍历回退残缺, 保留更全索引; 要刷新请用管理员「全量重建」)",
+            n, prev
+        ));
+        return;
+    }
+    let _ = aidx.save(&arena_file());
+    ilog(&format!(
+        "[life] warm_index 完成 {} 行, 用时 {:?}, mem={}MB",
+        n,
+        t.elapsed(),
+        crate::proc_mem_mb()
+    ));
+    *ARENA.write().unwrap() = Some(aidx);
+    *INDEX.lock().unwrap() = None;
     recompute_important(); // 刷新自动重要文件夹(基于最新 usage)
     crate::tags::sweep_orphans(14); // 14 天宽限后清理失踪文件的标签
 }
 
-// startup: load the persisted index instantly (search works on the 1st keystroke),
+// startup: load the persisted arena instantly (search works on the 1st keystroke),
 // then do a full fresh walk in the background and swap it in.
 pub fn warm_start() {
-    if INDEX.lock().unwrap().is_none() {
-        if let Some(idx) = load_persisted() {
-            *INDEX.lock().unwrap() = Some(idx);
+    if ARENA.read().unwrap().is_none() {
+        if let Some(aidx) = load_arena_or_migrate() {
+            *ARENA.write().unwrap() = Some(aidx);
         }
     }
-    warm_index();
+    let loaded = ARENA.read().unwrap().as_ref().map(|a| a.len()).unwrap_or(0);
+    // 提权时(MFT 能建全量)→ 刷新重建; 非提权但已载入索引(很可能是更全的 MFT 索引)→ 跳过遍历重walk:
+    // 它既会被上面的"不覆盖"守卫丢弃, 又白费 ~50s/1.8GB。靠实时监听刷新工作目录, 全量靠管理员「全量重建」。
+    if loaded == 0 || crate::is_elevated() {
+        warm_index();
+    } else {
+        ilog(&format!(
+            "[life] warm_start: 已载入 {} 行, 非提权 → 跳过遍历重walk(保全量; 刷新靠实时监听 + 管理员「全量重建」)",
+            loaded
+        ));
+    }
     start_watchers();
     start_periodic_refresh();
 }
 
+// 当前活跃索引的行数(0 = 还没载入)。用于判断"是否已有全量索引"。
+pub fn current_len() -> usize {
+    ARENA.read().unwrap().as_ref().map(|a| a.len()).unwrap_or(0)
+}
+
 // Whole drives can't be cheaply watched live (no admin → no USN journal), so areas outside the
-// live-watched work dirs are refreshed by a throttled full re-walk every 2h (background, few
-// threads, persisted). Guarded by BUILDING so it never overlaps a manual reindex.
+// live-watched work dirs are refreshed every 2h. 提权时本体直接 MFT 重建; 非提权时触发静默提权子进程走
+// MFT 刷新全量(子进程 window-less, 不受会话隔离影响)—— 这样全量索引始终新鲜, 无需任何手动按钮。
 pub fn start_periodic_refresh() {
     std::thread::spawn(|| loop {
         std::thread::sleep(std::time::Duration::from_secs(7200));
-        if !BUILDING.swap(true, Ordering::SeqCst) {
-            warm_index();
-            BUILDING.store(false, Ordering::SeqCst);
+        if crate::is_elevated() {
+            if !BUILDING.swap(true, Ordering::SeqCst) {
+                warm_index();
+                BUILDING.store(false, Ordering::SeqCst);
+            }
+        } else {
+            crate::trigger_reindex(true); // 静默提权子进程刷新全量(MFT)
         }
     });
 }
@@ -752,7 +805,7 @@ fn apply_events(batch: Vec<Result<notify::Event, notify::Error>>) -> bool {
     let mut deleted: Vec<String> = Vec::new();
     let mut created: Vec<String> = Vec::new();
     {
-        let mut guard = INDEX.lock().unwrap();
+        let mut guard = ARENA.write().unwrap();
         let idx = match guard.as_mut() {
             Some(i) => i,
             None => return false,
@@ -770,30 +823,37 @@ fn apply_events(batch: Vec<Result<notify::Event, notify::Error>>) -> bool {
                     continue;
                 }
                 let ps = path.to_string_lossy().to_string();
-                let pos = idx.iter().position(|(_, _, p, _)| p == &ps);
                 let exists = path.exists();
-                if exists && pos.is_none() {
+                if exists {
                     if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                         let is_dir = path.is_dir();
-                        idx.push((
-                            kind_for(name, is_dir).to_string(),
-                            name.to_string(),
-                            ps.clone(),
-                            pinyin_of(name),
-                        ));
-                        changed = true;
-                        created.push(ps);
+                        // 活更新的 kind 字节(app 只来自全量构建的开始菜单, 故事件里 .lnk 当 file/exe)。
+                        let lower = name.to_ascii_lowercase();
+                        let kb: u8 = if is_dir {
+                            2
+                        } else if lower.ends_with(".exe")
+                            || lower.ends_with(".bat")
+                            || lower.ends_with(".cmd")
+                            || lower.ends_with(".ps1")
+                        {
+                            1
+                        } else {
+                            0
+                        };
+                        if idx.insert_path(&ps, kb, &pinyin_of(name)).is_some() {
+                            changed = true;
+                            created.push(ps);
+                        }
                     }
-                } else if !exists {
-                    if let Some(p) = pos {
-                        idx.swap_remove(p);
+                } else {
+                    if idx.remove_path(&ps) {
                         changed = true;
                     }
                     deleted.push(ps);
                 }
             }
         }
-    } // INDEX 锁在此释放
+    } // ARENA 锁在此释放
       // 标签维护: 仅当本批次确有「带标签」的删除时才动 TAGS(避免每次 fs 事件都写盘)。
     if !deleted.is_empty() && crate::tags::any_tagged(&deleted) {
         crate::tags::reconcile(&deleted, &created);
@@ -837,9 +897,8 @@ pub fn start_watchers() {
             }
             let changed = apply_events(batch);
             if changed && last_persist.elapsed() > Duration::from_secs(4) {
-                let snap = INDEX.lock().unwrap().clone();
-                if let Some(idx) = snap {
-                    persist(&idx);
+                if let Some(idx) = ARENA.read().unwrap().as_ref() {
+                    let _ = idx.save(&arena_file());
                 }
                 last_persist = Instant::now();
             }
@@ -908,8 +967,10 @@ fn name_has_ext(name: &str, ext: &str) -> bool {
 fn push_topk(heap: &mut BinaryHeap<Reverse<(u32, usize)>>, k: usize, score: u32, idx: usize) {
     if heap.len() < k {
         heap.push(Reverse((score, idx)));
-    } else if let Some(&Reverse((min_score, _))) = heap.peek() {
-        if score > min_score {
+    } else if let Some(&Reverse((min_score, min_idx))) = heap.peek() {
+        // 比 (score, idx) 整元组而非仅 score: 同分时按 idx 定夺 → 留下的 top-K 与到达顺序无关(并行 fold
+        // 不再随机), 结果确定可复现(也让增量收窄冷暖一致)。
+        if (score, idx) > (min_score, min_idx) {
             heap.pop();
             heap.push(Reverse((score, idx)));
         }
@@ -1199,7 +1260,12 @@ fn parse_query(q: &str) -> (String, Vec<String>, Vec<String>) {
     let mut tags: Vec<String> = Vec::new();
     let mut terms: Vec<String> = Vec::new();
     let mut text = String::new();
-    for tok in q.split_whitespace() {
+    // 分隔符: 空格 + 反斜杠/正斜杠。后者让"文件夹\文件"这类路径片段查询拆成多词, 走同一套祖先匹配
+    // (如 aiworkspace app)—— 与 Listary 一致。文件名不含 \ 或 /, 拆开无损。
+    for tok in q.split(|c: char| c.is_whitespace() || c == '\\' || c == '/') {
+        if tok.is_empty() {
+            continue;
+        }
         if let Some(t) = tok.strip_prefix('#') {
             if !t.is_empty() {
                 tags.push(t.to_lowercase());
@@ -1215,8 +1281,27 @@ fn parse_query(q: &str) -> (String, Vec<String>, Vec<String>) {
     (text, terms, tags)
 }
 
+/// 搜索入口(arena 引擎)。索引未就绪 → 后台预热并先返回空(下一次按键即有结果)。
 #[tauri::command]
 pub fn search(query: String, limit: usize) -> Vec<SearchHit> {
+    {
+        let g = ARENA.read().unwrap();
+        if let Some(idx) = g.as_ref() {
+            return arena::search(idx, query, limit);
+        }
+    }
+    if !BUILDING.swap(true, Ordering::SeqCst) {
+        std::thread::spawn(|| {
+            warm_index();
+            BUILDING.store(false, Ordering::SeqCst);
+        });
+    }
+    Vec::new()
+}
+
+// 旧引擎(读 Vec<Entry> INDEX): 切到 arena 后不再是生产入口, 仅供 --bench-search 断言与 --arena-verify 对比。
+#[allow(dead_code)]
+pub fn legacy_search(query: String, limit: usize) -> Vec<SearchHit> {
     let q = query.trim();
     if q.is_empty() {
         return Vec::new();
@@ -1445,8 +1530,8 @@ pub fn reveal_path(path: String) -> Result<(), String> {
 // 重建日志: 同时打 stderr 和 %TEMP%\poof-reindex.log —— 提权运行(GUI 子系统, 无控制台)看不到 stderr,
 // 靠这个文件确认每盘走的是 MFT 还是遍历, 以及是否真出全量。
 fn ilog(msg: &str) {
-    eprintln!("{msg}");
     use std::io::Write;
+    // 文件先写(GUI 子系统无控制台 / 父进程死后 stdout 管道断裂时仍可靠)。
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -1454,6 +1539,8 @@ fn ilog(msg: &str) {
     {
         let _ = writeln!(f, "{} {}", now_secs(), msg);
     }
+    // stderr 用不 panic 的 writeln!(eprintln! 在管道断裂/无控制台时会 panic)。
+    let _ = writeln!(std::io::stderr(), "{msg}");
 }
 
 /// 全量重建索引并持久化后退出。跑: poof.exe --reindex(普通用户=遍历全盘)或「以管理员运行」(走 MFT,
@@ -1463,22 +1550,31 @@ pub fn reindex_cli() {
     use std::time::Instant;
     let t0 = Instant::now();
     ilog("[reindex] 开始全量重建…");
-    let idx = build_index();
-    let n = idx.len();
-    persist(&idx);
+    let aidx = arena::build_full(); // 提权运行 → 各盘走 MFT 直建树(秒级全量, 零路径字符串)
+    let n = aidx.len();
+    let _ = aidx.save(&arena_file());
+    *ARENA.write().unwrap() = Some(aidx);
     ilog(&format!(
-        "[reindex] 完成: {} 条, 总用时 {:?} → 已写 index.tsv",
+        "[reindex] 完成: {} 行, 总用时 {:?} → 已写 index.bin",
         n,
         t0.elapsed()
     ));
     println!("{n}");
 }
 
+/// 逐字段内存占用报告(poof.exe --mem)。载入持久化 arena → 打印各结构 MB。
+pub fn mem_cli() {
+    match arena::Index::load(&arena_file()) {
+        Some(a) => println!("{}", a.mem_report()),
+        None => println!("(无持久化 arena, 先建索引)"),
+    }
+}
+
 /// 把磁盘上的持久化索引热换进 INDEX(提权重建完成后, 运行中的普通 poof 据此立刻吃上新索引, 不必重启)。
 pub fn reload_persisted() -> Option<usize> {
-    let idx = load_persisted()?;
-    let n = idx.len();
-    *INDEX.lock().unwrap() = Some(idx);
+    let aidx = load_arena_or_migrate()?;
+    let n = aidx.len();
+    *ARENA.write().unwrap() = Some(aidx);
     Some(n)
 }
 
@@ -1486,9 +1582,9 @@ pub fn reload_persisted() -> Option<usize> {
 /// 命中为 `kind:name :: path`(每行一条), 供无头的"用户视角"基准 —— 用纯英文查询常见文件/应用/文件夹,
 /// 直接看它们落在第几位。与 --bench-search 同款载入(真应用二进制内跑, 原生 DLL 正常加载)。
 pub fn run_search_cli(query: &str) {
-    let idx = load_persisted().unwrap_or_else(build_index);
-    let n = idx.len();
-    *INDEX.lock().unwrap() = Some(idx);
+    let aidx = load_arena_or_migrate().unwrap_or_else(|| arena::build(&build_index()));
+    let n = aidx.len();
+    *ARENA.write().unwrap() = Some(aidx);
     let hits = search(query.to_string(), 20);
     eprintln!("=== 索引 {} 条 · 查询 {:?} · {} 命中 ===", n, query, hits.len());
     if hits.is_empty() {
@@ -1498,6 +1594,183 @@ pub fn run_search_cli(query: &str) {
     for h in &hits {
         println!("{}:{} :: {}", h.kind, h.name, h.path);
     }
+}
+
+/// 对比验证: poof.exe --arena-verify → 用持久化索引建 arena, 对一批查询同时跑现引擎与 arena 引擎,
+/// 比对 top 结果一致性(PARITY)并各自计时。证明 arena 引擎排序逐位等价、且更快, 再切换。
+#[cfg(windows)]
+pub fn arena_verify() {
+    use std::time::Instant;
+    let entries = load_persisted().unwrap_or_else(build_index);
+    let n = entries.len();
+    let t = Instant::now();
+    let aidx = arena::build(&entries);
+    let abuild = t.elapsed();
+    let arows = aidx.len();
+    *INDEX.lock().unwrap() = Some(entries);
+    println!(
+        "\n=== entries {} → arena {} 行(含补全祖先目录) · 建 arena {:?} ===",
+        n, arows, abuild
+    );
+    let queries = [
+        "chrome",
+        "config",
+        "downloads",
+        "poof",
+        "aiworkspace",     // ← 紧接下一条做前缀扩展, 触发增量收窄并被 parity 校验
+        "aiworkspace app",
+        "poof src tauri",
+        "quant lab readme",
+        ".xlsx",
+        "系统",
+    ];
+    let mut parity = 0;
+    for q in queries {
+        let t = Instant::now();
+        let old = legacy_search(q.to_string(), 8);
+        let oldus = t.elapsed().as_micros();
+        let _ = arena::search(&aidx, q.to_string(), 8); // warm
+        let mut best = u128::MAX;
+        let mut newr = Vec::new();
+        for _ in 0..3 {
+            let t = Instant::now();
+            newr = arena::search(&aidx, q.to_string(), 8);
+            best = best.min(t.elapsed().as_micros());
+        }
+        let on: Vec<String> = old.iter().take(5).map(|h| format!("{}:{}", h.kind, h.name)).collect();
+        let nn: Vec<String> = newr.iter().take(5).map(|h| format!("{}:{}", h.kind, h.name)).collect();
+        // 比对 top-5 的"项集合"(忽略同分并列的顺序差异; 真不同项才算 DIFF)。
+        let (mut os, mut ns) = (on.clone(), nn.clone());
+        os.sort();
+        ns.sort();
+        let same = os == ns;
+        if same {
+            parity += 1;
+        }
+        println!(
+            "--- '{}' [{}] 现引擎 {:.1}ms / arena {:.1}ms ---",
+            q,
+            if same { "PARITY" } else { "DIFF" },
+            oldus as f64 / 1000.0,
+            best as f64 / 1000.0
+        );
+        if same {
+            println!("    {}", nn.join("  |  "));
+        } else {
+            println!("    现引擎: {}", on.join("  |  "));
+            println!("    arena : {}", nn.join("  |  "));
+        }
+    }
+    println!("=== PARITY {}/{} ===", parity, queries.len());
+
+    // 增量收窄正确性: 同一查询 冷扫(清缓存) vs 暖扫(先用前缀填缓存→收窄) 必须结果完全一致。
+    for (p, q) in [("quant lab", "quant lab readme"), ("aiworkspace", "aiworkspace app")] {
+        arena::clear_narrow_cache();
+        let cold = arena::search(&aidx, q.to_string(), 8);
+        let _ = arena::search(&aidx, p.to_string(), 8); // 填缓存
+        let warm = arena::search(&aidx, q.to_string(), 8); // 经收窄
+        let c: Vec<_> = cold.iter().map(|h| (h.kind.clone(), h.name.clone(), h.path.clone())).collect();
+        let w: Vec<_> = warm.iter().map(|h| (h.kind.clone(), h.name.clone(), h.path.clone())).collect();
+        println!(
+            "增量收窄正确性 '{}' 经前缀 '{}': {}",
+            q,
+            p,
+            if c == w { "冷暖一致 ✓" } else { "不一致 ✗" }
+        );
+    }
+}
+
+/// 架构验证: poof.exe --bench-arena <N> → 合成 N 行的「紧凑名字 arena」(Everything 同款: 名字连续存进
+/// 一个 Vec<u8> + 偏移/长度列), 用 memchr SIMD 子串 + rayon 并行 + top-K 堆扫一遍并计时。用来在动手重写
+/// 整个引擎之前, 真跑证明 1100 万行能不能 <100ms —— 即"去掉每行 4 个堆字符串、只扫名字"到底扛不扛得住。
+#[cfg(windows)]
+pub fn bench_arena(n: usize) {
+    use memchr::memmem;
+    use rayon::prelude::*;
+    use std::time::Instant;
+    const WORDS: &[&str] = &[
+        "readme", "config", "main", "index", "app", "server", "client", "test", "data", "src",
+        "build", "node", "cache", "user", "system", "report", "invoice", "chrome", "aiworkspace",
+        "poof", "quant", "model", "schema", "plan", "draft", "service", "module", "vendor",
+    ];
+    const EXTS: &[&str] = &[
+        "txt", "md", "rs", "ts", "js", "json", "exe", "dll", "png", "csv", "xlsx", "log", "pdf",
+    ];
+    let t0 = Instant::now();
+    let mut pool: Vec<u8> = Vec::with_capacity(n * 28);
+    let mut offs: Vec<u32> = Vec::with_capacity(n);
+    let mut lens: Vec<u16> = Vec::with_capacity(n);
+    let mut s: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut nxt = || {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        s
+    };
+    for i in 0..n {
+        let off = pool.len() as u32;
+        pool.extend_from_slice(WORDS[(nxt() as usize) % WORDS.len()].as_bytes());
+        pool.push(b'_');
+        pool.extend_from_slice(WORDS[(nxt() as usize) % WORDS.len()].as_bytes());
+        pool.push(b'_');
+        pool.extend_from_slice(format!("{i:x}").as_bytes());
+        pool.push(b'.');
+        pool.extend_from_slice(EXTS[(nxt() as usize) % EXTS.len()].as_bytes());
+        lens.push((pool.len() as u32 - off) as u16);
+        offs.push(off);
+    }
+    let cols = offs.len() * 4 + lens.len() * 2;
+    let cores = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(0);
+    println!(
+        "\n=== 合成 arena {} 行 · 名字池 {:.0}MB + 偏移列 {:.0}MB = {:.0}MB · 建表 {:?} · 逻辑核 {} ===",
+        n,
+        pool.len() as f64 / 1e6,
+        cols as f64 / 1e6,
+        (pool.len() + cols) as f64 / 1e6,
+        t0.elapsed(),
+        cores
+    );
+    // 一次扫描 = 现在引擎的「一段闸门」: 并行 SIMD 子串命中 → top-K min-heap(faithfully 含堆 churn)。
+    let scan = |q: &[u8]| -> (usize, u128) {
+        let finder = memmem::Finder::new(q);
+        let go = || {
+            (0..n)
+                .into_par_iter()
+                .fold(
+                    BinaryHeap::<Reverse<(u32, usize)>>::new,
+                    |mut h, i| {
+                        let (o, l) = (offs[i] as usize, lens[i] as usize);
+                        if let Some(pos) = finder.find(&pool[o..o + l]) {
+                            push_topk(&mut h, 80, (10000 - pos.min(9999)) as u32, i);
+                        }
+                        h
+                    },
+                )
+                .reduce(BinaryHeap::new, |mut a, b| {
+                    for Reverse((sc, i)) in b {
+                        push_topk(&mut a, 80, sc, i);
+                    }
+                    a
+                })
+        };
+        let _ = go(); // warm
+        let mut best = u128::MAX;
+        for _ in 0..3 {
+            let t = Instant::now();
+            let h = go();
+            best = best.min(t.elapsed().as_micros());
+            std::hint::black_box(h.len());
+        }
+        (go().len(), best)
+    };
+    for q in ["aiworkspace", "config", "chrome", "report"] {
+        let (k, us) = scan(q.as_bytes());
+        println!("  扫 '{}' → top{} · {:.1} ms", q, k, us as f64 / 1000.0);
+    }
+    println!(
+        "=== 对比: 现在的散落 String 引擎在 4.5M 已 281ms; 紧凑 arena 在 {} 行见上 ===",
+        n
+    );
 }
 
 // 逐字拼音输入的真实模拟基准。跑: poof.exe --bench-search(由 lib.rs run() 开头的参数检查触发,
@@ -1519,11 +1792,11 @@ pub fn bench_search() {
         let mut q = String::new();
         for ch in word.chars() {
             q.push(ch);
-            let _ = search(q.clone(), 40); // 预热
+            let _ = legacy_search(q.clone(), 40); // 预热
             let mut samples: Vec<(u64, usize)> = (0..3)
                 .map(|_| {
                     let t = Instant::now();
-                    let r = search(q.clone(), 40);
+                    let r = legacy_search(q.clone(), 40);
                     (t.elapsed().as_micros() as u64, r.len())
                 })
                 .collect();
@@ -1553,13 +1826,13 @@ pub fn bench_search() {
         println!("  ✓ 性能红线: 真实最差 < 60ms");
     }
     for w in ["config", "ceshi", "readme", "git"] {
-        let r = search(w.to_string(), 5);
+        let r = legacy_search(w.to_string(), 5);
         println!("  抽查 '{}': {}", w, r.iter().map(|h| h.name.clone()).collect::<Vec<_>>().join(" | "));
     }
     // ---- 本次改动验收: 应用优先(chrome/code 首条应是 app) + 扩展名过滤(.exe/.xlsx 应全是该扩展名) ----
     println!("--- 应用优先 / 扩展名过滤 抽查(kind:name)---");
     for w in ["chrome", "code", ".exe", ".xlsx", "*.pdf"] {
-        let r = search(w.to_string(), 6);
+        let r = legacy_search(w.to_string(), 6);
         let show: Vec<String> = r.iter().map(|h| format!("{}:{}", h.kind, h.name)).collect();
         println!("  '{}' → {}", w, show.join("  |  "));
     }
@@ -1614,7 +1887,7 @@ pub fn bench_search() {
         UsageEntry { frecency: 1000.0, last: now }, // 灌满 frecency
     );
     *USAGE.lock().unwrap() = Some(Arc::new(syn)); // 仅改进程内缓存, 不落盘
-    let r = search("zqxbench".to_string(), 5);
+    let r = legacy_search("zqxbench".to_string(), 5);
     let top = r.first().map(|h| h.path.as_str()).unwrap_or("(空)");
     let ok_anti = top == "Z:/bench/zqxbench";
     println!(
@@ -1640,7 +1913,7 @@ pub fn bench_search() {
     let mut up = UsageDb::default();
     up.overrides.insert("Z:/it/alphaqz_other.txt".into(), 2);
     *USAGE.lock().unwrap() = Some(Arc::new(up));
-    let r = search("alphaqz".to_string(), 5);
+    let r = legacy_search("alphaqz".to_string(), 5);
     let first = r.first().map(|h| h.path.as_str()).unwrap_or("(空)");
     println!(
         "  [Pin] 置顶项是否冒到首位 → {} {}",
@@ -1651,7 +1924,7 @@ pub fn bench_search() {
     let mut uh = UsageDb::default();
     uh.overrides.insert("Z:/it/alphaqz_other.txt".into(), -2);
     *USAGE.lock().unwrap() = Some(Arc::new(uh));
-    let r = search("alphaqz".to_string(), 5);
+    let r = legacy_search("alphaqz".to_string(), 5);
     let hidden_gone = !r.iter().any(|h| h.path == "Z:/it/alphaqz_other.txt");
     let other_stays = r.iter().any(|h| h.path == "Z:/it/alphaqz.txt");
     println!(
@@ -1666,9 +1939,9 @@ pub fn bench_search() {
         vec!["wip".to_string()],
     );
     crate::tags::_bench_inject(tagmap, vec![]);
-    let r = search("#wip betaqz".to_string(), 5);
+    let r = legacy_search("#wip betaqz".to_string(), 5);
     let tag_ok = r.len() == 1 && r[0].path == "Z:/it/betaqz_doc.txt" && r[0].tags == vec!["wip".to_string()];
-    let r2 = search("#wip alphaqz".to_string(), 5); // alphaqz 无 wip → 应空
+    let r2 = legacy_search("#wip alphaqz".to_string(), 5); // alphaqz 无 wip → 应空
     println!(
         "  [#tag] #wip 过滤命中带标签者 + chip 回传({} 条) / 非标签项被滤({} 条)→ {}",
         r.len(),
@@ -1697,4 +1970,991 @@ pub fn bench_search() {
     }
 
     let _ = std::io::stdout().flush();
+}
+
+// ============================================================================================
+// arena 引擎(Everything 同款): 名字连续存进字节池 + 路径用父指针树按需重建。详见
+// docs/plans/search-engine-arena-rewrite-plan.md。先做成与现引擎并存、可对比验证, 验证通过再切换。
+// ============================================================================================
+pub mod arena {
+    use super::{
+        depth_factor, ext_query, match_quality, match_terms, name_has_ext, now_secs, parse_query,
+        push_topk, type_base, type_factor_fp, under_important, usage_db, use_gain_fp, user_home_fp,
+        AUTO_IMPORTANT,
+    };
+    use super::{Entry, SearchHit};
+    use crate::tags::scoring_snapshot;
+    use memchr::memmem;
+    use rayon::prelude::*;
+    use std::cmp::Reverse;
+    use std::collections::{BinaryHeap, HashMap};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    // 取消令牌(fzf 式): 每次 search 自增并捕获自己的代次; 热循环里发现代次变了说明有更新的按键进来,
+    // 立即放弃这次扫描 —— 慢查询不再阻塞后续按键。
+    static QUERY_GEN: AtomicU64 = AtomicU64::new(0);
+
+    // 增量收窄缓存: 上次查询及其「全部命中行」—— 仅当上次命中数 < kbuf(堆未满 = 堆即全部命中)时才缓存,
+    // 故 rows 必 ≤600 条、内存极小且**完整**。新查询是上次的严格前缀扩展(原串前缀 + 同 tag/ext/path-mode)
+    // 时, 命中必是上次的子集, 于是只扫这几百行而非全表。任何非扩展变更(退格/改写/加斜杠/换标签)→ 全扫。
+    struct LastQuery {
+        text: String,
+        score_path: bool,
+        ext: Option<String>,
+        tags: Vec<String>,
+        rows: Vec<u32>,
+    }
+    static LAST: std::sync::Mutex<Option<LastQuery>> = std::sync::Mutex::new(None);
+    enum Cand {
+        Full,
+        Subset(Vec<u32>),
+    }
+    // 清收窄缓存(测试用: 强制下一次为冷全扫)。
+    pub fn clear_narrow_cache() {
+        *LAST.lock().unwrap() = None;
+    }
+
+    const ROOT: u32 = u32::MAX;
+    const KIND_FILE: u8 = 0;
+    const KIND_EXE: u8 = 1;
+    const KIND_FOLDER: u8 = 2;
+    const KIND_APP: u8 = 3;
+
+    #[inline]
+    fn kind_byte(k: &str) -> u8 {
+        match k {
+            "app" => KIND_APP,
+            "exe" => KIND_EXE,
+            "folder" => KIND_FOLDER,
+            _ => KIND_FILE,
+        }
+    }
+    #[inline]
+    fn kind_str(b: u8) -> &'static str {
+        match b & 0b11 {
+            KIND_APP => "app",
+            KIND_EXE => "exe",
+            KIND_FOLDER => "folder",
+            _ => "file",
+        }
+    }
+    #[inline]
+    fn fnv32(bytes: &[u8]) -> u32 {
+        let mut h: u32 = 0x811c_9dc5;
+        for &b in bytes {
+            h ^= b.to_ascii_lowercase() as u32;
+            h = h.wrapping_mul(0x0100_0193);
+        }
+        h
+    }
+    // path "C:/Users\foo" → (b'C', ["Users","foo"]). 分隔符 / 与 \ 都吃。
+    fn split_path(path: &str) -> Option<(u8, Vec<&str>)> {
+        let b = path.as_bytes();
+        if b.len() < 2 || b[1] != b':' || !b[0].is_ascii_alphabetic() {
+            return None;
+        }
+        let comps: Vec<&str> = path[2..]
+            .split(|c| c == '/' || c == '\\')
+            .filter(|s| !s.is_empty())
+            .collect();
+        Some((b[0].to_ascii_uppercase(), comps))
+    }
+    // 每盘根的 by_parent_name 父键(把盘符编进 ROOT 槽, 区分各盘的同名顶层目录)。
+    #[inline]
+    fn root_key(drive: u8) -> u32 {
+        ROOT - (drive.to_ascii_uppercase() - b'A') as u32
+    }
+    // 列 ↔ 小端字节(二进制持久化用; 不引 bytemuck, 自滚, save 一次性拷贝可接受)。
+    fn to_le_u32(v: &[u32]) -> Vec<u8> {
+        let mut b = Vec::with_capacity(v.len() * 4);
+        for &x in v {
+            b.extend_from_slice(&x.to_le_bytes());
+        }
+        b
+    }
+    fn to_le_u16(v: &[u16]) -> Vec<u8> {
+        let mut b = Vec::with_capacity(v.len() * 2);
+        for &x in v {
+            b.extend_from_slice(&x.to_le_bytes());
+        }
+        b
+    }
+    fn un_u32(b: &[u8]) -> Vec<u32> {
+        b.chunks_exact(4).map(|c| u32::from_le_bytes(c.try_into().unwrap())).collect()
+    }
+    fn un_u16(b: &[u8]) -> Vec<u16> {
+        b.chunks_exact(2).map(|c| u16::from_le_bytes(c.try_into().unwrap())).collect()
+    }
+
+    pub struct Index {
+        lname: Vec<u8>, // 全部名字拼接, ASCII 小写(匹配用)
+        // 大写位图: 1 bit / lname 字节, 标记该字节原本是大写 ASCII。显示名由 lname + 此位重建 —— 省掉一份
+        // 整名原样拷贝(11M 时 ~242MB → ~30MB)。lname 只做 ASCII 小写, 故仅 A-Z 位需还原, 可无损重建。
+        case_bits: Vec<u8>,
+        py: Vec<u8>, // 拼音(全拼+首字母)拼接, 仅 CJK 行非空
+        name_off: Vec<u32>,
+        name_len: Vec<u16>,
+        py_off: Vec<u32>,
+        py_len: Vec<u16>,
+        parent: Vec<u32>,
+        flags: Vec<u8>,
+        depth: Vec<u8>,
+        drive: Vec<u8>,
+        by_name: Vec<u32>,
+        tomb: Vec<u64>, // 自滚位向量
+        // (父键, 名字哈希) → 行号。父键 = 普通父行号, 或盘根的 root_key(drive)。活更新 + 路径→行解析用。
+        by_parent_name: HashMap<(u32, u32), u32>,
+        n: u32,
+    }
+
+    impl Index {
+        fn with_capacity(rows: usize) -> Self {
+            Index {
+                lname: Vec::with_capacity(rows * 28),
+                case_bits: Vec::with_capacity(rows * 28 / 8 + 1),
+                py: Vec::with_capacity(rows / 4),
+                name_off: Vec::with_capacity(rows),
+                name_len: Vec::with_capacity(rows),
+                py_off: Vec::with_capacity(rows),
+                py_len: Vec::with_capacity(rows),
+                parent: Vec::with_capacity(rows),
+                flags: Vec::with_capacity(rows),
+                depth: Vec::with_capacity(rows),
+                drive: Vec::with_capacity(rows),
+                by_name: Vec::new(),
+                tomb: Vec::new(),
+                by_parent_name: HashMap::with_capacity(rows),
+                n: 0,
+            }
+        }
+        pub fn len(&self) -> usize {
+            self.n as usize
+        }
+        // 逐字段内存占用(按 capacity, 即真实分配)。诊断"为啥吃 1.2GB"。
+        pub fn mem_report(&self) -> String {
+            let mb = |b: usize| b as f64 / 1_048_576.0;
+            let lname = self.lname.capacity();
+            let case_bits = self.case_bits.capacity();
+            let py = self.py.capacity();
+            let cols = self.name_off.capacity() * 4
+                + self.name_len.capacity() * 2
+                + self.py_off.capacity() * 4
+                + self.py_len.capacity() * 2
+                + self.parent.capacity() * 4
+                + self.flags.capacity()
+                + self.depth.capacity()
+                + self.drive.capacity();
+            let by_name = self.by_name.capacity() * 4;
+            let tomb = self.tomb.capacity() * 8;
+            // hashbrown: buckets = next_pow2(cap*8/7), 每 bucket = (键12B + 1 控制字节)。
+            let bpn_len = self.by_parent_name.len();
+            let bpn_cap = self.by_parent_name.capacity();
+            let buckets = (bpn_cap * 8 / 7).next_power_of_two().max(1);
+            let bpn = buckets * 13;
+            let total = lname + case_bits + py + cols + by_name + tomb + bpn;
+            format!(
+                "n={} 总≈{:.0}MB\n  lname(小写名)={:.0}MB  case_bits(大写位图)={:.0}MB  py(拼音)={:.0}MB\n  列(off/len/parent/flags…)={:.0}MB  by_name={:.0}MB  tomb={:.1}MB\n  by_parent_name={:.0}MB (占用{}项 / cap{} / {}buckets)",
+                self.n, mb(total),
+                mb(lname), mb(case_bits), mb(py),
+                mb(cols), mb(by_name), mb(tomb),
+                mb(bpn), bpn_len, bpn_cap, buckets
+            )
+        }
+        pub fn is_empty(&self) -> bool {
+            self.n == 0
+        }
+        #[inline]
+        fn lname_at(&self, row: u32) -> &[u8] {
+            let (o, l) = (self.name_off[row as usize] as usize, self.name_len[row as usize] as usize);
+            &self.lname[o..o + l]
+        }
+        // 显示名: 取 lname 切片, 按 case_bits 把原本大写的字节还原成大写。只对要展示的少数行调用, 每次新分配无妨。
+        fn disp_at(&self, row: u32) -> Vec<u8> {
+            let (o, l) = (self.name_off[row as usize] as usize, self.name_len[row as usize] as usize);
+            let mut out = self.lname[o..o + l].to_vec();
+            for (j, b) in out.iter_mut().enumerate() {
+                let bit = o + j;
+                if self.case_bits.get(bit / 8).map_or(false, |w| w >> (bit % 8) & 1 == 1) {
+                    *b = b.to_ascii_uppercase();
+                }
+            }
+            out
+        }
+        #[inline]
+        fn py_at(&self, row: u32) -> &[u8] {
+            let (o, l) = (self.py_off[row as usize] as usize, self.py_len[row as usize] as usize);
+            &self.py[o..o + l]
+        }
+        #[inline]
+        fn tomb_get(&self, row: u32) -> bool {
+            self.tomb
+                .get(row as usize / 64)
+                .map(|w| w >> (row % 64) & 1 == 1)
+                .unwrap_or(false)
+        }
+        fn tomb_set(&mut self, row: u32, dead: bool) {
+            let need = (self.n as usize).div_ceil(64);
+            if self.tomb.len() < need {
+                self.tomb.resize(need, 0);
+            }
+            if let Some(w) = self.tomb.get_mut(row as usize / 64) {
+                if dead {
+                    *w |= 1 << (row % 64);
+                } else {
+                    *w &= !(1u64 << (row % 64));
+                }
+            }
+        }
+
+        // 活更新: 插入一个路径(补全缺失祖先目录), 返回叶行号。已存在则复用(并取消其墓碑=复活)。
+        // push_row 不建派生表(by_parent_name/tomb), 故活更新在此自补; by_name 暂留旧序(只影响并列 tie-break)。
+        pub fn insert_path(&mut self, path: &str, kind: u8, py: &str) -> Option<u32> {
+            let (drive, comps) = split_path(path)?;
+            if comps.is_empty() {
+                return None;
+            }
+            let mut parent = ROOT;
+            for (i, comp) in comps.iter().enumerate() {
+                let pkey = if parent == ROOT { root_key(drive) } else { parent };
+                let h = fnv32(comp.as_bytes());
+                let existing = self
+                    .by_parent_name
+                    .get(&(pkey, h))
+                    .copied()
+                    .filter(|&r| self.lname_at(r).eq_ignore_ascii_case(comp.as_bytes()));
+                if let Some(row) = existing {
+                    self.tomb_set(row, false);
+                    parent = row;
+                    continue;
+                }
+                let is_leaf = i + 1 == comps.len();
+                let (k, p) = if is_leaf { (kind, py) } else { (KIND_FOLDER, "") };
+                let row = self.push_row(comp, parent, drive, k, p);
+                self.tomb_set(row, false); // 扩容 tomb 位图
+                self.by_parent_name.insert((pkey, h), row);
+                parent = row;
+            }
+            Some(parent)
+        }
+
+        // 活更新: 路径删除 → 墓碑(扫描跳过)。返回是否命中。
+        pub fn remove_path(&mut self, path: &str) -> bool {
+            if let Some(row) = self.resolve(path) {
+                self.tomb_set(row, true);
+                true
+            } else {
+                false
+            }
+        }
+
+        // 追加一行, 返回行号。depth 当场由父算出(父总在子之前建好)。
+        fn push_row(&mut self, name: &str, parent: u32, drive: u8, kind: u8, py: &str) -> u32 {
+            let row = self.n;
+            let off = self.lname.len() as u32; // 偏移进 lname(显示名由 lname + case_bits 重建, 不再存原名)
+            let nb = name.as_bytes();
+            for (j, &b) in nb.iter().enumerate() {
+                self.lname.push(b.to_ascii_lowercase());
+                if b.is_ascii_uppercase() {
+                    let bit = off as usize + j;
+                    let byte = bit / 8;
+                    if self.case_bits.len() <= byte {
+                        self.case_bits.resize(byte + 1, 0);
+                    }
+                    self.case_bits[byte] |= 1 << (bit % 8);
+                }
+            }
+            // 保持 case_bits 覆盖到 lname 末尾(字节对齐), 即便本名无大写。
+            let need = (self.lname.len()).div_ceil(8);
+            if self.case_bits.len() < need {
+                self.case_bits.resize(need, 0);
+            }
+            self.name_off.push(off);
+            self.name_len.push(nb.len().min(u16::MAX as usize) as u16);
+            let pyoff = self.py.len() as u32;
+            self.py.extend_from_slice(py.as_bytes());
+            self.py_off.push(pyoff);
+            self.py_len.push(py.len().min(u16::MAX as usize) as u16);
+            self.parent.push(parent);
+            self.flags.push(kind);
+            self.drive.push(drive);
+            let d = if parent == ROOT {
+                1
+            } else {
+                self.depth[parent as usize].saturating_add(1)
+            };
+            self.depth.push(d);
+            self.n += 1;
+            row
+        }
+
+        // 重建派生表(by_name 预排序 + by_parent_name 解析索引 + tomb 位图)。build() 与二进制 load() 都调,
+        // 故这些表不必序列化 —— 只存原始 arena/列, 加载后 finish 重建(11M 约 1-2s, 远快于重新 interning)。
+        fn finish_derived(&mut self) {
+            let n = self.n as usize;
+            if self.tomb.is_empty() {
+                self.tomb = vec![0u64; n.div_ceil(64)];
+            }
+            let mut bn: Vec<u32> = (0..self.n).collect();
+            bn.sort_unstable_by(|&a, &b| self.lname_at(a).cmp(self.lname_at(b)));
+            self.by_name = bn;
+            self.by_parent_name = HashMap::with_capacity(n);
+            for row in 0..self.n {
+                let parent = self.parent[row as usize];
+                let pkey = if parent == ROOT {
+                    root_key(self.drive[row as usize])
+                } else {
+                    parent
+                };
+                self.by_parent_name.insert((pkey, fnv32(self.lname_at(row))), row);
+            }
+        }
+
+        // 由父指针记忆化重算所有行的 depth。MFT 直建树时父在 PASS B 才回填(push 时父=ROOT 占位),
+        // depth 须事后统一算; 遍历/interning 路径 push 时父已在、depth 已对, 这里重算结果相同(幂等)。
+        fn compute_depths(&mut self) {
+            let n = self.n as usize;
+            for d in self.depth.iter_mut() {
+                *d = 0; // 0 = 未算; 真实 depth ≥ 1
+            }
+            let mut stack: Vec<u32> = Vec::with_capacity(64);
+            for start in 0..self.n {
+                if self.depth[start as usize] != 0 {
+                    continue;
+                }
+                stack.clear();
+                let mut cur = start;
+                loop {
+                    if cur == ROOT || self.depth[cur as usize] != 0 {
+                        break;
+                    }
+                    stack.push(cur);
+                    cur = self.parent[cur as usize];
+                    if stack.len() > 300 {
+                        break; // 环/超深守卫
+                    }
+                }
+                let mut d = if cur == ROOT { 0 } else { self.depth[cur as usize] as u32 };
+                while let Some(r) = stack.pop() {
+                    d += 1;
+                    self.depth[r as usize] = d.min(255) as u8;
+                }
+            }
+        }
+
+        // 把一批 (kind,name,path,py) 以路径 interning 方式并入(补全祖先目录)。intern 跨调用持续, 用于
+        // 遍历盘 + poof-roots.txt 子根 + 去重。
+        fn add_entries(&mut self, interned: &mut HashMap<String, u32>, entries: &[Entry]) {
+            let mut key = String::with_capacity(96);
+            for (kind, name, path, py) in entries {
+                let Some((drive, comps)) = split_path(path) else {
+                    continue;
+                };
+                if comps.is_empty() {
+                    continue;
+                }
+                key.clear();
+                key.push((drive as char).to_ascii_lowercase());
+                key.push(':');
+                let mut parent = ROOT;
+                for (i, comp) in comps.iter().enumerate() {
+                    key.push('\\');
+                    for ch in comp.chars() {
+                        for lc in ch.to_lowercase() {
+                            key.push(lc);
+                        }
+                    }
+                    let is_leaf = i + 1 == comps.len();
+                    if let Some(&row) = interned.get(&key) {
+                        parent = row;
+                    } else {
+                        let (k, p) = if is_leaf {
+                            (kind_byte(kind), py.as_str())
+                        } else {
+                            (KIND_FOLDER, "")
+                        };
+                        let row = self.push_row(comp, parent, drive, k, p);
+                        interned.insert(key.clone(), row);
+                        parent = row;
+                    }
+                }
+            }
+        }
+
+        // 从 MFT 原始节点 (record,name,parent_record,is_dir) 直建子树, 零路径字符串。PASS A 压行(父占位)+
+        // 记录 record→row; PASS B 回填父行号。depth/by_parent_name 由 build_full 末尾的 compute_depths+finish 统一建。
+        pub fn add_mft_volume(&mut self, letter: u8, nodes: Vec<(u64, String, u64, bool)>) {
+            let mut rec2row: HashMap<u64, u32> = HashMap::with_capacity(nodes.len());
+            for (rec, name, _parent, is_dir) in &nodes {
+                let kb = if *is_dir {
+                    KIND_FOLDER
+                } else {
+                    let l = name.to_ascii_lowercase();
+                    if l.ends_with(".exe") || l.ends_with(".bat") || l.ends_with(".cmd") || l.ends_with(".ps1") {
+                        KIND_EXE
+                    } else {
+                        KIND_FILE
+                    }
+                };
+                let py = super::pinyin_of(name);
+                let row = self.push_row(name, ROOT, letter, kb, &py);
+                rec2row.insert(*rec, row);
+            }
+            for (rec, _name, parent, _is_dir) in &nodes {
+                let row = rec2row[rec];
+                let prow = rec2row.get(parent).copied().unwrap_or(ROOT);
+                self.parent[row as usize] = prow;
+            }
+        }
+
+        // 应用后置: 解析 .lnk 路径 → 把那行 kind 标为 app(显示时再剥 .lnk)。找不到(不在已索引盘)则插入。
+        pub fn set_app(&mut self, path: &str, py: &str) {
+            if let Some(row) = self.resolve(path) {
+                self.flags[row as usize] = (self.flags[row as usize] & !0b11) | KIND_APP;
+            } else {
+                let _ = self.insert_path(path, KIND_APP, py);
+            }
+        }
+
+        // ---- 二进制持久化(Everything 的 .db: 内存结构的紧凑转储)----
+        pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
+            use std::io::Write;
+            let tmp = path.with_extension("bin.tmp");
+            let f = std::fs::File::create(&tmp)?;
+            let mut w = std::io::BufWriter::new(f);
+            w.write_all(b"POOFIDX3")?; // magic+version (v3: disp 原名拷贝 → case_bits 大写位图)
+            w.write_all(&self.n.to_le_bytes())?;
+            let blob = |w: &mut std::io::BufWriter<std::fs::File>, b: &[u8]| -> std::io::Result<()> {
+                w.write_all(&(b.len() as u64).to_le_bytes())?;
+                w.write_all(b)
+            };
+            blob(&mut w, &self.lname)?;
+            blob(&mut w, &self.case_bits)?;
+            blob(&mut w, &self.py)?;
+            blob(&mut w, &to_le_u32(&self.name_off))?;
+            blob(&mut w, &to_le_u16(&self.name_len))?;
+            blob(&mut w, &to_le_u32(&self.py_off))?;
+            blob(&mut w, &to_le_u16(&self.py_len))?;
+            blob(&mut w, &to_le_u32(&self.parent))?;
+            blob(&mut w, &self.flags)?;
+            blob(&mut w, &self.depth)?;
+            blob(&mut w, &self.drive)?;
+            w.flush()?;
+            drop(w);
+            std::fs::rename(&tmp, path)
+        }
+        pub fn load(path: &std::path::Path) -> Option<Index> {
+            // mmap 而非 read: 不一次性把整块(11M ~1GB)读进堆造成双倍峰值; 按页惰性载入, 列拷出后即解映射。
+            let file = std::fs::File::open(path).ok()?;
+            let mmap = unsafe { memmap2::Mmap::map(&file).ok()? };
+            let bytes: &[u8] = &mmap;
+            if bytes.len() < 12 || &bytes[..8] != b"POOFIDX3" {
+                return None; // 旧版(含 disp 全拷)不兼容 → 返回 None → 触发一次重建(自动全量会补上)
+            }
+            let n = u32::from_le_bytes(bytes[8..12].try_into().ok()?);
+            let mut p = 12usize;
+            let mut take = |len_check: usize| -> Option<&[u8]> {
+                if p + 8 > bytes.len() {
+                    return None;
+                }
+                let l = u64::from_le_bytes(bytes[p..p + 8].try_into().ok()?) as usize;
+                p += 8;
+                if p + l > bytes.len() {
+                    return None;
+                }
+                let s = &bytes[p..p + l];
+                p += l;
+                let _ = len_check;
+                Some(s)
+            };
+            let lname = take(0)?.to_vec();
+            let case_bits = take(0)?.to_vec();
+            let py = take(0)?.to_vec();
+            let name_off = un_u32(take(0)?);
+            let name_len = un_u16(take(0)?);
+            let py_off = un_u32(take(0)?);
+            let py_len = un_u16(take(0)?);
+            let parent = un_u32(take(0)?);
+            let flags = take(0)?.to_vec();
+            let depth = take(0)?.to_vec();
+            let drive = take(0)?.to_vec();
+            if name_off.len() != n as usize {
+                return None;
+            }
+            let mut idx = Index {
+                lname,
+                case_bits,
+                py,
+                name_off,
+                name_len,
+                py_off,
+                py_len,
+                parent,
+                flags,
+                depth,
+                drive,
+                by_name: Vec::new(),
+                tomb: Vec::new(),
+                by_parent_name: HashMap::new(),
+                n,
+            };
+            idx.finish_derived();
+            Some(idx)
+        }
+
+        // 行 → 规范全路径 "X:\a\b\c"(走父指针, 只对要展示的少数行调用)。
+        pub fn path_of(&self, row: u32) -> String {
+            let mut comps: Vec<Vec<u8>> = Vec::with_capacity(8);
+            let mut cur = row;
+            let mut guard = 0;
+            while cur != ROOT {
+                comps.push(self.disp_at(cur));
+                cur = self.parent[cur as usize];
+                guard += 1;
+                if guard > 256 {
+                    break;
+                }
+            }
+            let mut s = String::with_capacity(80);
+            s.push(self.drive[row as usize] as char);
+            s.push(':');
+            for c in comps.iter().rev() {
+                s.push('\\');
+                s.push_str(&String::from_utf8_lossy(c));
+            }
+            s
+        }
+
+        // 全路径 → 行号(走 by_parent_name 逐段下行)。供把稀疏 path 键的 frecency/override/标签重键成行号。
+        fn resolve(&self, path: &str) -> Option<u32> {
+            let (drive, comps) = split_path(path)?;
+            if comps.is_empty() {
+                return None;
+            }
+            let mut cur = root_key(drive);
+            for comp in &comps {
+                let row = *self.by_parent_name.get(&(cur, fnv32(comp.as_bytes())))?;
+                // 哈希碰撞守卫: 校验名字真等(大小写不敏感)。
+                if !self.lname_at(row).eq_ignore_ascii_case(comp.as_bytes()) {
+                    return None;
+                }
+                cur = row;
+            }
+            Some(cur)
+        }
+
+        // 走祖先目录, 找 term 连续子串首个命中的(祖先行, 位置) —— 多词跨路径(aiworkspace app)的正确做法:
+        // 全是 cache 热的 arena 读 + 指针跳, 零路径字符串构建。返回祖先行+位置以便算与路径段一致的档位。
+        #[inline]
+        fn ancestor_find(&self, finder: &memmem::Finder, row: u32) -> Option<(u32, usize)> {
+            let mut cur = self.parent[row as usize];
+            let mut guard = 0;
+            while cur != ROOT {
+                if let Some(p) = finder.find(self.lname_at(cur)) {
+                    return Some((cur, p));
+                }
+                cur = self.parent[cur as usize];
+                guard += 1;
+                if guard > 256 {
+                    break;
+                }
+            }
+            None
+        }
+    }
+
+    // 从现引擎的 Entry 元组建 arena(对每条目的路径补全所有祖先目录为行, 使父树完整可重建路径)。
+    // 这条路对遍历与 MFT 产物都通用(都给 (kind,name,path,py)); 11M 的 MFT 直建树(免路径字符串)是后续优化。
+    pub fn build(entries: &[Entry]) -> Index {
+        let mut idx = Index::with_capacity(entries.len() + entries.len() / 4);
+        let mut interned: HashMap<String, u32> = HashMap::with_capacity(entries.len() * 2);
+        idx.add_entries(&mut interned, entries);
+        idx.compute_depths();
+        idx.finish_derived();
+        idx
+    }
+
+    // 遍历一个根 → (kind,name,path,py) 列表(喂 add_entries)。
+    fn collect_entries(root: &std::path::PathBuf) -> Vec<Entry> {
+        super::collect(std::slice::from_ref(root), 40, usize::MAX)
+            .into_iter()
+            .map(|(name, path, is_dir)| {
+                let kind = super::kind_for(&name, is_dir).to_string();
+                let py = super::pinyin_of(&name);
+                (kind, name, path, py)
+            })
+            .collect()
+    }
+
+    // 生产全量构建: MFT 可用的盘**直建父指针树**(零路径字符串, 省 11M 构建期瞬时内存), 其余盘 + poof-roots
+    // 子根走遍历 interning, 最后应用后置(开始菜单 .lnk → kind app)。warm_index/reindex 走这条路。
+    pub fn build_full() -> Index {
+        let mut idx = Index::with_capacity(4_000_000);
+        let mut interned: HashMap<String, u32> = HashMap::new();
+        for root in super::index_roots() {
+            #[cfg(windows)]
+            if let Some(letter) = super::drive_root_letter(&root) {
+                if let Some(nodes) = crate::mft::enumerate_volume_nodes(letter) {
+                    super::ilog(&format!(
+                        "[index] {}: MFT(管理员) 直建树 {} 节点",
+                        letter,
+                        nodes.len()
+                    ));
+                    idx.add_mft_volume(letter as u8, nodes);
+                    continue;
+                }
+                super::ilog(&format!("[index] {}: MFT 不可用(非管理员/EDR) → 遍历", letter));
+            }
+            let e = collect_entries(&root);
+            idx.add_entries(&mut interned, &e);
+        }
+        idx.compute_depths();
+        idx.finish_derived();
+        // 应用后置: 开始菜单 .lnk → 标 kind app(显示剥 .lnk)。
+        for (name, path, is_dir) in super::collect(&super::app_roots(), 5, 8000) {
+            if is_dir || !name.to_ascii_lowercase().ends_with(".lnk") {
+                continue;
+            }
+            let display = &name[..name.len() - 4];
+            idx.set_app(&path, &super::pinyin_of(display));
+        }
+        idx
+    }
+
+    // 多词 AND(arena 版): 每词必须命中 本行名字 | 拼音 | 某祖先目录名(memmem 连续子串)。与现引擎
+    // match_terms 同语义; combine: pfx 取各词最小档, mn 取均值。score_path 时才走祖先(路径形查询)。
+    #[inline]
+    fn match_multi(
+        idx: &Index,
+        finders: &[memmem::Finder],
+        row: u32,
+        score_path: bool,
+    ) -> Option<(i64, i64)> {
+        let nb = idx.lname_at(row);
+        let pyb = idx.py_at(row);
+        let mut mn_sum = 0i64;
+        let mut pfx_min = i64::MAX;
+        for f in finders {
+            let t = f.needle();
+            let (mn, pfx) = if let Some(p) = f.find(nb) {
+                super::substr_tier(t, nb, p, false)
+            } else if !pyb.is_empty() && f.find(pyb).is_some() {
+                let p = f.find(pyb).unwrap();
+                super::substr_tier(t, pyb, p, false)
+            } else if score_path {
+                match idx.ancestor_find(f, row) {
+                    Some((arow, pos)) => super::substr_tier(t, idx.lname_at(arow), pos, true),
+                    None => return None,
+                }
+            } else {
+                return None;
+            };
+            mn_sum += mn;
+            pfx_min = pfx_min.min(pfx);
+        }
+        Some((mn_sum / finders.len() as i64, pfx_min))
+    }
+
+    // 标签因子(arena 版, 按行号): 直接标签 1.3 / 祖先继承 1.15; 第二返回 = 是否命中置顶标签。
+    fn arena_tag_factor(
+        idx: &Index,
+        row: u32,
+        tags_row: &HashMap<u32, Vec<String>>,
+        snap: &crate::tags::TagSnapshot,
+    ) -> (i64, bool) {
+        if !snap.has_any {
+            return (1000, false);
+        }
+        if let Some(t) = tags_row.get(&row) {
+            return (1300, t.iter().any(|x| snap.is_pinned(x)));
+        }
+        let mut cur = idx.parent[row as usize];
+        let mut guard = 0;
+        while cur != ROOT {
+            if let Some(t) = tags_row.get(&cur) {
+                return (1150, t.iter().any(|x| snap.is_pinned(x)));
+            }
+            cur = idx.parent[cur as usize];
+            guard += 1;
+            if guard > 256 {
+                break;
+            }
+        }
+        (1000, false)
+    }
+
+    /// arena 版搜索 —— 与 super::search 同语义同排序, 数据走紧凑 arena。两段式: 一段并行闸门(子序列/子串
+    /// + 廉价分), 二段仅幸存者重建路径 + 用 super 的排序助手全量重打分(逐位 parity)。
+    pub fn search(idx: &Index, query: String, limit: usize) -> Vec<SearchHit> {
+        let q = query.trim();
+        if q.is_empty() {
+            return Vec::new();
+        }
+        let (text, term_strs, req_tags) = parse_query(q);
+        let browse = text.trim().is_empty();
+        let ext_mode: Option<String> = if req_tags.is_empty() { ext_query(&text) } else { None };
+        if browse && req_tags.is_empty() {
+            return Vec::new();
+        }
+        let mut terms: Vec<Vec<u8>> = term_strs.iter().map(|s| s.clone().into_bytes()).collect();
+        terms.sort_by(|a, b| b.len().cmp(&a.len()));
+        let multi = terms.len() > 1;
+        let score_path = multi || text.contains('/') || text.contains('\\');
+
+        // ---- 快照 + 重键到行号(稀疏, 走 by_parent_name 解析)----
+        let usage = usage_db();
+        let now = now_secs();
+        let mut gains_row: HashMap<u32, i64> = HashMap::with_capacity(usage.items.len());
+        for (p, e) in usage.items.iter() {
+            if let Some(r) = idx.resolve(p) {
+                gains_row.insert(r, use_gain_fp(e, now));
+            }
+        }
+        let mut over_row: HashMap<u32, i8> = HashMap::new();
+        for (p, &lv) in usage.overrides.iter() {
+            if let Some(r) = idx.resolve(p) {
+                over_row.insert(r, lv);
+            }
+        }
+        let mut important: Vec<String> = usage.important_folders.clone();
+        important.extend(AUTO_IMPORTANT.lock().unwrap().iter().cloned());
+        let tagsnap = scoring_snapshot();
+        // 标签按行号重键(消除"规范路径 vs 索引原路径"分隔符不一致导致的路径键失配)。稀疏(只有打过标签的)。
+        let mut tags_row: HashMap<u32, Vec<String>> = HashMap::new();
+        for (p, t) in tagsnap.paths.iter() {
+            if let Some(r) = idx.resolve(p) {
+                tags_row.insert(r, t.clone());
+            }
+        }
+        // #tag 直接标签闸门 → 满足全部 req_tag 的行号集。
+        let req_tag_rows: Option<std::collections::HashSet<u32>> = if req_tags.is_empty() {
+            None
+        } else {
+            let mut m = std::collections::HashSet::new();
+            for (p, t) in tagsnap.paths.iter() {
+                if req_tags
+                    .iter()
+                    .all(|r| t.iter().any(|x| x.eq_ignore_ascii_case(r)))
+                {
+                    if let Some(rr) = idx.resolve(p) {
+                        m.insert(rr);
+                    }
+                }
+            }
+            Some(m)
+        };
+
+        let finders: Vec<memmem::Finder> = terms.iter().map(|t| memmem::Finder::new(t)).collect();
+        let qb0: Vec<u8> = terms.first().cloned().unwrap_or_default();
+        let kbuf = (limit * 2).clamp(80, 600);
+        let n = idx.n;
+        let gen = QUERY_GEN.fetch_add(1, Ordering::SeqCst) + 1; // 本次查询代次(更新的按键会令其作废)
+
+        // 增量收窄: 新查询是上次的严格前缀扩展(且 tag/ext/path-mode 不变)→ 命中必是上次的子集, 只扫缓存行。
+        let cand = {
+            let last = LAST.lock().unwrap();
+            match &*last {
+                Some(l)
+                    if text.starts_with(&l.text)
+                        && text.len() > l.text.len()
+                        && score_path == l.score_path
+                        && ext_mode == l.ext
+                        && req_tags == l.tags =>
+                {
+                    if l.rows.is_empty() {
+                        return Vec::new(); // 前缀已无命中 → 更长亦无
+                    }
+                    Cand::Subset(l.rows.clone())
+                }
+                _ => Cand::Full,
+            }
+        };
+
+        // 单行闸门(命中 → push 廉价分到 top-K 堆; 否则原样返回)。全表扫与子集扫共用。
+        let process = |mut h: BinaryHeap<Reverse<(u32, usize)>>, row: u32| {
+            if row % 1024 == 0 && QUERY_GEN.load(Ordering::Relaxed) != gen {
+                return h; // 有更新按键 → 放弃(分摊原子读)
+            }
+            if idx.tomb_get(row) {
+                return h;
+            }
+            if let Some(rt) = &req_tag_rows {
+                if !rt.contains(&row) {
+                    return h;
+                }
+            }
+            let kind = kind_str(idx.flags[row as usize]);
+            let (mn, pfx) = match &ext_mode {
+                Some(ext) => {
+                    let dn_owned = idx.disp_at(row);
+                    let dn = std::str::from_utf8(&dn_owned).unwrap_or("");
+                    if kind != "folder" && name_has_ext(dn, ext) {
+                        (1000, 1000)
+                    } else {
+                        return h;
+                    }
+                }
+                None => {
+                    if multi {
+                        match match_multi(idx, &finders, row, score_path) {
+                            Some(x) => x,
+                            None => return h,
+                        }
+                    } else {
+                        let ns = std::str::from_utf8(idx.lname_at(row)).unwrap_or("");
+                        let ps = std::str::from_utf8(idx.py_at(row)).unwrap_or("");
+                        match match_quality(&qb0, ns, ps, "", browse, false) {
+                            Some(x) => x,
+                            None => return h,
+                        }
+                    }
+                }
+            };
+            let ov = over_row.get(&row).copied().unwrap_or(0);
+            if ov == -2 {
+                return h;
+            }
+            let use_fp = gains_row.get(&row).copied().unwrap_or(1000);
+            let pin_base = match ov {
+                2 => 6000,
+                -1 => 400,
+                _ => 1000,
+            };
+            let cheap = if ext_mode.is_some() {
+                let dn_owned = idx.disp_at(row);
+                let dn = std::str::from_utf8(&dn_owned).unwrap_or("");
+                let tf = type_factor_fp(kind, dn);
+                let df = depth_factor(idx.depth[row as usize] as i64);
+                (use_fp * pin_base / 1000 * tf / 1000 * df / 1000).max(1) as u32
+            } else {
+                let tq = type_base(kind).unwrap_or(1000);
+                (mn * pfx / 1000 * use_fp / 1000 * pin_base / 1000 * tq / 1000).max(1) as u32
+            };
+            push_topk(&mut h, kbuf, cheap, row as usize);
+            h
+        };
+        let reducer = |mut a: BinaryHeap<Reverse<(u32, usize)>>, b: BinaryHeap<Reverse<(u32, usize)>>| {
+            for Reverse((s, r)) in b {
+                push_topk(&mut a, kbuf, s, r);
+            }
+            a
+        };
+        // ---- 阶段1: 并行闸门(全表 或 收窄子集)----
+        let heap = match &cand {
+            Cand::Full => (0..n)
+                .into_par_iter()
+                .fold(BinaryHeap::new, &process)
+                .reduce(BinaryHeap::new, &reducer),
+            Cand::Subset(rows) => rows
+                .par_iter()
+                .copied()
+                .fold(BinaryHeap::new, &process)
+                .reduce(BinaryHeap::new, &reducer),
+        };
+
+        // 更新收窄缓存: 仅当未被更新按键取消(代次未变)且堆未满(命中数 < kbuf → 堆即全部命中)时, 缓存完整子集。
+        {
+            let rows: Vec<u32> = heap.iter().map(|Reverse((_, r))| *r as u32).collect();
+            let cacheable = rows.len() < kbuf && QUERY_GEN.load(Ordering::Relaxed) == gen;
+            *LAST.lock().unwrap() = if cacheable {
+                Some(LastQuery {
+                    text: text.clone(),
+                    score_path,
+                    ext: ext_mode.clone(),
+                    tags: req_tags.clone(),
+                    rows,
+                })
+            } else {
+                None
+            };
+        }
+
+        // ---- 阶段2: 幸存者重建路径 + 全量重打分(复用 super 排序助手, 逐位 parity)----
+        let mut scored: Vec<(u32, u32, String)> = heap
+            .into_iter()
+            .filter_map(|Reverse((_, row_us))| {
+                let row = row_us as u32;
+                let path = idx.path_of(row);
+                let kind = kind_str(idx.flags[row as usize]);
+                let dn_owned = idx.disp_at(row);
+                let dn = std::str::from_utf8(&dn_owned).unwrap_or("");
+                let (mn, pfx) = match &ext_mode {
+                    Some(ext) => {
+                        if kind != "folder" && name_has_ext(dn, ext) {
+                            (1000, 1000)
+                        } else {
+                            return None;
+                        }
+                    }
+                    None => {
+                        // 二段对多词用 super::match_terms(在重建出的路径上做 find_substr), 与现引擎逐位等价;
+                        // 一段已用 arena 祖先匹配做快闸门(对词项是路径匹配的超集, 不漏)。
+                        let ns = std::str::from_utf8(idx.lname_at(row)).unwrap_or("");
+                        let ps = std::str::from_utf8(idx.py_at(row)).unwrap_or("");
+                        if multi {
+                            match_terms(&terms, ns, ps, &path, browse, score_path, true)?
+                        } else {
+                            match_quality(&qb0, ns, ps, &path, browse, score_path)?
+                        }
+                    }
+                };
+                let ov = over_row.get(&row).copied().unwrap_or(0);
+                if ov == -2 {
+                    return None;
+                }
+                let use_fp = gains_row.get(&row).copied().unwrap_or(1000);
+                let type_fp = type_factor_fp(kind, dn);
+                let depth = idx.depth[row as usize] as i64;
+                let depth_fp = if kind == "app" { 1300 } else { depth_factor(depth) };
+                let loc_fp = user_home_fp(&path);
+                let (tag_fp, pinned_tag) = arena_tag_factor(idx, row, &tags_row, &tagsnap);
+                let mut pin_fp: i64 = match ov {
+                    2 => 6000,
+                    -1 => 400,
+                    _ => {
+                        if under_important(&path, &important) {
+                            1800
+                        } else {
+                            1000
+                        }
+                    }
+                };
+                if pinned_tag {
+                    pin_fp = pin_fp.max(4000);
+                }
+                let mut s = mn;
+                s = s * pfx / 1000;
+                s = s * use_fp / 1000;
+                s = s * type_fp / 1000;
+                s = s * depth_fp / 1000;
+                s = s * loc_fp / 1000;
+                s = s * tag_fp / 1000;
+                s = s * pin_fp / 1000;
+                Some((s.max(1) as u32, row, path))
+            })
+            .collect();
+        // 分数降序; 同分按行号升序 tie-break → 顺序确定可复现(不靠 unstable 的随机)。
+        scored.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        scored.truncate(limit.max(1));
+        scored
+            .into_iter()
+            .map(|(score, row, path)| {
+                let kind = kind_str(idx.flags[row as usize]);
+                let disp = String::from_utf8_lossy(&idx.disp_at(row)).into_owned();
+                // 应用按开始菜单 .lnk 入索引, 但显示要去掉 .lnk 后缀(与现引擎一致)。
+                let name = if kind == "app" && disp.len() > 4 && disp[disp.len() - 4..].eq_ignore_ascii_case(".lnk") {
+                    disp[..disp.len() - 4].to_string()
+                } else {
+                    disp
+                };
+                SearchHit {
+                    kind: kind.to_string(),
+                    name,
+                    tags: tags_row.get(&row).cloned().unwrap_or_default(),
+                    pinned: over_row.get(&row).copied() == Some(2),
+                    path,
+                    score,
+                }
+            })
+            .collect()
+    }
 }

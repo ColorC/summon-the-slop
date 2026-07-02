@@ -20,13 +20,11 @@ import {
   Tag as TagIcon,
   SlidersHorizontal,
   Clock,
-  RefreshCw,
 } from "lucide-react";
 import {
   search,
   openPath,
   fileIcon,
-  requestFullReindex,
   revealPath,
   copyText,
   runShell,
@@ -184,7 +182,6 @@ export function SearchBar({
   const inputRef = useRef<HTMLInputElement>(null);
   const qRef = useRef("");
   const histIdx = useRef(-1);
-  const autoReindexRef = useRef(false); // 每会话只自动发起一次全量重建检测
   qRef.current = q;
 
   const showResults = q.trim().length > 0;
@@ -231,16 +228,6 @@ export function SearchBar({
     }
     let alive = true;
     setSearching(true);
-    // 首次真实搜索 → 自动检测并(据后端 mft_state 状态)发起全量 MFT 重建请求。已成功/被 EDR 拦/取消多次则
-    // 静默跳过, 不打扰; 否则弹 UAC, 输管理员凭据后秒级走 MFT 全量, 完成自动热换(reindex-done 事件)。
-    if (!autoReindexRef.current) {
-      autoReindexRef.current = true;
-      requestFullReindex(false)
-        .then((m) => {
-          if (m === "fired") setReindexMsg("检测到可用管理员重建(MFT 全量),已弹 UAC…");
-        })
-        .catch(() => {});
-    }
     const t = setTimeout(() => {
       search(q, FETCH)
         .then((r) => alive && (setHits(r), setSel(0), setShown(PAGE)))
@@ -278,23 +265,11 @@ export function SearchBar({
     }
   }, [sel, shown, hits.length, showResults]);
 
-  // 手动按钮: 无条件弹 UAC → 提权子进程秒级全量(MFT) → 完成后热换 + 提示。
-  const doReindex = useCallback(() => {
-    setReindexMsg("正在请求管理员权限(UAC)…");
-    requestFullReindex(true)
-      .then((m) =>
-        setReindexMsg(
-          m === "fired" ? "已弹 UAC，输入管理员凭据后约 6-25s 完成…" : m
-        )
-      )
-      .catch((e) => setReindexMsg("重建失败：" + String(e)));
-  }, []);
+  // 全量索引由后端自动维护(启动时静默提权 → MFT 秒级全盘)。这里只在完成时给一行轻提示, 无按钮无弹窗。
   useEffect(() => {
     const un = listen<[number, boolean]>("reindex-done", (e) => {
       const [n, mft] = e.payload;
-      setReindexMsg(
-        `✓ 全量重建完成：${n.toLocaleString()} 条（${mft ? "MFT · 管理员秒级" : "遍历全盘"}）`
-      );
+      if (mft) setReindexMsg(`✓ 全量索引就绪：${n.toLocaleString()} 条`);
       refresh();
     });
     return () => {
@@ -496,16 +471,6 @@ export function SearchBar({
         <div className="search-results recent">
           <div className="sr-section">
             <Clock size={12} /> 常用 / 置顶
-            <button className="sr-managetags" onClick={() => setTagMgr(null)} title="标签管理">
-              <SlidersHorizontal size={12} /> 标签
-            </button>
-            <button
-              className="sr-managetags"
-              onClick={doReindex}
-              title="用管理员重建全量索引(NTFS MFT, 秒级全盘, 一个不漏)"
-            >
-              <RefreshCw size={12} /> 全量重建
-            </button>
           </div>
           {recent.map((it, i) => (
             <HitRow key={it.path + i} it={it} i={i} />

@@ -3805,6 +3805,8 @@ dependencies = [
  "ignore",
  "image",
  "imageproc",
+ "memchr",
+ "memmap2",
  "notify",
  "nucleo-matcher",
  "pinyin",

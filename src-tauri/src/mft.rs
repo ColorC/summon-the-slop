@@ -80,7 +80,26 @@ pub fn enumerate_volume(letter: char) -> Option<Vec<(String, String, bool)>> {
     result
 }
 
-fn enumerate(handle: HANDLE, letter: char) -> Option<Vec<(String, String, bool)>> {
+/// 全卷所有记录的原始树节点 (record, name, parent_record, is_dir), 不拼路径 —— 供 arena 直接建父指针树,
+/// 免去 11M 全路径字符串的瞬时内存。None = 不可枚举(非提权/非 NTFS)。
+pub fn enumerate_volume_nodes(letter: char) -> Option<Vec<(u64, String, u64, bool)>> {
+    let handle = open_volume(letter)?;
+    let nodes = scan(handle);
+    unsafe {
+        let _ = CloseHandle(handle);
+    }
+    let nodes = nodes?;
+    Some(
+        nodes
+            .into_iter()
+            .filter(|(rec, _)| *rec != ROOT_RECORD)
+            .map(|(rec, (name, parent, is_dir))| (rec, name, parent, is_dir))
+            .collect(),
+    )
+}
+
+// 扫描 MFT/USN, 构建 record → (name, parent_record, is_dir) 节点表。None = FSCTL 不支持/空。
+fn scan(handle: HANDLE) -> Option<Nodes> {
     let mut med = MFT_ENUM_DATA_V0 {
         StartFileReferenceNumber: 0,
         LowUsn: 0,
@@ -141,7 +160,11 @@ fn enumerate(handle: HANDLE, letter: char) -> Option<Vec<(String, String, bool)>
     if !any {
         return None; // FSCTL not supported / empty → let caller fall back to walk
     }
+    Some(nodes)
+}
 
+fn enumerate(handle: HANDLE, letter: char) -> Option<Vec<(String, String, bool)>> {
+    let nodes = scan(handle)?;
     let mut out: Vec<(String, String, bool)> = Vec::with_capacity(nodes.len());
     for (&key, (name, _parent, is_dir)) in &nodes {
         if key == ROOT_RECORD {

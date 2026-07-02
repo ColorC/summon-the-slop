@@ -1043,6 +1043,10 @@ pub fn run() {
         search::reindex_cli();
         std::process::exit(0);
     }
+    if std::env::args().any(|a| a == "--mem") {
+        search::mem_cli();
+        std::process::exit(0);
+    }
     // 命令行搜索探针: poof.exe --search "<query>" → 载入索引跑真 search, 打印 top-20 后退出
     // (放在单实例/Builder 之前, 不被单实例拦; 与 --bench-search 同级)。
     {
