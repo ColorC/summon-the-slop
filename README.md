@@ -37,3 +37,4 @@ npm run tauri build    # 出包
 - `src/App.tsx` —— 外壳:侧栏 + cmdk 命令面板 + 钉屏。
 - `src/surfaces.tsx` —— 各面(检索/聊天/项目/审阅台/速记)+ surface 注册表。
 - `src/lib.ts` —— 前端调 Rust 命令的封装。
+- `src-tauri/capabilities/*.json` —— 只约束 Tauri core 窗口/事件 API 的可达性,不是自定义命令防火墙:所有 `#[tauri::command]` 对任何窗口开放。

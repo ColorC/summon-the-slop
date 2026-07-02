@@ -5,7 +5,7 @@
 //  · PDF  → affine:attachment embed(pdf.js 内嵌预览, 只读)
 //  · 其它二进制(docx/xlsx/zip…) → affine:attachment 文件卡(图标+名+大小+下载, 只读)
 import { Text } from "@blocksuite/store";
-import { micromark } from "micromark";
+import { renderMarkdownSafe } from "../lib/sanitizeHtml";
 import { readFileText, writeFileText, readFileB64 } from "../lib";
 import { getCollection } from "./notesCollection";
 import { insertBoundSource } from "./boundSource";
@@ -212,7 +212,7 @@ function togglePreview(code: HTMLElement, doc: any, blockId: string): void {
   div.className = "poof-md-rendered";
   div.title = "渲染预览(只读)· 双击回到源码编辑";
   try {
-    div.innerHTML = micromark(md);
+    div.innerHTML = renderMarkdownSafe(md);
   } catch {
     div.textContent = md;
   }

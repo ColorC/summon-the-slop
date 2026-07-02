@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
-import { micromark } from "micromark";
+import { renderMarkdownSafe, sanitizeHtml } from "../lib/sanitizeHtml";
 import { X } from "lucide-react";
 import "./ContentManager.css";
 import {
@@ -586,7 +586,7 @@ function Preview({
       setText(t);
       if (ext === "md") {
         try {
-          setHtml(micromark(t));
+          setHtml(renderMarkdownSafe(t));
         } catch {
           /* ignore */
         }
@@ -607,7 +607,7 @@ function Preview({
             await showFile(fp); // 剪贴板里是文件链接/路径 → 预览那个文件(而不是只显示链接)
             return;
           }
-          if (full.html) setHtml(full.html);
+          if (full.html) setHtml(sanitizeHtml(full.html));
           if (full.text) setText(full.text);
         } else if (item.kind === "md" && item.path) {
           await showFile(item.path);
@@ -621,7 +621,7 @@ function Preview({
             if (alive && t) {
               setText(t);
               try {
-                setHtml(micromark(t));
+                setHtml(renderMarkdownSafe(t));
               } catch {
                 /* ignore */
               }

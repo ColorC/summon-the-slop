@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main overlay window",
+  "description": "Capability for the main overlay window. 本文件只约束 Tauri core 窗口/事件 API 的可达性,不是自定义命令防火墙——所有 #[tauri::command] 对任何窗口开放;未来若有窗口要渲染不受信内容,须先把 run_shell/ask_ai 等高危命令声明成具名权限再按窗口分配。",
   "windows": ["main"],
   "permissions": [
     "core:default",

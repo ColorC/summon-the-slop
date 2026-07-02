@@ -5,6 +5,8 @@
 //
 // 必须在任何 @tauri-apps/api 调用前 import(notes-web.tsx 第一行 import 本模块)。
 
+const warnedUnknownCmds = new Set<string>();
+
 async function bridge(cmd: string, args: any): Promise<any> {
   const r = await fetch("/lofa/poof/invoke", {
     method: "POST",
@@ -34,6 +36,10 @@ async function bridge(cmd: string, args: any): Promise<any> {
       case "run_shell":
         return Promise.resolve({ stdout: "", stderr: "", code: 0 });
       default:
+        if (!warnedUnknownCmds.has(cmd)) {
+          warnedUnknownCmds.add(cmd);
+          console.warn(`[tauri-web-shim] 未覆盖命令 "${cmd}" 已降级为 null`);
+        }
         return Promise.resolve(null); // 未知命令一律安全空值, 别抛
     }
   },

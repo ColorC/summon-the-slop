@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "record",
-  "description": "Capability for the 录制 (record) + 回放 (replay) surfaces: listen for summon events (core:event), invoke the record/list/read commands (app commands, no perm), and be shown/hidden/focused/closed.",
+  "description": "Capability for the 录制 (record) + 回放 (replay) surfaces: listen for summon events (core:event), invoke the record/list/read commands (app commands, no perm), and be shown/hidden/focused/closed. 本文件只约束 Tauri core 窗口/事件 API 的可达性,不是自定义命令防火墙——所有 #[tauri::command] 对任何窗口开放;未来若有窗口要渲染不受信内容,须先把 run_shell/ask_ai 等高危命令声明成具名权限再按窗口分配。",
   "windows": ["record", "replay"],
   "permissions": [
     "core:default",
