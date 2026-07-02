@@ -25,14 +25,14 @@
 | **聊天 Talk** | 输入 + 答案 + 复制出口 | `claude -p` via stdin(已验证返回);`codex exec` 同理 |
 | **项目 Project** | omni 项目卡片 | `omni project list --json`(真实数据) |
 | **审阅台 Review** | 最近/待审 + 链接 | `omni project show omnidashboard-os --json` |
-| **速记 Note** | tldraw 无限画布(本地持久化=召出保留 buffer) | spike 画布 |
+| **速记 Note** | BlockSuite EdgelessEditor 无限画布(本地持久化=召出保留 buffer) | 生产画布,tldraw 已替换(见下方偏差记录) |
 
 命令面板(`cmdk`):切换面 / `▶ 运行 <命令>`(走 `run_shell`)/ 切到聊天问 AI。
 出口(Dispatch):复制(`copy_text` → 剪贴板)、钉屏(置顶开关)。
 
 ## 与计划的偏差(诚实记录)
 
-1. **画布用 tldraw 而非 BlockSuite。** 票④要证明的是"web 画布核心能在 WebView2 跑",tldraw 干净的 `<Tldraw/>` 可一行渲染、可截图验证,故 spike 用它。**BlockSuite EdgelessEditor 仍是生产画布**(理由=rich-text-on-canvas,工作流已 CONFIRMED 其可嵌 WebView2);其 0.22(`@blocksuite/affine`)嵌入需有界面的交互调试,留作下一个聚焦任务,不在这次无人值守 pass 里硬啃。架构(在浮层里嵌一个 web 画布)与最终一致,只换组件。
+1. **本次 spike 画布用 tldraw 而非 BlockSuite。** 票④要证明的是"web 画布核心能在 WebView2 跑",tldraw 干净的 `<Tldraw/>` 可一行渲染、可截图验证,故 spike 用它。**BlockSuite EdgelessEditor 已按计划替换为生产画布**(理由=rich-text-on-canvas,已嵌入 WebView2 并投入使用);tldraw 只剩零引用的 `src/windows/CanvasWindow.tsx` 残留待清理。架构(在浮层里嵌一个 web 画布)与最终一致,只换组件。
 
 2. **单窗多面板,而非"每个重面独立窗"。** 计划第 3 节的"壳+面混合多窗"是优化形态;MVP 用单窗 + 面板切换实现"4 面同处一框"(正是用户点名的演示)。多窗拆分(抢焦点面独立窗、全屏穿透宿主挂 toast/选区)记作下一步;Rust 侧 `run_shell`/钩子/窗口控制已就位,扩到多窗是增量。
 
@@ -40,7 +40,7 @@
 
 ## 下一步
 
-- BlockSuite EdgelessEditor 替换 tldraw(速记面 → 真·rich-text 画布)。
+- ~~BlockSuite EdgelessEditor 替换 tldraw(速记面 → 真·rich-text 画布)~~ 已完成,tldraw 残留清理见仓内已知孤儿记录。
 - 多窗拆分 + 全屏点击穿透宿主(toast/选区 HUD)。
 - 检索面接 `waiela find`(本地 Everything/ripgrep + 对话 + 飞书 lark-cli)。
 - 聊天面会话路由(新→CCUI;已开→高亮跳窗),复用 waiela `sessions.py`。

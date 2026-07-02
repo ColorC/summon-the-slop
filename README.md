@@ -10,7 +10,7 @@ omnidashboard-os 的**召出式覆盖层外壳** —— **按住 `Ctrl` 双击 `
 - **壳**:Tauri v2(Rust core + 系统 WebView2)。安装 <10MB、空闲内存远低于 Electron。
 - **召出**:自有 Rust `WH_KEYBOARD_LL` 底层键盘钩子(**按住 `Ctrl` 双击 `Alt`**;Ctrl 按住态用 `GetAsyncKeyState` 实时查,免疫漏 key-up)——任何壳的 global-shortcut API 都做不到这种修饰键手势。
 - **UI**:React 19 + Vite + TypeScript;命令面板 `cmdk`。
-- **画布**:tldraw(spike;生产替换为 BlockSuite EdgelessEditor,见 DEMO)。
+- **画布**:BlockSuite EdgelessEditor 已是生产画布;tldraw 仅剩零引用的 `src/windows/CanvasWindow.tsx` spike 残留待清理(见 DEMO)。
 - **接入**:你自己的 AI(`claude -p` / `codex exec` via stdin)+ `omni` CLI;WAIELA 作 sidecar(控制套接字 `127.0.0.1:47615`)。
 
 ## 跑起来

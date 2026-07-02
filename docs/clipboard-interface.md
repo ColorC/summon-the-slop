@@ -1,5 +1,7 @@
 # poof 剪贴板接口规范
 
+> 状态更新(2026-07-02):剪贴板已完整接入(2026-06-25),下文为接入前的设计原稿。
+>
 > 蓝本 = PasteBar(已克隆到 `vendor/pastebar`,gitignore 不上传)。本文件 = poof 自己的剪贴板接口定义。
 > **暂时仅做接口**:定义形态,不接进 poof 运行(符合需求)。
 > ⚠ **PasteBar 是 Tauri 1.x,poof 是 Tauri 2** —— 后台捕获核心(`arboard` + `clipboard-master`)可直接移植;
