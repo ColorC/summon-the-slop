@@ -1190,6 +1190,30 @@ fn match_terms(
     Some((mn_sum / terms.len() as i64, pfx_min))
 }
 
+// 七段乘法融合链: mn × pfx × use × type × depth × loc × tag × pin, 定点整数(基数 1000), 逐乘逐除。
+// legacy score_entry 与 arena::search 阶段2 共用此函数, 保证两条路径位对位等价。
+#[allow(clippy::too_many_arguments)]
+fn fuse_score(
+    mn_fp: i64,
+    pfx_fp: i64,
+    use_fp: i64,
+    type_fp: i64,
+    depth_fp: i64,
+    loc_fp: i64,
+    tag_fp: i64,
+    pin_fp: i64,
+) -> i64 {
+    let mut s: i64 = mn_fp;
+    s = s * pfx_fp / 1000;
+    s = s * use_fp / 1000;
+    s = s * type_fp / 1000;
+    s = s * depth_fp / 1000;
+    s = s * loc_fp / 1000;
+    s = s * tag_fp / 1000;
+    s = s * pin_fp / 1000;
+    s
+}
+
 // 单条全量打分(二段, 仅幸存者): match × prefix × frecency × type × depth × loc × tag × pin。pin 含重要
 // 文件夹(1.8×)与置顶标签(≥4.0×, 让弱匹配也冒头)。定点整数, 乘完右移。Hide → None。
 #[allow(clippy::too_many_arguments)]
@@ -1244,14 +1268,7 @@ fn score_entry(
     if pinned_tag {
         pin_fp = pin_fp.max(4000);
     }
-    let mut s: i64 = mn_fp;
-    s = s * pfx_fp / 1000;
-    s = s * use_fp / 1000;
-    s = s * type_fp / 1000;
-    s = s * depth_fp / 1000;
-    s = s * loc_fp / 1000;
-    s = s * tag_fp / 1000;
-    s = s * pin_fp / 1000;
+    let s = fuse_score(mn_fp, pfx_fp, use_fp, type_fp, depth_fp, loc_fp, tag_fp, pin_fp);
     Some(s.max(1) as u32)
 }
 
@@ -2921,14 +2938,7 @@ pub mod arena {
                 if pinned_tag {
                     pin_fp = pin_fp.max(4000);
                 }
-                let mut s = mn;
-                s = s * pfx / 1000;
-                s = s * use_fp / 1000;
-                s = s * type_fp / 1000;
-                s = s * depth_fp / 1000;
-                s = s * loc_fp / 1000;
-                s = s * tag_fp / 1000;
-                s = s * pin_fp / 1000;
+                let s = super::fuse_score(mn, pfx, use_fp, type_fp, depth_fp, loc_fp, tag_fp, pin_fp);
                 Some((s.max(1) as u32, row, path))
             })
             .collect();
@@ -2956,5 +2966,44 @@ pub mod arena {
                 }
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fuse_score;
+
+    // 期望值手算(不调用 fuse_score 自己生成), 与旧内联链 `s = s * X / 1000` 逐乘逐除同序位对位。
+
+    #[test]
+    fn fuse_score_all_neutral() {
+        // 全部因子 1000(基数) → 每步 s*1000/1000 = s, 结果恒为 1000。
+        assert_eq!(fuse_score(1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000), 1000);
+    }
+
+    #[test]
+    fn fuse_score_pin_override_max() {
+        // 其余中性, pin_fp 拉满置顶值 6000。
+        assert_eq!(fuse_score(1000, 1000, 1000, 1000, 1000, 1000, 1000, 6000), 6000);
+    }
+
+    #[test]
+    fn fuse_score_zero_factor_collapses() {
+        // 任一因子为 0(边界惩罚值)应使全链塌为 0。
+        assert_eq!(fuse_score(1000, 1000, 0, 1000, 1000, 1000, 1000, 1000), 0);
+    }
+
+    #[test]
+    fn fuse_score_mixed_realistic() {
+        // 手算: 850*700/1000=595; 595*1250/1000=743(截断); 743*1800/1000=1337(截断);
+        // 1337*950/1000=1270(截断); 1270*1100/1000=1397(截断); 1397*1300/1000=1816(截断);
+        // 1816*1800/1000=3268(截断)。
+        assert_eq!(fuse_score(850, 700, 1250, 1800, 950, 1100, 1300, 1800), 3268);
+    }
+
+    #[test]
+    fn fuse_score_boundary_high_values() {
+        // 边界大值组合(use_fp=2000 频率封顶, pin_fp=4000 置顶标签阈值)。
+        assert_eq!(fuse_score(1000, 1000, 2000, 1300, 1300, 1000, 1150, 4000), 15548);
     }
 }
