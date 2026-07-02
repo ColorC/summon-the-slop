@@ -13,9 +13,11 @@ dist-ssr
 *.local
 
 # Rust / Tauri build output
-src-tauri/target
-src-tauri/target-check
+**/target/
+**/target-check/
 src-tauri/gen
+**/.omni/
+dist-web
 
 # 笔记数据(运行态): AI 块工作目录 + 笔记落盘库都在仓外, 但 ai-blocks 会建在仓内 → 忽略
 ai-blocks/
