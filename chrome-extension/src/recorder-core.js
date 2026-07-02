@@ -1,8 +1,9 @@
-// poof 录像 — shared recorder core (page main world). Faithful plain-JS mirror of poof's
-// src/record/record.ts: SAME rrweb config, SAME envelope, SAME redaction, SAME batched
-// ordered flush. Transport is injected as `send(batch)`. Redaction runs HERE (page world,
-// where rrweb lives) so secrets are masked BEFORE they ever cross the bridge or hit the wire.
-// MUST stay in sync with record.ts (the masking is load-bearing).
+// poof 录像 — shared recorder core (page main world). Produces the same schema envelope as
+// poof's other recording surfaces. Transport is injected as `send(batch)`. Redaction runs
+// HERE (page world, where rrweb lives) so secrets are masked BEFORE they ever cross the
+// bridge or hit the wire.
+// MUST stay in sync with the canonical envelope/kind definition in
+// src-tauri/src/record_cmd.rs (top-of-file doc comment) — the masking is load-bearing.
 (function () {
   function maskInput(text, el) {
     var type = (el && el.getAttribute && el.getAttribute("type")) || "";

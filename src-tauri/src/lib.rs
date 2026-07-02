@@ -1117,7 +1117,6 @@ pub fn run() {
     builder
         .plugin(tauri_plugin_opener::init())
         .manage(pty::PtyState::default())
-        .manage(record_cmd::RecState::default())
         .setup(|app| {
             let handle = app.handle().clone();
             // 存全局 AppHandle, 供后台线程(periodic refresh / 启动自动全量)触发 reindex + emit。
@@ -1303,9 +1302,6 @@ pub fn run() {
             snap_cmd::resolve_points_at,
             snap_cmd::omni_capture,
             show_replay,
-            record_cmd::record_start,
-            record_cmd::record_event,
-            record_cmd::record_stop,
             record_cmd::list_sessions,
             record_cmd::read_session,
             native_start,

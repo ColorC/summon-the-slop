@@ -1,13 +1,60 @@
-//! Recording ("录制") backend for the AI session-recording feature (P1).
+//! Recording ("录制") backend for the AI session-recording feature.
 //! One session = a subdir under %USERPROFILE%\Pictures\poof-recordings\<sid>\ holding
 //! events.jsonl (one schema-envelope per line) + meta.json. Mirrors snap_cmd.rs file
-//! management (path guard, timestamp naming, structured meta). Transport is Tauri IPC —
-//! the recording webview is poof's own app:// surface, so no HTTP collector is needed here
-//! (that arrives with P2/P3 external pages + extensions).
+//! management (path guard, timestamp naming, structured meta). This module owns the
+//! storage layer only (init/ensure a session dir, append events, stamp stop, list/read).
+//! Producers reach it two ways: in-process Rust callers (native_rec.rs, region_rec.rs)
+//! call `append_events`/`init_session` directly; out-of-process producers (chrome-extension,
+//! vscode-extension) go through the localhost HTTP collector in http_rec.rs, which forwards
+//! batches into the same `append_events`/`ensure_session` verbatim (no transform).
+//!
+//! ── Event envelope (canonical definition — the ONE source of truth for this shape) ──
+//! Every line of events.jsonl is a JSON object:
+//!   { sid, seq, ts, surface, src, kind, p }
+//! - sid:     string. The session id (`rec-<u128 nanoseconds>`, see `init_session`).
+//! - seq:     integer. Per-session monotonic counter starting at 0, assigned by the
+//!            producer (not rewritten on append). NOTE producers are NOT fully consistent
+//!            here: native_rec.rs/region_rec.rs (one static counter per recording) and
+//!            vscode-extension/extension.js (one counter per `session` object) each keep a
+//!            single counter for the whole sid. chrome-extension's recorder-core.js takes
+//!            `o.startSeq || 0` as its starting point but nothing ever passes `startSeq`,
+//!            so in practice EVERY page-injector instance (i.e. every tab/navigation the
+//!            recorder attaches to) restarts its own local seq at 0 — seq is only unique
+//!            per (sid, injection context), not globally unique per sid, for the chrome
+//!            surface. Consumers sort by seq but that only gives a correct total order
+//!            within one surface/context; this is a known, unfixed inconsistency.
+//! - ts:      integer. Epoch milliseconds when the producer captured the event
+//!            (`Date.now()` in JS, `now_ms()`/`epoch_ms()` in Rust — all wall-clock ms).
+//! - surface: string. Which recorder produced the event: "native" (native_rec.rs),
+//!            "screen" (region_rec.rs), "poof", "chrome" (chrome-extension), or "vscode"
+//!            (vscode-extension). ("poof" was the in-app rrweb surface; its producer/IPC
+//!            commands are retired — see history — but the surface tag is still a valid
+//!            value the schema allows for and old recordings on disk still use it.)
+//! - src:     string. Sub-source within the surface. native_rec.rs/region_rec.rs hardcode
+//!            "desktop"/"region"; chrome's page-injector.js sets it to `location.href` (the
+//!            page URL); vscode's extension.js sets it to the workspace name.
+//! - kind:    string. Discriminates the shape of `p`. All kinds currently produced:
+//!   - "rrweb"            (chrome, via recorder-core.js): p = { ev }, ev is a raw rrweb
+//!                         event object (rrweb's own emit() payload), unmodified.
+//!   - "native.focus"     (native, region): p = { title, process }
+//!   - "native.activity"  (native, region): p = { active, idleMs }
+//!   - "keyframe"          (screen only, region_rec.rs): p = { frame, text, w, h } —
+//!                         `frame` is a relative path ("frames/0000.png") under the
+//!                         session dir, `text` is OCR'd screen text, w/h are pixel dims.
+//!   - "vscode.active"     (vscode): p = { path, lang }
+//!   - "vscode.open"       (vscode): p = { path, lang }
+//!   - "vscode.save"       (vscode): p = { path }
+//!   - "vscode.edit"       (vscode): p = { path, edits, addedLines, removedLines }
+//!   - "vscode.terminal.open" (vscode): p = { name }
+//!   - "vscode.debug.start"   (vscode): p = { name, type }
+//! Consumers: src/replay/ai_timeline.js (sessionToTimeline) switches on `kind` to render
+//! an AI-readable line per event; src/replay/replay.ts filters `kind == "rrweb"` and feeds
+//! `p.ev` straight to rrweb's Replayer.
+//!
+//! Convention: adding a new kind or changing any field above starts HERE — update this
+//! comment first, then bring producers/consumers in line with it.
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
 
 fn now_ns() -> u128 {
     std::time::SystemTime::now()
@@ -45,13 +92,6 @@ fn ensure_in_recordings(path: &str) -> Result<PathBuf, String> {
     }
 }
 
-/// The one active session (managed in lib.rs via `.manage(RecState::default())`).
-#[derive(Default)]
-pub struct RecState {
-    sid: Mutex<Option<String>>,
-    seq: AtomicU64,
-}
-
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Meta {
     sid: String,
@@ -87,16 +127,6 @@ pub fn stamp_stop(sid: &str) {
         if let Ok(mut meta) = serde_json::from_str::<Meta>(&text) {
             meta.stop_ms = Some(now_ms());
             let _ = write_atomic_meta(&meta_path, &meta);
-        }
-    }
-}
-
-/// Cleanly close whatever session is active (used by record_stop AND the window-close
-/// handler in lib.rs, so closing the record window never orphans an in-progress session).
-pub fn stop_active(state: &RecState) {
-    if let Ok(mut g) = state.sid.lock() {
-        if let Some(sid) = g.take() {
-            stamp_stop(&sid);
         }
     }
 }
@@ -168,38 +198,6 @@ pub fn append_events(sid: &str, batch: &[serde_json::Value]) -> Result<(), Strin
         buf.push('\n');
     }
     f.write_all(buf.as_bytes()).map_err(|e| e.to_string())
-}
-
-/// Begin a session (poof IPC surface): create it + arm RecState. Any session still marked
-/// active is stamped-stopped first (re-summon / orphan guard).
-#[tauri::command]
-pub fn record_start(state: tauri::State<RecState>, title: Option<String>) -> Result<String, String> {
-    let sid = init_session(&title.unwrap_or_else(|| "未命名录制".into()), "poof")?;
-    let mut g = state.sid.lock().map_err(|e| e.to_string())?;
-    if let Some(old) = g.take() {
-        stamp_stop(&old);
-    }
-    *g = Some(sid.clone());
-    state.seq.store(0, Ordering::SeqCst);
-    Ok(sid)
-}
-
-/// Append to the active poof session. Holds the session lock across the append so concurrent
-/// flushes can't interleave half-lines.
-#[tauri::command]
-pub fn record_event(state: tauri::State<RecState>, batch: Vec<serde_json::Value>) -> Result<(), String> {
-    let guard = state.sid.lock().map_err(|e| e.to_string())?;
-    let sid = guard.as_ref().ok_or("no active recording session")?;
-    append_events(sid, &batch)?;
-    state.seq.fetch_add(batch.len() as u64, Ordering::SeqCst);
-    Ok(())
-}
-
-/// End the active session: stamp stop_ms in meta.json, clear state.
-#[tauri::command]
-pub fn record_stop(state: tauri::State<RecState>) -> Result<(), String> {
-    stop_active(state.inner());
-    Ok(())
 }
 
 /// All recorded sessions, newest first.
