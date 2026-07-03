@@ -1,7 +1,7 @@
 import { Fragment, useRef, useState, type ReactNode, type PointerEvent as RPE } from "react";
 import { Pin, PinOff, X, PanelLeft, PanelRight, PictureInPicture2, PanelBottomClose } from "lucide-react";
 
-export type PanelKind = "chat" | "project" | "review" | "notes" | "goals" | "clips";
+export type PanelKind = "chat" | "project" | "review" | "notes" | "goals" | "clips" | "pinned";
 export type DockSide = "left" | "right";
 
 export const PANEL_TITLES: Record<PanelKind, string> = {
@@ -11,6 +11,7 @@ export const PANEL_TITLES: Record<PanelKind, string> = {
   notes: "笔记空间",
   goals: "目标 / 任务",
   clips: "快选内容（剪贴板 / 快照）",
+  pinned: "当前任务",
 };
 
 const MIN_DOCK = 240; // a dock column never narrower than this
@@ -43,6 +44,7 @@ const DEFAULT_SIDE: Record<PanelKind, DockSide> = {
   project: "left",
   review: "left",
   goals: "left",
+  pinned: "left",
   chat: "right",
   notes: "right",
   clips: "right",

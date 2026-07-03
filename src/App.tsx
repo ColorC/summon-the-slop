@@ -17,6 +17,7 @@ import {
   X,
   ClipboardList,
   Stethoscope,
+  ListChecks,
 } from "lucide-react";
 import { ContentManager } from "./content/ContentManager";
 import { SearchBar } from "./regions/SearchBar";
@@ -26,6 +27,7 @@ import { ProjectSurface, ReviewSurface } from "./surfaces";
 import { NotesWorkspace } from "./regions/NotesWorkspace";
 import { DockStage, type PanelKind } from "./panels";
 import GoalsSurface from "./goalsSurface";
+import PinnedSurface from "./pinnedSurface";
 import { sendToController, OMNI_WEB_URL } from "./controller";
 import { startNoteBridge } from "./noteOps";
 import { installInstantTooltips } from "./tooltips";
@@ -416,7 +418,7 @@ export default function App() {
     if (k === "clips") return <ContentManager />;
     return (
       <div className="pf-scroll">
-        {k === "project" ? <ProjectSurface /> : k === "goals" ? <GoalsSurface /> : <ReviewSurface />}
+        {k === "project" ? <ProjectSurface /> : k === "goals" ? <GoalsSurface /> : k === "pinned" ? <PinnedSurface /> : <ReviewSurface />}
       </div>
     );
   }
@@ -475,6 +477,9 @@ export default function App() {
           </button>
           <button className={"pf-btn" + (isOpen("goals") ? " on" : "")} onClick={() => togglePanel("goals")} data-tip="目标 / 任务">
             <Target size={17} />
+          </button>
+          <button className={"pf-btn" + (isOpen("pinned") ? " on" : "")} onClick={() => togglePanel("pinned")} data-tip="当前任务（置顶）">
+            <ListChecks size={17} />
           </button>
           <button className={"pf-btn" + (isOpen("review") ? " on" : "")} onClick={() => togglePanel("review")} data-tip="审阅台">
             <CheckSquare size={17} />
