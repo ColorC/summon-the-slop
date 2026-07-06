@@ -1169,16 +1169,21 @@ pub fn run() {
                 if let Some(w) = app.get_webview_window("toast") {
                     let _ = w.set_ignore_cursor_events(true); // 鼠标穿透, 一次设好
                 }
-                // replay: a close (titlebar X / Alt+F4) HIDES instead of destroying, so it stays
-                // re-summonable.
-                if let Some(w) = app.get_webview_window("replay") {
-                    let wc = w.clone();
-                    w.on_window_event(move |e| {
-                        if let tauri::WindowEvent::CloseRequested { api, .. } = e {
-                            api.prevent_close();
-                            let _ = wc.hide();
-                        }
-                    });
+                // 所有常驻窗口: 关闭(Alt+F4 / window.close)一律改隐藏, 绝不 Destroy。
+                // Tauri 窗口 Destroy 后 get_webview_window 永远拿不回 → summon_main 静默失灵,
+                // 双击 Ctrl/托盘单击全废(2026-07-06 用户实锤: 主窗被 Alt+F4 后"overlay 无法连接",
+                // 日志 CloseRequested→Destroyed)。托盘常驻语义下退出只走托盘菜单 app.exit(0),
+                // 它不经 CloseRequested, 不受本保护影响。原先只有 replay 有此保护。
+                for label in ["main", "snap", "replay", "recbar", "toast"] {
+                    if let Some(w) = app.get_webview_window(label) {
+                        let wc = w.clone();
+                        w.on_window_event(move |e| {
+                            if let tauri::WindowEvent::CloseRequested { api, .. } = e {
+                                api.prevent_close();
+                                let _ = wc.hide();
+                            }
+                        });
+                    }
                 }
                 // 系统托盘常驻入口(2026-07-06 用户: 应是托盘小图标, 而非任务栏窗口/控制台)。
                 // 左键单击 = summon_main(与双击 Ctrl 完全同一条路径, 不另写显示逻辑);
