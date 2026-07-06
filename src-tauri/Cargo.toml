@@ -1,12 +1,12 @@
 [package]
-name = "poof"
+name = "overlay-shell"
 version = "0.1.0"
-description = "Poof, There It Is — summoned overlay shell for omnidashboard-os"
+description = "Summoned overlay shell for omnidashboard-os"
 authors = ["you"]
 edition = "2021"
 
 [lib]
-name = "poof_lib"
+name = "overlay_shell_lib"
 # desktop-only: rlib only. (cdylib/staticlib are for mobile and overflow the
 # mingw/gnu linker's export-ordinal limit — "export ordinal too large".)
 crate-type = ["rlib"]
@@ -15,7 +15,7 @@ crate-type = ["rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["webview-data-url"] }
+tauri = { version = "2", features = ["webview-data-url", "tray-icon"] }
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
@@ -72,11 +72,11 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.image]
 opt-level = 3
-# 搜索热路径: memchr 的 SIMD 子串 + poof 自身的扫描/堆循环, debug 下慢 5-10×。优化它们, 让 1100 万行
+# 搜索热路径: memchr 的 SIMD 子串 + overlay-shell 自身的扫描/堆循环, debug 下慢 5-10×。优化它们, 让 1100 万行
 # 紧凑 arena 扫描在 tauri dev(debug)里也能 <100ms; 其余 crate 照旧 debug, 日常编译不显著变慢。
 [profile.dev.package.memchr]
 opt-level = 3
-[profile.dev.package.poof]
+[profile.dev.package.overlay-shell]
 opt-level = 2
 [profile.dev.package.crc32fast]
 opt-level = 3

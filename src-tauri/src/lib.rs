@@ -44,7 +44,7 @@ struct CmdOut {
 }
 
 fn log_path() -> std::path::PathBuf {
-    std::env::temp_dir().join("poof-summon.log")
+    std::env::temp_dir().join("overlay-shell-summon.log")
 }
 
 // 串行化写入 —— 否则多线程(键盘钩子 / setup / OCR 轮询 / JS 命令)同时 append, 字节会交错成乱码。
@@ -299,14 +299,14 @@ fn focus_window(app: tauri::AppHandle, query: String) -> bool {
     }
 }
 
-// 提权重建的"情况记录": %LOCALAPPDATA%\poof\mft_state.txt 存一个词 —— ok(MFT 成功) / blocked(提权了但
+// 提权重建的"情况记录": %LOCALAPPDATA%\overlay-shell\mft_state.txt 存一个词 —— ok(MFT 成功) / blocked(提权了但
 // EDR 仍拦卷) / declined:N(UAC 被取消 N 次) / 空=没试过。自动触发据此决定要不要再弹 UAC, 避免反复打扰。
 #[cfg(windows)]
 fn mft_state_file() -> std::path::PathBuf {
     std::env::var_os("LOCALAPPDATA")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
-        .join("poof")
+        .join("overlay-shell")
         .join("mft_state.txt")
 }
 #[cfg(windows)]
@@ -407,7 +407,7 @@ fn request_full_reindex(app: tauri::AppHandle, force: bool) -> Result<String, St
             }
             let n = crate::search::reload_persisted().unwrap_or(0);
             // 读重建日志, 看是否真走了 MFT(管理员) —— 公司 EDR 可能连管理员都拦卷。
-            let log = std::fs::read_to_string(std::env::temp_dir().join("poof-reindex.log"))
+            let log = std::fs::read_to_string(std::env::temp_dir().join("overlay-shell-reindex.log"))
                 .unwrap_or_default();
             let mft = log.contains("MFT(管理员)");
             mft_state_write(if mft { "ok" } else { "blocked" });
@@ -617,7 +617,7 @@ async fn open_view(app: tauri::AppHandle, view: String) -> Result<(), String> {
     }
     let url = tauri::WebviewUrl::App(format!("index.html#/{safe}").into());
     tauri::WebviewWindowBuilder::new(&app, &label, url)
-        .title(format!("poof · {safe}"))
+        .title(format!("overlay-shell · {safe}"))
         .inner_size(1120.0, 780.0)
         .always_on_top(true)
         .build()
@@ -951,7 +951,7 @@ async fn new_chat(app: tauri::AppHandle, provider: String, query: Option<String>
     if app.get_webview_window(label).is_none() {
         let url = tauri::WebviewUrl::App("index.html#/terminal".into());
         tauri::WebviewWindowBuilder::new(&app, label, url)
-            .title("poof · 终端")
+            .title("overlay-shell · 终端")
             .inner_size(1120.0, 780.0)
             .always_on_top(true)
             .build()
@@ -973,19 +973,19 @@ fn take_chat_intents() -> Vec<(String, Option<String>)> {
 #[allow(unused_variables)]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // 截图自检: poof.exe --test-capture → 抓一帧报亮度/存 PNG 后退出(验证抓帧不黑屏, 不用按热键)。
+    // 截图自检: overlay-shell.exe --test-capture → 抓一帧报亮度/存 PNG 后退出(验证抓帧不黑屏, 不用按热键)。
     #[cfg(windows)]
     if std::env::args().any(|a| a == "--test-capture") {
         snap_cmd::test_capture();
         std::process::exit(0);
     }
-    // 截图管线自检: poof.exe --test-snap-pipeline → 后台线程抓帧(死锁根因)计时+验非黑后退出。
+    // 截图管线自检: overlay-shell.exe --test-snap-pipeline → 后台线程抓帧(死锁根因)计时+验非黑后退出。
     #[cfg(windows)]
     if std::env::args().any(|a| a == "--test-snap-pipeline") {
         snap_cmd::test_snap_pipeline();
         std::process::exit(0);
     }
-    // 统一捕获端到端自检: poof.exe --test-omni-md <l> <t> <r> <b> → 在真页面上跑 UIA 探针 + dashboard
+    // 统一捕获端到端自检: overlay-shell.exe --test-omni-md <l> <t> <r> <b> → 在真页面上跑 UIA 探针 + dashboard
     // /resolve, 打印 窗口标题/内容区原点/page·target。验 poof→dashboard 整条链, 不用 GUI 拖拽。
     #[cfg(windows)]
     if std::env::args().any(|a| a == "--test-omni-md") {
@@ -998,11 +998,11 @@ pub fn run() {
         if nums.len() == 4 {
             snap_cmd::test_omni_md(nums[0], nums[1], nums[2], nums[3]);
         } else {
-            println!("usage: poof.exe --test-omni-md <l> <t> <r> <b>");
+            println!("usage: overlay-shell.exe --test-omni-md <l> <t> <r> <b>");
         }
         std::process::exit(0);
     }
-    // 端到端产出真截图 MD: poof.exe --capture-md <l> <t> <r> <b> → 抓屏+裁剪+UIA解析+拼MD写盘, 打印路径+内容。
+    // 端到端产出真截图 MD: overlay-shell.exe --capture-md <l> <t> <r> <b> → 抓屏+裁剪+UIA解析+拼MD写盘, 打印路径+内容。
     #[cfg(windows)]
     if std::env::args().any(|a| a == "--capture-md") {
         let nums: Vec<i32> = std::env::args()
@@ -1013,22 +1013,22 @@ pub fn run() {
         if nums.len() == 4 {
             snap_cmd::capture_md(nums[0], nums[1], nums[2], nums[3]);
         } else {
-            println!("usage: poof.exe --capture-md <l> <t> <r> <b>");
+            println!("usage: overlay-shell.exe --capture-md <l> <t> <r> <b>");
         }
         std::process::exit(0);
     }
-    // 性能基准: poof.exe --bench-search → 逐字拼音搜索计时后退出(在单实例/Builder 之前, 不被单实例拦)。
+    // 性能基准: overlay-shell.exe --bench-search → 逐字拼音搜索计时后退出(在单实例/Builder 之前, 不被单实例拦)。
     if std::env::args().any(|a| a == "--bench-search") {
         search::bench_search();
         std::process::exit(0);
     }
-    // 对比验证: poof.exe --arena-verify → 现引擎 vs arena 引擎 在真索引上的结果一致性 + 计时。
+    // 对比验证: overlay-shell.exe --arena-verify → 现引擎 vs arena 引擎 在真索引上的结果一致性 + 计时。
     #[cfg(windows)]
     if std::env::args().any(|a| a == "--arena-verify") {
         search::arena_verify();
         std::process::exit(0);
     }
-    // 架构验证: poof.exe --bench-arena <N> → 合成 N 行紧凑 arena 并 SIMD 并行扫描计时(证明 11M 能 <100ms)。
+    // 架构验证: overlay-shell.exe --bench-arena <N> → 合成 N 行紧凑 arena 并 SIMD 并行扫描计时(证明 11M 能 <100ms)。
     #[cfg(windows)]
     if std::env::args().any(|a| a == "--bench-arena") {
         let n = std::env::args()
@@ -1038,7 +1038,7 @@ pub fn run() {
         search::bench_arena(n);
         std::process::exit(0);
     }
-    // 全量重建索引(管理员运行则走 MFT 秒级全量): poof.exe --reindex → 建+持久化+退出。
+    // 全量重建索引(管理员运行则走 MFT 秒级全量): overlay-shell.exe --reindex → 建+持久化+退出。
     if std::env::args().any(|a| a == "--reindex") {
         search::reindex_cli();
         std::process::exit(0);
@@ -1047,7 +1047,7 @@ pub fn run() {
         search::mem_cli();
         std::process::exit(0);
     }
-    // 命令行搜索探针: poof.exe --search "<query>" → 载入索引跑真 search, 打印 top-20 后退出
+    // 命令行搜索探针: overlay-shell.exe --search "<query>" → 载入索引跑真 search, 打印 top-20 后退出
     // (放在单实例/Builder 之前, 不被单实例拦; 与 --bench-search 同级)。
     {
         let args: Vec<String> = std::env::args().collect();
@@ -1057,7 +1057,7 @@ pub fn run() {
             std::process::exit(0);
         }
     }
-    // 图标自检: poof.exe --test-icon <path> → 抽该路径真实图标, 报字节数 + 存 %TEMP%\poof-icon-test.png。
+    // 图标自检: overlay-shell.exe --test-icon <path> → 抽该路径真实图标, 报字节数 + 存 %TEMP%\overlay-shell-icon-test.png。
     #[cfg(windows)]
     if std::env::args().any(|a| a == "--test-icon") {
         let path = std::env::args().nth(2).unwrap_or_default();
@@ -1066,7 +1066,7 @@ pub fn run() {
     }
     // 全套日志: 把 panic(含位置 + 回溯)落进同一条时间线 —— 后台线程(OCR/轮询/键盘钩子)
     // 的 panic 平时会被 unwind 静默吞掉, 这里强制记下来。原生崩溃(访问越界)抓不到, 但配合
-    // JS 侧 log_js + tauri dev 的 poof-dev.log, 三路日志足以定位绝大多数崩溃。
+    // JS 侧 log_js + tauri dev 的 overlay-shell-dev.log, 三路日志足以定位绝大多数崩溃。
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let bt = std::backtrace::Backtrace::force_capture();
@@ -1179,6 +1179,40 @@ pub fn run() {
                             let _ = wc.hide();
                         }
                     });
+                }
+                // 系统托盘常驻入口(2026-07-06 用户: 应是托盘小图标, 而非任务栏窗口/控制台)。
+                // 左键单击 = summon_main(与双击 Ctrl 完全同一条路径, 不另写显示逻辑);
+                // 右键菜单 = 召出 / 退出。退出走 app.exit(0): release 下这是唯一正规退出口
+                // (main 窗口无边框无关闭钮, 以前只能杀进程)。
+                {
+                    use tauri::menu::{Menu, MenuItem};
+                    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+                    let summon_item = MenuItem::with_id(app, "tray-summon", "召出", true, None::<&str>)?;
+                    let quit_item = MenuItem::with_id(app, "tray-quit", "退出", true, None::<&str>)?;
+                    let menu = Menu::with_items(app, &[&summon_item, &quit_item])?;
+                    let mut tray = TrayIconBuilder::with_id("poof-tray")
+                        .tooltip("poof — 单击召出/收起, 双击 Ctrl 同效")
+                        .menu(&menu)
+                        .show_menu_on_left_click(false)
+                        .on_menu_event(|app, event| match event.id.as_ref() {
+                            "tray-summon" => summon_main(app, false),
+                            "tray-quit" => app.exit(0),
+                            _ => {}
+                        })
+                        .on_tray_icon_event(|tray, event| {
+                            if let TrayIconEvent::Click {
+                                button: MouseButton::Left,
+                                button_state: MouseButtonState::Up,
+                                ..
+                            } = event
+                            {
+                                summon_main(tray.app_handle(), false);
+                            }
+                        });
+                    if let Some(icon) = app.default_window_icon() {
+                        tray = tray.icon(icon.clone());
+                    }
+                    let _ = tray.build(app)?;
                 }
                 let (tx, rx) = channel::<hook::Sig>();
                 let _ = hook::TX.set(tx);
@@ -1363,7 +1397,7 @@ mod tests {
     #[test]
     fn save_image_writes_a_png() {
         // 1x1 PNG
-        let b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        let b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
         let path = crate::snap_cmd::save_image(b64.to_string()).expect("save_image");
         let p = std::path::Path::new(&path);
         assert!(p.exists(), "file not written: {path}");
@@ -1396,7 +1430,7 @@ mod tests {
     fn shot_history_roundtrip() {
         // 1x1 PNG → save into the shots folder, find it in the history list, render a
         // thumbnail data-URL, then delete it. Exercises the whole persistent-list backend.
-        let b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        let b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
         let p = crate::snap_cmd::save_image(b64.to_string()).expect("save_image");
         let shots = crate::snap_cmd::list_shots().expect("list_shots");
         assert!(shots.iter().any(|s| s.path == p), "saved shot missing from history");
