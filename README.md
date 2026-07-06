@@ -1,40 +1,47 @@
-# Poof, There It Is (`poof`)
+# overlay-shell
 
-omnidashboard-os 的**召出式覆盖层外壳** —— **按住 `Ctrl` 双击 `Alt`** 随地召出一个透明置顶浮层,里面装下「检索 / 聊天 / 项目 / 审阅台 / 速记」各面。目标:基于 AI 让"记录·查询·审阅"最舒适,缩短我和电脑一切的距离。顶掉 Listary 当主入口。
+召出式覆盖层外壳。按住 `Ctrl` 双击 `Alt` 随地召出一个透明置顶浮层，承载检索、聊天、项目、审阅台、速记、截图、点选洞察、终端和录制等输入/操作面。
+
+旧名 `poof` 只作为 legacy junction、历史文档、协议兼容 key 或旧数据目录存在；当前项目正名和物理路径是 `overlay-shell`。
 
 > 权威设计 = `omnicompany/docs/plans/omnidashboard-os/[2026-06-20]OVERLAY-FRAMEWORK-FOUNDATION/plan.md`
 > 真机验证与架构说明 = [`DEMO.md`](./DEMO.md)
 
 ## 技术栈
 
-- **壳**:Tauri v2(Rust core + 系统 WebView2)。安装 <10MB、空闲内存远低于 Electron。
-- **召出**:自有 Rust `WH_KEYBOARD_LL` 底层键盘钩子(**按住 `Ctrl` 双击 `Alt`**;Ctrl 按住态用 `GetAsyncKeyState` 实时查,免疫漏 key-up)——任何壳的 global-shortcut API 都做不到这种修饰键手势。
-- **UI**:React 19 + Vite + TypeScript;命令面板 `cmdk`。
-- **画布**:BlockSuite EdgelessEditor 已是生产画布;tldraw 仅剩零引用的 `src/windows/CanvasWindow.tsx` spike 残留待清理(见 DEMO)。
-- **接入**:你自己的 AI(`claude -p` / `codex exec` via stdin)+ `omni` CLI;WAIELA 作 sidecar(控制套接字 `127.0.0.1:47615`)。
+- Tauri v2(Rust core + 系统 WebView2)
+- React 19 + Vite + TypeScript
+- BlockSuite EdgelessEditor 笔记画布
+- Windows keyboard hook / UIA / OCR / 截图 / 本机文件搜索 / PTY
 
 ## 跑起来
 
 ```bash
 npm install
-npm run tauri dev      # 开发(首次编译较久,之后 8s 级)
-npm run tauri build    # 出包
+npm run tauri dev                 # 开发(热更新; 页面来自 vite dev :1420)
+npx tauri build --no-bundle       # 日常常驻用的 release(托盘+单实例+嵌入前端资产)
 ```
 
-启动后窗口默认隐藏。**按住 `Ctrl` 双击 `Alt`** 召出 / 收起;`Esc` 隐藏;`Ctrl K` 开命令面板。
+⚠ **release 必须经 tauri CLI 构建**。裸 `cargo build --release` 不会嵌入 `dist/` 前端资产，
+产物仍从 vite dev(:1420) 加载页面 —— dev 服务器一停主窗就只剩 WebView2 的"无法连接"错误页
+(2026-07-06 实锤踩坑, 当天所有召出失灵的根因)。验证嵌入是否成功:
+`grep -c "main-" src-tauri/target/release/overlay-shell.exe` 能搜到 dist 入口资产名即对。
 
-### 环境前提(本机已满足)
+日常常驻 = Startup 文件夹 `poof-overlay-shell.lnk` → `target/release/overlay-shell.exe`
+(GUI 子系统无控制台)。所有常驻窗口关闭(Alt+F4)一律只隐藏不销毁, 退出走托盘右键菜单。
 
-- Rust(`x86_64-pc-windows-gnu` 工具链即可,**不需 MSVC / 管理员**)。
-- WebView2 运行时(Win11 / 新 Win10 预装;缺则 per-user bootstrapper,无需管理员)。
-- Node ≥ 18。
-
-> ⚠️ gnu 工具链坑:`src-tauri/Cargo.toml` 的 `[lib] crate-type` 必须是 `["rlib"]`(不能带 `cdylib`),否则 mingw 链接器报 `export ordinal too large`。桌面端不需要 cdylib(那是移动端的)。
+窗口默认隐藏。按住 `Ctrl` 双击 `Alt` 召出 / 收起；`Esc` 隐藏；`Ctrl K` 打开命令面板。
 
 ## 结构
 
-- `src-tauri/src/lib.rs` —— 键盘钩子、窗口召出/隐藏、`run_shell` / `ask_ai` / `copy_text` 命令(均 `CREATE_NO_WINDOW` 无控制台闪窗)。
-- `src/App.tsx` —— 外壳:侧栏 + cmdk 命令面板 + 钉屏。
-- `src/surfaces.tsx` —— 各面(检索/聊天/项目/审阅台/速记)+ surface 注册表。
-- `src/lib.ts` —— 前端调 Rust 命令的封装。
-- `src-tauri/capabilities/*.json` —— 只约束 Tauri core 窗口/事件 API 的可达性,不是自定义命令防火墙:所有 `#[tauri::command]` 对任何窗口开放。
+- `src-tauri/src/lib.rs` - 键盘钩子、窗口召出/隐藏、命令桥
+- `src/App.tsx` - 覆盖层外壳
+- `src/surfaces.tsx` - 各面注册表
+- `src/regions/` - 检索、笔记、终端等区域
+- `agent-scanner/` - 机器级 agent 会话扫描器
+
+## 数据边界
+
+- 笔记真源: `E:\WindowsWorkspace\overlay-note-store`
+- 兼容旧入口: `E:\WindowsWorkspace\poof` junction 到本仓
+- 历史 `%LOCALAPPDATA%\poof`、`%USERPROFILE%\.poof` 和 `poof-note://` 暂保留兼容，后续单独迁协议/用户数据。
