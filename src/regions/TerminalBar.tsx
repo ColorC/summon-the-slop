@@ -5,6 +5,7 @@ import { runShell } from "../lib";
 import { drainChatIntents, CHAT_EVENT } from "../chatIntents";
 import { registerPane, unregisterPane, FOCUS_PANE_EVENT } from "../poofPanes";
 import { setControllerPane, getControllerPane } from "../controller";
+import { userConfig, KEY_TERMINAL_CWD } from "../userConfig";
 
 interface Tab {
   id: string;
@@ -18,6 +19,11 @@ let counter = 0;
 // #3 所有对话 skip-permissions 起。
 const CLAUDE_CMD = "claude --dangerously-skip-permissions";
 const CODEX_CMD = "codex --dangerously-bypass-approvals-and-sandbox";
+
+// 新开的终端默认 cwd: 空串 = 退回 home(pty.rs 的兜底)。想用固定工作区(推荐: claude/codex
+// 在庞大的 home 里启动会卡在扫描/信任目录流程上)就覆盖:
+//   localStorage.setItem("overlay-terminal-cwd", "D:\\your\\workspace")
+const WORKSPACE = userConfig(KEY_TERMINAL_CWD, "");
 
 function cmdFor(provider: string): { cmd?: string; title: string } {
   if (provider === "codex") return { cmd: CODEX_CMD, title: "Codex" };
@@ -61,7 +67,7 @@ export function TerminalBar() {
         if (handled.current.has(i.id)) continue;
         handled.current.add(i.id);
         const { cmd, title } = cmdFor(i.provider || "claude");
-        const id = addTab(i.role === "controller" ? "总控" : title, cmd, i.query || undefined, i.cwd);
+        const id = addTab(i.role === "controller" ? "总控" : title, cmd, i.query || undefined, i.cwd || WORKSPACE);
         if (i.role === "controller") setControllerPane(id);
       }
     };
@@ -90,9 +96,11 @@ export function TerminalBar() {
             onClick={() => setActive(t.id)}
             onContextMenu={(e) => {
               e.preventDefault();
-              runShell("code -r .").catch(() => {});
+              // 不带 -r: 不复用/替换你正开着的 VSCode 窗口(那会切走工作区、打断你手头的活)。
+              // 该目录已在某个窗口打开 → VSCode 直接聚焦它; 没开 → 新开一个窗口。用本页签自己的 cwd。
+              runShell(`code "${t.cwd || WORKSPACE}"`).catch(() => {});
             }}
-            title="右键：在 VSCode 中打开当前目录"
+            title="右键：在 VSCode 中打开该目录（聚焦已有窗口，不替换你当前的工作区）"
           >
             {t.title}
             <X
@@ -105,13 +113,13 @@ export function TerminalBar() {
             />
           </button>
         ))}
-        <button className="term-new claude" onClick={() => addTab("Claude", CLAUDE_CMD)}>
+        <button className="term-new claude" onClick={() => addTab("Claude", CLAUDE_CMD, undefined, WORKSPACE)}>
           <Plus size={13} /> Claude
         </button>
-        <button className="term-new codex" onClick={() => addTab("Codex", CODEX_CMD)}>
+        <button className="term-new codex" onClick={() => addTab("Codex", CODEX_CMD, undefined, WORKSPACE)}>
           <Plus size={13} /> Codex
         </button>
-        <button className="term-new" onClick={() => addTab("PowerShell")}>
+        <button className="term-new" onClick={() => addTab("PowerShell", undefined, undefined, WORKSPACE)}>
           <Plus size={13} /> PS
         </button>
       </div>

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "poof",
+  "productName": "overlay-shell",
   "version": "0.1.0",
-  "identifier": "com.lilithgames.poof",
+  "identifier": "com.colorc.overlay-shell",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "poof",
+        "title": "overlay-shell",
         "width": 880,
         "height": 600,
         "center": true,
@@ -30,7 +30,7 @@
       {
         "label": "snap",
         "url": "snap.html",
-        "title": "poof snap",
+        "title": "overlay-shell snap",
         "width": 800,
         "height": 600,
         "decorations": false,
@@ -44,7 +44,7 @@
       {
         "label": "replay",
         "url": "replay.html",
-        "title": "poof · 回放",
+        "title": "overlay-shell · 回放",
         "width": 1120,
         "height": 800,
         "center": true,
@@ -54,7 +54,7 @@
       {
         "label": "recbar",
         "url": "rec-bar.html",
-        "title": "poof 录制中",
+        "title": "overlay-shell 录制中",
         "width": 248,
         "height": 56,
         "decorations": false,
@@ -68,7 +68,7 @@
       {
         "label": "toast",
         "url": "toast.html",
-        "title": "poof",
+        "title": "overlay-shell",
         "width": 340,
         "height": 52,
         "decorations": false,

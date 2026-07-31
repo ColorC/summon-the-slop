@@ -15,6 +15,8 @@ mod tags; // 自定义文件标签(path→tags, 落 %LOCALAPPDATA%, 进搜索打
 mod fileid; // NTFS FileId 冗余救援键(文件移到监视目录外时, 标签靠它自愈)
 #[cfg(windows)]
 mod mft; // NTFS MFT/USN 全盘枚举(Everything 级范围), search 用; 非 NTFS/未提权时回退游走
+#[cfg(windows)]
+mod usn_tail; // 全盘实时新鲜度: 常驻提权子进程持续 tail USN journal, 见该文件顶部注释
 mod snapshot;
 // live-inspector 洞察 capability (ported from waiela)
 #[cfg(windows)]
@@ -335,6 +337,56 @@ pub(crate) fn trigger_reindex(force: bool) {
     }
 }
 
+// 共享的静默提权重启: 把当前 exe 带 params 用 "runas" 起一个 window-less 子进程, 返回其句柄(调用方
+// 负责 WaitForSingleObject + CloseHandle)。--reindex 一次性重建和 --usn-daemon 常驻都借这一份。
+// 本机实测 runas 静默提权(无 UAC 对话框), 失败(ok==0 或拿不到句柄)= UAC 被取消, 记一次 declined
+// (两条调用路径共用同一份 mft_state declined 计数 —— 都是同一个 exe 同一个 UAC 提示, 用户拒绝一次
+// 就该两边都不再烦他, 不该各算各的)。
+#[cfg(windows)]
+fn elevate_relaunch(params: &str) -> Result<windows_sys::Win32::Foundation::HANDLE, String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
+
+    // 本机实测: runas 静默提权(无 UAC 对话框)且提权进程落在用户会话(可见)。既无对话框要躲, 就不再
+    // 隐藏覆盖层 —— 启动自动重建时藏掉主窗反而是糟糕体验。重建/tail 在 window-less 子进程里跑, 不打扰前台。
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let verb: Vec<u16> = std::ffi::OsStr::new("runas").encode_wide().chain(std::iter::once(0)).collect();
+    let file: Vec<u16> = exe.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let params_w: Vec<u16> = std::ffi::OsStr::new(params).encode_wide().chain(std::iter::once(0)).collect();
+    let mut sei: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
+    sei.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpVerb = verb.as_ptr();
+    sei.lpFile = file.as_ptr();
+    sei.lpParameters = params_w.as_ptr();
+    sei.nShow = SW_HIDE;
+    let ok = unsafe { ShellExecuteExW(&mut sei) };
+    if ok == 0 || sei.hProcess == 0 {
+        let prev = mft_state_read()
+            .strip_prefix("declined:")
+            .and_then(|x| x.trim().parse::<u32>().ok())
+            .unwrap_or(0);
+        mft_state_write(&format!("declined:{}", prev + 1));
+        return Err("提权被取消(下次搜索会再问; 成功一次或取消 3 次后不再问)".into());
+    }
+    Ok(sei.hProcess)
+}
+
+/// 已定论(EDR 拦卷/连续 3 次拒绝 UAC)时返回 true —— --reindex 一次性触发和 --usn-daemon 常驻拉起
+/// 共用这份判断, 避免定论之后还反复弹提权。
+#[cfg(windows)]
+fn elevation_settled() -> bool {
+    let state = mft_state_read();
+    if state == "blocked" {
+        return true;
+    }
+    if let Some(n) = state.strip_prefix("declined:") {
+        return n.trim().parse::<u32>().unwrap_or(0) >= 3;
+    }
+    false
+}
+
 /// 全量重建索引(提权走 MFT 秒级)。force=true: 周期刷新/手动, 无条件触发。force=false: 自动触发, 据是否
 /// 已有全量索引 + mft_state 决定。结果记进 mft_state + emit "reindex-done"。poof 本体可非提权运行, 只把
 /// "读卷"隔离到 window-less 提权子进程 —— Everything 的服务模型。本机 runas 静默(无 UAC 弹窗)。
@@ -342,13 +394,8 @@ pub(crate) fn trigger_reindex(force: bool) {
 fn request_full_reindex(app: tauri::AppHandle, force: bool) -> Result<String, String> {
     #[cfg(windows)]
     {
-        use std::os::windows::ffi::OsStrExt;
         use windows_sys::Win32::Foundation::CloseHandle;
         use windows_sys::Win32::System::Threading::WaitForSingleObject;
-        use windows_sys::Win32::UI::Shell::{
-            ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
-        };
-        use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
         let state = mft_state_read();
         let have_full = crate::search::current_len() >= 8_000_000; // 已有 MFT 级全量索引
@@ -364,42 +411,7 @@ fn request_full_reindex(app: tauri::AppHandle, force: bool) -> Result<String, St
                 }
             }
         }
-
-        // 本机实测: runas 静默提权(无 UAC 对话框)且提权进程落在用户会话(可见)。既无对话框要躲, 就不再
-        // 隐藏覆盖层 —— 启动自动重建时藏掉主窗反而是糟糕体验。重建在 window-less 子进程里跑, 不打扰前台。
-
-        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        let verb: Vec<u16> = std::ffi::OsStr::new("runas")
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-        let file: Vec<u16> = exe
-            .as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-        let params: Vec<u16> = std::ffi::OsStr::new("--reindex")
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-        let mut sei: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
-        sei.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
-        sei.fMask = SEE_MASK_NOCLOSEPROCESS;
-        sei.lpVerb = verb.as_ptr();
-        sei.lpFile = file.as_ptr();
-        sei.lpParameters = params.as_ptr();
-        sei.nShow = SW_HIDE;
-        let ok = unsafe { ShellExecuteExW(&mut sei) };
-        if ok == 0 || sei.hProcess == 0 {
-            // UAC 被取消 → 记一次 declined。
-            let prev = state
-                .strip_prefix("declined:")
-                .and_then(|x| x.trim().parse::<u32>().ok())
-                .unwrap_or(0);
-            mft_state_write(&format!("declined:{}", prev + 1));
-            return Err("提权被取消(下次搜索会再问; 成功一次或取消 3 次后不再问)".into());
-        }
-        let hproc = sei.hProcess;
+        let hproc = elevate_relaunch("--reindex")?;
         std::thread::spawn(move || {
             unsafe {
                 WaitForSingleObject(hproc, 600_000);
@@ -421,6 +433,55 @@ fn request_full_reindex(app: tauri::AppHandle, force: bool) -> Result<String, St
         Err("windows only".into())
     }
 }
+
+/// 全盘实时新鲜度: 启动时拉起常驻 --usn-daemon 子进程并监督它(异常退出按 1 小时滚动窗口退避重启,
+/// ≥5 次就停手, 靠现有「每 2 小时一次性全量重建 + 白名单 notify 实时监听」兜底, 不因这个新机制
+/// 拉不起来/反复崩就倒退到比今天更差)。提权已定论(EDR 拦/连续拒绝 UAC)时直接不试, 不重复打扰。
+#[cfg(windows)]
+static USN_DAEMON_CRASHES: std::sync::Mutex<Vec<std::time::Instant>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(windows)]
+pub(crate) fn ensure_usn_daemon() {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::WaitForSingleObject;
+
+    if elevation_settled() {
+        log_line("[usn] 提权已定论(拦卷/连续拒绝), 不拉常驻 daemon —— 靠现有全量重建 + 白名单监听兜底");
+        return;
+    }
+    let main_pid = std::process::id();
+    std::thread::spawn(move || loop {
+        match elevate_relaunch(&format!("--usn-daemon {main_pid}")) {
+            Ok(hproc) => {
+                log_line("[usn] 常驻 daemon 已拉起");
+                unsafe {
+                    WaitForSingleObject(hproc, u32::MAX); // INFINITE: 常驻理论上不退出
+                    CloseHandle(hproc);
+                }
+                // 走到这说明 daemon 退出了(崩溃/被杀/EDR 干预)—— 记一次崩溃, 退避重启。
+                let n = {
+                    let mut crashes = USN_DAEMON_CRASHES.lock().unwrap();
+                    let now = std::time::Instant::now();
+                    crashes.retain(|t| now.duration_since(*t) < std::time::Duration::from_secs(3600));
+                    crashes.push(now);
+                    crashes.len()
+                };
+                log_line(&format!("[usn] 常驻 daemon 异常退出(1 小时内第 {n} 次)"));
+                if n >= 5 {
+                    log_line("[usn] 1 小时内崩溃 ≥5 次, 暂停自动重启(靠现有全量重建 + 白名单监听兜底); 重启 overlay-shell 会重新尝试");
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(10));
+            }
+            Err(e) => {
+                log_line(&format!("[usn] 常驻 daemon 提权失败: {e}(靠现有全量重建 + 白名单监听兜底)"));
+                return; // 提权被拒(非崩溃)已经在 elevate_relaunch 里记过 declined, 这里不重试
+            }
+        }
+    });
+}
+#[cfg(not(windows))]
+pub(crate) fn ensure_usn_daemon() {}
 
 #[cfg(windows)]
 mod hook {
@@ -1046,6 +1107,17 @@ pub fn run() {
     if std::env::args().any(|a| a == "--mem") {
         search::mem_cli();
         std::process::exit(0);
+    }
+    // 全盘实时新鲜度常驻子进程: overlay-shell.exe --usn-daemon <主进程PID> → 阻塞常驻, 见 usn_tail.rs。
+    // 由 lib.rs::ensure_usn_daemon() 静默提权拉起, 不是给人手动敲的(但手动敲也没事, 便于单独调试)。
+    #[cfg(windows)]
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if let Some(i) = args.iter().position(|a| a == "--usn-daemon") {
+            let pid: u32 = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
+            usn_tail::run(pid);
+            std::process::exit(0);
+        }
     }
     // 命令行搜索探针: overlay-shell.exe --search "<query>" → 载入索引跑真 search, 打印 top-20 后退出
     // (放在单实例/Builder 之前, 不被单实例拦; 与 --bench-search 同级)。

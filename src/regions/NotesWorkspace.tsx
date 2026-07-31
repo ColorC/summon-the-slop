@@ -50,6 +50,7 @@ import { scheduleNoteExport, rebuildNotesIndex, backfillExports, exportNoteToMd 
 import { installMarkdownPaste } from "./markdownPaste";
 import { installOmniRefJump } from "./omniLink";
 import { BrowsePanel } from "./BrowsePanel";
+import { installShapeTextStabilityGuard } from "./shapeTextGuard";
 import "./omniSources"; // 注册 omni 源适配器(plan/progress/review), 即便没开浏览面板也要在(同步引擎要用)
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 
@@ -62,6 +63,90 @@ const DARK_THEME = OverrideThemeExtension({
   getEdgelessTheme: () => THEME,
 });
 
+/**
+ * BlockSuite 0.19 can briefly retain both a canvas selection and a rich-text
+ * selection.  Its global Delete hotkey then reaches both handlers: the shape
+ * disappears as intended, while the stale caret also deletes note content.
+ * Own destructive canvas deletion at the editor capture boundary so exactly
+ * one selection domain is allowed to mutate the document.
+ */
+function installSafeEdgelessDelete(
+  editor: AffineEditorContainer,
+  doc: any,
+  noteId: string,
+  collection: any,
+  notify: (message: string) => void
+): () => void {
+  const onKeyDown = (event: KeyboardEvent) => {
+    if ((event.key !== "Delete" && event.key !== "Backspace") || event.defaultPrevented) return;
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+
+    const root: any = editor.querySelector("affine-edgeless-root");
+    const service = root?.service;
+    const selection = service?.selection;
+    const selected: any[] = [...(selection?.selectedElements ?? [])];
+    if (!root || !service || service.locked || selection?.editing || !selected.length) return;
+    if (selected.some((element) => element?.isLocked?.())) return;
+
+    // Do not let the same physical key reach BlockSuite's stale rich-text
+    // selection and its global edgeless selection handler independently.
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+    try {
+      root.std?.selection?.clear?.(["text"]);
+      window.getSelection()?.removeAllRanges();
+
+      // Persist a restart-safe recovery point before every destructive canvas
+      // action.  In-memory undo cannot survive closing and reopening the app.
+      void saveVersion(noteId, Y.encodeStateAsUpdate(doc.spaceDoc), "删除前");
+      doc.captureSync?.();
+
+      const noteCount = selected.filter((element) => element?.flavour === "affine:note").length;
+      // A note is the document's background/content container.  If it is
+      // accidentally co-selected with ordinary shapes, keep the note and only
+      // delete the ordinary canvas elements.
+      const deletionTargets = noteCount > 0 && noteCount < selected.length
+        ? selected.filter((element) => element?.flavour !== "affine:note")
+        : selected;
+      if (deletionTargets.length !== selected.length) {
+        notify("检测到正文背景与图形同时被选中：已保留正文，只删除图形");
+      }
+
+      const doomed = new Map<string, any>();
+      for (const element of deletionTargets) {
+        doomed.set(element.id, element);
+        try {
+          for (const connector of service.getConnectors?.(element) ?? []) {
+            doomed.set(connector.id, connector);
+          }
+        } catch {
+          /* elements without connectors */
+        }
+      }
+      for (const element of doomed.values()) {
+        if (element?.flavour === "affine:note") {
+          // Match BlockSuite's own invariant: never delete the last note.
+          if ((doc.root?.children?.length ?? 0) > 1) doc.deleteBlock(element);
+        } else {
+          service.removeElement(element.id);
+        }
+      }
+      selection.clear();
+      // A deleted text/shape element must not leave the insertion tool armed;
+      // otherwise every later canvas click creates another text element.
+      root.gfx?.tool?.setTool?.("default", undefined);
+      doc.captureSync?.();
+      scheduleNoteExport(doc, collection);
+      window.setTimeout(() => void flushNotesStore(), 500);
+    } catch (error) {
+      notify(`删除被安全拦截：${String(error)}`);
+    }
+  };
+
+  editor.addEventListener("keydown", onKeyDown, true);
+  return () => editor.removeEventListener("keydown", onKeyDown, true);
+}
 
 function seedDoc(c: DocCollection): Doc {
   const doc = c.createDoc();
@@ -189,16 +274,35 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
   const [view, setView] = useState<View>("notes");
   const [sort, setSort] = useState<Sort>("updated");
   const [tags, setTags] = useState<TagMap>(loadTags);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
   const [ready, setReady] = useState(false);
   const [verOpen, setVerOpen] = useState(false);
   const [versions, setVersions] = useState<NoteVersion[]>([]);
   const [browseOpen, setBrowseOpen] = useState(false); // 浏览/插入面板(文件/计划/进度/审阅)
   const [conflictMsg, setConflictMsg] = useState(""); // 同步源块写回冲突提示
+  // 初值留空, 挂载后 notes_root()(Rust)解析真根(环境变量 OVERLAY_NOTE_STORE_ROOT 或
+  // %LOCALAPPDATA%\overlay-shell\note-store)回填。
+  const noteStoreRoot = useRef("");
   const seeded = useRef(false);
   const [geom, setGeom] = useState<Geom>(loadGeom);
 
+  // 网页端复制必须在按钮点击的用户手势里立刻发生。提前缓存根目录，避免点击后先 await HTTP
+  // 而错过 Chromium 对非 HTTPS 页面剪贴板操作的授权窗口。
+  useEffect(() => {
+    let dead = false;
+    void notesRoot()
+      .then((root) => {
+        if (!dead && root) noteStoreRoot.current = root.replace(/\\/g, "/").replace(/\/+$/, "");
+      })
+      .catch(() => {});
+    return () => {
+      dead = true;
+    };
+  }, []);
+
   // ⚠ 整页重载(Rust 重编重启 / 改入口文件 / 手动刷新)会把还挂着的 BlockSuite 编辑器暴力拆掉,
-  // 撞崩 WebView2 渲染进程 —— 实测 poof.exe exit 0xcfffffff 且无 Rust panic(就是这条整页重载,
+  // 撞崩 WebView2 渲染进程 —— 实测 overlay-shell.exe exit 0xcfffffff 且无 Rust panic(就是这条整页重载,
   // 不是搜索)。页面卸载/重载前主动、有序地 remove 编辑器, 让 Lit/Yjs 干净断开, 别让渲染进程在
   // 混乱拆解里崩。pagehide/beforeunload 覆盖进程重启+手动刷新, vite:beforeFullReload 覆盖 HMR 整页重载。
   useEffect(() => {
@@ -416,6 +520,13 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
       host.current.innerHTML = "";
       host.current.appendChild(editor);
       editorRef.current = editor;
+      hookCleanups.push(installShapeTextStabilityGuard(editor, doc, c));
+      hookCleanups.push(
+        installSafeEdgelessDelete(editor, doc, activeId, c, (message) => {
+          setConflictMsg(message);
+          window.setTimeout(() => setConflictMsg(""), 8000);
+        })
+      );
       localizeSlashMenu(editor); // #8 slash 菜单中文(config)
       installChromeTranslator(); // #8 全量中文(格式条/工具条/tooltip/链接卡片, DOM 级)
       installFileTemplateSearch(); // #5 工具栏"Search file or anything"(模板面板)→ 搜本机文件(Everything)
@@ -619,11 +730,17 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
     if (activeId === id) setActiveId("");
     setMetas(readMetas());
   }
-  function rename(id: string) {
-    const cur = metas.find((m) => m.id === id)?.title || "";
-    const v = window.prompt("重命名笔记：", cur);
-    if (v == null) return;
-    const name = v.trim() || "未命名笔记";
+  function startRename(id: string) {
+    const cur = metas.find((m) => m.id === id)?.title || "未命名笔记";
+    setRenameDraft(cur);
+    setRenamingId(id);
+  }
+  function cancelRename() {
+    setRenamingId(null);
+    setRenameDraft("");
+  }
+  function commitRename(id: string, value: string) {
+    const name = value.trim() || "未命名笔记";
     const doc = c.getDoc(id);
     if (doc) {
       try {
@@ -635,6 +752,9 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
       }
     }
     c.setDocMeta(id, { title: name, updatedDate: Date.now() } as any);
+    setCachedTitle(id, name);
+    setRenamingId(null);
+    setRenameDraft("");
     setMetas(readMetas());
   }
   async function duplicate(id: string) {
@@ -719,21 +839,16 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
   const activeTitle = metas.find((m) => m.id === activeId)?.title || "未命名笔记";
 
   // 复制当前笔记的 .md 绝对路径(而非不透明的 poof-note:// 链接) —— 发给 AI 可直接读文件,
-  // 文件名即笔记 id(omni notes 仍可由此反推编辑)。复制前先懒导出一次, 保证 .md 是最新的。
-  async function copyNoteMdPath(id: string): Promise<void> {
+  // 文件名即笔记 id(omni notes 仍可由此反推编辑)。复制后立即补一次导出，刷新 .md 内容。
+  function copyNoteMdPath(id: string): void {
+    // 先在当前点击手势内复制；导出随后刷新即可（编辑过程本身也一直在防抖导出）。
+    void copyText(`${noteStoreRoot.current}/docs/${id}.md`);
     try {
       const doc = c.getDoc(id);
-      if (doc) await exportNoteToMd(doc, c); // 确保 docs/<id>.md 已落且最新
+      if (doc) void exportNoteToMd(doc, c).catch(() => {});
     } catch {
       /* 导出失败也无妨: 已有的 .md 仍可用 */
     }
-    let root = "E:/WindowsWorkspace/poof-notes";
-    try {
-      root = await notesRoot();
-    } catch {
-      /* 用默认根 */
-    }
-    await copyText(`${root.replace(/\\/g, "/")}/docs/${id}.md`);
   }
 
   return (
@@ -788,7 +903,7 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
         </button>
         <button
           className="notes-bar-btn"
-          title="复制当前笔记的 .md 文件路径(发给 AI 可直接读：…/poof-notes/docs/<id>.md · 文件名即 id, omni notes 仍可编辑)"
+          title="复制当前笔记的 .md 文件路径(发给 AI 可直接读：…/overlay-note-store/docs/<id>.md · 文件名即 id, omni notes 仍可编辑)"
           disabled={!activeId}
           onClick={() => { if (activeId) void copyNoteMdPath(activeId); }}
         >
@@ -894,13 +1009,90 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
             {visible.map((m) => (
               <div
                 key={m.id}
-                className={"notes-item" + (m.id === activeId ? " on" : "")}
+                className={
+                  "notes-item" +
+                  (m.id === activeId ? " on" : "") +
+                  (m.id === renamingId ? " renaming" : "")
+                }
                 onClick={() => view !== "trash" && setActiveId(m.id)}
-                onDoubleClick={() => view === "notes" && rename(m.id)}
+                onDoubleClick={() => view === "notes" && startRename(m.id)}
               >
-                <div className="notes-item-title">
-                  {m.favorite && view === "notes" ? "★ " : ""}
-                  {m.title || "未命名笔记"}
+                <div className="notes-item-row">
+                  {renamingId === m.id ? (
+                    <input
+                      className="notes-rename-input"
+                      value={renameDraft}
+                      autoFocus
+                      aria-label="笔记标题"
+                      onFocus={(e) => e.currentTarget.select()}
+                      onClick={(e) => e.stopPropagation()}
+                      onDoubleClick={(e) => e.stopPropagation()}
+                      onChange={(e) => setRenameDraft(e.target.value)}
+                      onBlur={(e) => commitRename(m.id, e.currentTarget.value)}
+                      onKeyDown={(e) => {
+                        if (e.nativeEvent.isComposing) return;
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          e.currentTarget.blur();
+                        } else if (e.key === "Escape") {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          cancelRename();
+                        }
+                      }}
+                    />
+                  ) : (
+                    <div className="notes-item-title" title={m.title || "未命名笔记"}>
+                      {m.favorite && view === "notes" ? "★ " : ""}
+                      {m.title || "未命名笔记"}
+                    </div>
+                  )}
+                  {renamingId !== m.id && (
+                    <div className="notes-item-acts" onClick={(e) => e.stopPropagation()}>
+                      {view === "notes" && (
+                        <>
+                          <button title="置顶/取消" onClick={() => setFlag(m.id, { favorite: !m.favorite })}>
+                            <Star size={13} fill={m.favorite ? "currentColor" : "none"} />
+                          </button>
+                          <button title="重命名" onClick={() => startRename(m.id)}>
+                            <Pencil size={13} />
+                          </button>
+                          <button title="复制" onClick={() => duplicate(m.id)}>
+                            <Copy size={13} />
+                          </button>
+                          <button title="加标签" onClick={() => addTag(m.id)}>
+                            <Hash size={13} />
+                          </button>
+                          <button title="归档" onClick={() => setFlag(m.id, { archived: true })}>
+                            <Archive size={13} />
+                          </button>
+                          <button title="删除（移入回收站）" onClick={() => toTrash(m.id)}>
+                            <Trash2 size={13} />
+                          </button>
+                        </>
+                      )}
+                      {view === "archive" && (
+                        <>
+                          <button title="取消归档" onClick={() => restore(m.id)}>
+                            <ArchiveRestore size={13} />
+                          </button>
+                          <button title="删除（移入回收站）" onClick={() => toTrash(m.id)}>
+                            <Trash2 size={13} />
+                          </button>
+                        </>
+                      )}
+                      {view === "trash" && (
+                        <>
+                          <button title="恢复" onClick={() => restore(m.id)}>
+                            <RotateCcw size={13} />
+                          </button>
+                          <button title="彻底删除" onClick={() => deleteForever(m.id)}>
+                            <Trash2 size={13} />
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
                 </div>
                 {!!(tags[m.id] || []).length && (
                   <div className="notes-item-tags" onClick={(e) => e.stopPropagation()}>
@@ -909,50 +1101,6 @@ export function NotesWorkspace({ onClose }: { onClose: () => void }) {
                     ))}
                   </div>
                 )}
-                <div className="notes-item-acts" onClick={(e) => e.stopPropagation()}>
-                  {view === "notes" && (
-                    <>
-                      <button title="置顶/取消" onClick={() => setFlag(m.id, { favorite: !m.favorite })}>
-                        <Star size={13} fill={m.favorite ? "currentColor" : "none"} />
-                      </button>
-                      <button title="重命名" onClick={() => rename(m.id)}>
-                        <Pencil size={13} />
-                      </button>
-                      <button title="复制" onClick={() => duplicate(m.id)}>
-                        <Copy size={13} />
-                      </button>
-                      <button title="加标签" onClick={() => addTag(m.id)}>
-                        <Hash size={13} />
-                      </button>
-                      <button title="归档" onClick={() => setFlag(m.id, { archived: true })}>
-                        <Archive size={13} />
-                      </button>
-                      <button title="删除（移入回收站）" onClick={() => toTrash(m.id)}>
-                        <Trash2 size={13} />
-                      </button>
-                    </>
-                  )}
-                  {view === "archive" && (
-                    <>
-                      <button title="取消归档" onClick={() => restore(m.id)}>
-                        <ArchiveRestore size={13} />
-                      </button>
-                      <button title="删除（移入回收站）" onClick={() => toTrash(m.id)}>
-                        <Trash2 size={13} />
-                      </button>
-                    </>
-                  )}
-                  {view === "trash" && (
-                    <>
-                      <button title="恢复" onClick={() => restore(m.id)}>
-                        <RotateCcw size={13} />
-                      </button>
-                      <button title="彻底删除" onClick={() => deleteForever(m.id)}>
-                        <Trash2 size={13} />
-                      </button>
-                    </>
-                  )}
-                </div>
               </div>
             ))}
           </div>

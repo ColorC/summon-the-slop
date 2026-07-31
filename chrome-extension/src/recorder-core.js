@@ -1,5 +1,5 @@
-// poof 录像 — shared recorder core (page main world). Produces the same schema envelope as
-// poof's other recording surfaces. Transport is injected as `send(batch)`. Redaction runs
+// overlay-shell 录像 — shared recorder core (page main world). Produces the same schema envelope as
+// overlay-shell's other recording surfaces. Transport is injected as `send(batch)`. Redaction runs
 // HERE (page world, where rrweb lives) so secrets are masked BEFORE they ever cross the
 // bridge or hit the wire.
 // MUST stay in sync with the canonical envelope/kind definition in
@@ -67,5 +67,5 @@
     };
   }
 
-  window.__poofRecorder = { maskInput: maskInput, startRecorder: startRecorder };
+  window.__overlayShellRecorder = { maskInput: maskInput, startRecorder: startRecorder };
 })();

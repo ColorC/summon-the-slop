@@ -7,7 +7,7 @@ use std::path::PathBuf;
 fn bridge_dir() -> PathBuf {
     let base = std::env::var("LOCALAPPDATA")
         .unwrap_or_else(|_| std::env::temp_dir().to_string_lossy().into_owned());
-    let d = PathBuf::from(base).join("poof").join("notes-bridge");
+    let d = PathBuf::from(base).join("overlay-shell").join("notes-bridge");
     let _ = fs::create_dir_all(&d);
     d
 }

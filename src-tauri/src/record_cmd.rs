@@ -1,5 +1,5 @@
 //! Recording ("录制") backend for the AI session-recording feature.
-//! One session = a subdir under %USERPROFILE%\Pictures\poof-recordings\<sid>\ holding
+//! One session = a subdir under %USERPROFILE%\Pictures\overlay-shell-recordings\<sid>\ holding
 //! events.jsonl (one schema-envelope per line) + meta.json. Mirrors snap_cmd.rs file
 //! management (path guard, timestamp naming, structured meta). This module owns the
 //! storage layer only (init/ensure a session dir, append events, stamp stop, list/read).
@@ -69,11 +69,11 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Sessions root, beside poof-shots so the existing reveal/explorer habits hold.
+/// Sessions root, beside overlay-shell-shots so the existing reveal/explorer habits hold.
 fn recordings_dir() -> PathBuf {
     Path::new(&std::env::var("USERPROFILE").unwrap_or_default())
         .join("Pictures")
-        .join("poof-recordings")
+        .join("overlay-shell-recordings")
 }
 
 /// One session's directory (used by region_rec to write its frames/ subdir alongside the jsonl).
@@ -88,7 +88,7 @@ fn ensure_in_recordings(path: &str) -> Result<PathBuf, String> {
     if cp.starts_with(&cd) {
         Ok(cp)
     } else {
-        Err("path is outside the poof-recordings folder".into())
+        Err("path is outside the overlay-shell-recordings folder".into())
     }
 }
 

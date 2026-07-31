@@ -60,6 +60,69 @@ function loadDockW(s: DockSide): number {
 }
 
 // ============================================================================
+//  PersistentChatDock — the 对话/终端 面板 lives here, ALWAYS mounted, shown/hidden
+//  via CSS display. Kept out of DockStage on purpose: DockStage unmounts a panel when
+//  it's closed/召出清空, which would tear down the xterm + kill the PTY (TerminalView
+//  cleanup 调 ptyKill)。常驻挂载 → 关面板/召出只是隐藏, 对话与终端会话一直保留。
+//  代价: 聊天面板不再支持浮动/左右切换, 但换来"永不丢会话"。宽度可拖拽调整并记忆。
+// ============================================================================
+const chatWKey = () => "poof-chat-dock-w";
+function loadChatW(): number {
+  const v = Number(localStorage.getItem(chatWKey()));
+  return v >= MIN_DOCK ? v : 460;
+}
+
+export function PersistentChatDock({
+  open,
+  onClose,
+  children,
+}: {
+  open: boolean;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const [w, setW] = useState(() => loadChatW());
+  const wRef = useRef(w);
+  wRef.current = w;
+
+  function startW(e: RPE) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const sx = e.clientX;
+    const w0 = wRef.current;
+    const max = window.innerWidth * MAX_DOCK_FRAC;
+    const mv = (ev: PointerEvent) => setW(clamp(w0 + (sx - ev.clientX), MIN_DOCK, max));
+    const up = () => {
+      window.removeEventListener("pointermove", mv);
+      window.removeEventListener("pointerup", up);
+      localStorage.setItem(chatWKey(), String(Math.round(wRef.current)));
+    };
+    window.addEventListener("pointermove", mv);
+    window.addEventListener("pointerup", up);
+  }
+
+  return (
+    <div
+      className="pf-dock pf-dock-right pf-chat-dock"
+      style={{ width: w, display: open ? "flex" : "none" }}
+    >
+      <section className="pf-view">
+        <div className="pf-panel-head">
+          <span className="pf-panel-title">{PANEL_TITLES.chat}</span>
+          <div className="pf-panel-acts">
+            <button onClick={onClose} title="隐藏（对话 / 终端会话保留）">
+              <X size={15} />
+            </button>
+          </div>
+        </div>
+        <div className="pf-panel-body">{children}</div>
+      </section>
+      <div className="pf-sash pf-sash-v" onPointerDown={startW} title="拖动调整宽度" />
+    </div>
+  );
+}
+
+// ============================================================================
 //  DockStage — owns the middle band. Every open panel is docked to the left or
 //  the right: flush to the window edge, FULL height, square against the edge,
 //  with a sash on its inner seam (drag to resize width). Multiple panels on one

@@ -12,11 +12,11 @@ fn now_ns() -> u128 {
 }
 
 /// The single persistent folder every finalized shot is written to — this IS the history
-/// list (%USERPROFILE%\Pictures\poof-shots). copy / save / pin all drop a file here.
+/// list (%USERPROFILE%\Pictures\overlay-shell-shots). copy / save / pin all drop a file here.
 fn shots_dir() -> PathBuf {
     Path::new(&std::env::var("USERPROFILE").unwrap_or_default())
         .join("Pictures")
-        .join("poof-shots")
+        .join("overlay-shell-shots")
 }
 
 /// Reject any path that isn't a real file under shots_dir (no arbitrary read/delete).
@@ -26,7 +26,7 @@ fn ensure_in_shots(path: &str) -> Result<PathBuf, String> {
     if cp.starts_with(&cd) {
         Ok(cp)
     } else {
-        Err("path is outside the poof-shots folder".into())
+        Err("path is outside the overlay-shell-shots folder".into())
     }
 }
 
@@ -73,7 +73,7 @@ pub fn take_capture() -> Result<tauri::ipc::Response, String> {
     Ok(frame_to_response(rgba, w, h, x, y, scale))
 }
 
-/// Headless 自检: `poof.exe --test-snap-pipeline` —— 复现修复的确切机制: 在【后台线程】抓帧(死锁的
+/// Headless 自检: `overlay-shell.exe --test-snap-pipeline` —— 复现修复的确切机制: 在【后台线程】抓帧(死锁的
 /// 根因就是把这步放主线程), 计时 + 读回验证非黑。证明"后台抓帧不死锁、帧有效", 不用按热键。
 pub fn test_snap_pipeline() {
     use std::io::Write;
@@ -116,7 +116,7 @@ pub fn test_snap_pipeline() {
     let _ = std::io::stdout().flush();
 }
 
-/// Headless 自检: `poof.exe --test-capture` —— 抓一帧, 存 PNG, 报平均亮度/非黑占比, 判定是否黑屏。
+/// Headless 自检: `overlay-shell.exe --test-capture` —— 抓一帧, 存 PNG, 报平均亮度/非黑占比, 判定是否黑屏。
 /// 让我能在不按热键的情况下自己验证抓帧没坏(不黑屏), 而不是让用户去撞。
 pub fn test_capture() {
     use std::io::Write;
@@ -138,7 +138,7 @@ pub fn test_capture() {
                 w, h, x, y, scale, n, avg, nonblack as f64 / n as f64 * 100.0
             );
             if let Some(img) = image::RgbaImage::from_raw(w, h, rgba) {
-                let p = std::env::temp_dir().join("poof-test-capture.png");
+                let p = std::env::temp_dir().join("overlay-shell-test-capture.png");
                 if img.save(&p).is_ok() {
                     println!("已存 {}", p.display());
                 }
@@ -286,7 +286,7 @@ pub fn pin_image(app: tauri::AppHandle, png_base64: String, x: i32, y: i32, w: i
     // base64 alphabet (A-Za-z0-9+/=) is JS-string safe, so direct interpolation is fine.
     let init = format!("window.__pinB64=\"{png_base64}\";window.__pinW={w};window.__pinH={h};");
     let win = WebviewWindowBuilder::new(&app, format!("pin-{}", now_ns()), WebviewUrl::App("pin.html".into()))
-        .title("poof pin")
+        .title("overlay-shell pin")
         .decorations(false)
         .transparent(true)
         .always_on_top(true)
@@ -628,7 +628,7 @@ pub async fn omni_capture(
     }
 }
 
-/// 自检: poof.exe --test-omni-md <l> <t> <r> <b> —— 在给定屏幕矩形上跑真 UIA 探针 + dashboard /resolve,
+/// 自检: overlay-shell.exe --test-omni-md <l> <t> <r> <b> —— 在给定屏幕矩形上跑真 UIA 探针 + dashboard /resolve,
 /// 打印 窗口标题 / 内容区原点 / 解析出的 page·target。用来在真页面上(无头/有头浏览器摆到屏上)端到端
 /// 验证 poof→dashboard 整条链, 不用 GUI 拖拽。
 #[cfg(windows)]
@@ -664,9 +664,9 @@ pub fn test_omni_md(l: i32, t: i32, r: i32, b: i32) {
     let _ = std::io::stdout().flush();
 }
 
-/// 自检: poof.exe --capture-md <l> <t> <r> <b> —— 端到端产出一份【真截图 MD】(无 GUI 拖拽、无输入注入):
+/// 自检: overlay-shell.exe --capture-md <l> <t> <r> <b> —— 端到端产出一份【真截图 MD】(无 GUI 拖拽、无输入注入):
 /// 抓当前屏 → 裁剪存 PNG → 真 UIA 探针 + dashboard /resolve → 拼 MD(window/page/target/target_file + 图)
-/// → 写进 poof-shots。和 GUI「复制 MD」产出同一种文件, 只是选区用参数给。打印 .md 路径 + 内容。
+/// → 写进 overlay-shell-shots。和 GUI「复制 MD」产出同一种文件, 只是选区用参数给。打印 .md 路径 + 内容。
 #[cfg(windows)]
 pub fn capture_md(l: i32, t: i32, r: i32, b: i32) {
     use std::io::Write;

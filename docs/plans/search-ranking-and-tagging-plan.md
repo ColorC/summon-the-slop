@@ -171,7 +171,7 @@ M5 空query面板:依赖 M0(frecency/pin),与 M2~M4 解耦,可任意插队
 - **FileId 救援用 OpenFileById**(非设计文档说的"MFT 枚举反查"):后者违反 M0「MFT 不动」边界;OpenFileById 由 FileId 直接解析当前路径,不枚举 MFT,更优。
 - **标签管理台是悬浮层内全屏覆盖**(非独立窗口):本仓无 hash 路由,与 omni-web 同模式。
 
-**验收证据(`poof.exe --bench-search`,真实 375 万条索引):**
+**验收证据(`overlay-shell.exe --bench-search`,真实 375 万条索引):**
 - 性能:真实(≥2 字符)单键中位 ~143–146ms,与前置基线 73–175ms 持平不回退。**60ms 红线未达**——受 375 万条 String 索引的内存带宽下限制约(每键流式扫全表),进一步需重构索引布局(字符串驻留/SoA),而本计划明确「索引不动」;且 bench 与运行中的 app + 二十余 node 进程争 24 核。
 - 8 条断言全 ✓:frecency 衰减·新近 / 衰减·沉底 / 重载不丢分 / 抗霸榜不等式 / Pin 冒首位 / Hide 剔除 / #tag 过滤+chip 回传 / FileId 捕获→解析 round-trip。
 - 前端 `tsc --noEmit` 0 错;`tauri dev` 已重建主二进制(含全部新命令)并热重载前端,实体 app 日志无新错。

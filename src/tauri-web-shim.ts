@@ -1,20 +1,24 @@
-// 纯网页端 Tauri 垫片: 让 poof 笔记栈在浏览器里跑(无 Tauri)。
+// 纯网页端 Tauri 垫片: 让 overlay-shell 笔记栈在浏览器里跑(无 Tauri)。
 // @tauri-apps/api 的 invoke 底层读 window.__TAURI_INTERNALS__.invoke —— 这里把它接到 8210 的
-// poof 笔记桥(/lofa/poof/invoke), notes_* 命令落盘到主机的 poof-notes(与桌面 poof 共用笔记)。
-// 其余壳/文件命令在网页端降级成安全空值(搜索空、读文件空、run_shell 空), 不崩。
+// overlay-shell 笔记桥(/lofa/overlay/invoke), notes_* 命令落盘到主机的 overlay-note-store(与桌面 overlay-shell 共用笔记)。
+// 文件搜索接 Dashboard → 本机 Overlay Shell 索引；其余高权限文件命令仍降级成安全空值。
 //
 // 必须在任何 @tauri-apps/api 调用前 import(notes-web.tsx 第一行 import 本模块)。
+import { copyPlainText, installDoubleCtrlForwarder, installWebClipboardCompat } from "./webRuntimeCompat";
 
 const warnedUnknownCmds = new Set<string>();
 
+installWebClipboardCompat();
+installDoubleCtrlForwarder();
+
 async function bridge(cmd: string, args: any): Promise<any> {
-  const r = await fetch("/lofa/poof/invoke", {
+  const r = await fetch("/lofa/overlay/invoke", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ cmd, args: args || {} }),
   });
   const j = await r.json().catch(() => null);
-  if (!j || j.ok === false) throw new Error((j && j.error) || `poof bridge error: ${cmd}`);
+  if (!j || j.ok === false) throw new Error((j && j.error) || `overlay-shell bridge error: ${cmd}`);
   return j.result;
 }
 
@@ -23,13 +27,14 @@ async function bridge(cmd: string, args: any): Promise<any> {
     if (typeof cmd === "string" && cmd.startsWith("notes_")) return bridge(cmd, args);
     switch (cmd) {
       case "search":
-        return Promise.resolve([]);
+        return bridge(cmd, args);
+      case "copy_text":
+        return copyPlainText(String(args?.text ?? ""));
       case "read_file_text":
         return Promise.resolve("");
       case "read_file_b64":
         return Promise.resolve(null);
       case "write_file_text":
-      case "copy_text":
       case "open_path":
       case "reveal_path":
         return Promise.resolve(null);
@@ -52,6 +57,11 @@ async function bridge(cmd: string, args: any): Promise<any> {
     currentWebview: { windowLabel: "main", label: "main" },
   },
   convertFileSrc: (p: string) => p,
+};
+
+(window as any).__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+  ...(window as any).__TAURI_EVENT_PLUGIN_INTERNALS__,
+  unregisterListener: () => {},
 };
 
 export {};

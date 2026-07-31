@@ -1,4 +1,5 @@
-// 工作流一: 把笔记从 WebView2 不透明 IndexedDB 搬到磁盘浅路径(E:\WindowsWorkspace\poof-notes\)。
+// 工作流一: 把笔记从 WebView2 不透明 IndexedDB 搬到磁盘浅路径(notesstore.rs 定根:
+// 环境变量 OVERLAY_NOTE_STORE_ROOT, 缺省 %LOCALAPPDATA%\overlay-shell\note-store\)。
 //  · FileDocSource  —— BlockSuite 的 DocSource(每个 Yjs doc 一份合并快照 <id>.ydoc), 语义照搬官方
 //    IndexedDBDocSource(mergeCount=1, push 合并、pull diff)。
 //  · FileBlobSource —— BlockSuite 的 BlobSource(图片/PDF 落 blobs/<sha>; 原来是 MemoryBlobSource 关即丢)。

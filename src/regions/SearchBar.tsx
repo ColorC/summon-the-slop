@@ -171,6 +171,9 @@ export function SearchBar({
   const [sel, setSel] = useState(0);
   const [composing, setComposing] = useState(false);
   const [searching, setSearching] = useState(false);
+  // 是否由"鼠标点击输入框"主动展开"常用/置顶"。只有真点击才置真(召出时的自动聚焦不算),
+  // 失焦即收起 —— 这样空框默认不落下这块面板, 不常驻挡住其他窗口, 点了输入框才显示。
+  const [boxActive, setBoxActive] = useState(false);
   const [menu, setMenu] = useState<CtxMenu | null>(null);
   const [tagPanel, setTagPanel] = useState<TagPanel | null>(null);
   const [tagMgr, setTagMgr] = useState<string | null | false>(false);
@@ -210,6 +213,7 @@ export function SearchBar({
       histIdx.current = -1;
       loadRecent();
       setSel(-1);
+      setBoxActive(false); // 召出时自动聚焦, 但"常用/置顶"仍收起, 等用户主动点输入框才落下
       setTimeout(() => inputRef.current?.focus(), 0);
     });
     return () => {
@@ -436,6 +440,8 @@ export function SearchBar({
           setSel(0);
         }}
         onKeyDown={onKey}
+        onMouseDown={() => setBoxActive(true)}
+        onBlur={() => setBoxActive(false)}
         onCompositionStart={() => setComposing(true)}
         onCompositionEnd={(e) => {
           setComposing(false);
@@ -467,8 +473,11 @@ export function SearchBar({
             )
           )}
         </div>
-      ) : (
-        <div className="search-results recent">
+      ) : boxActive ? (
+        // 空框 + 点过输入框才展开"常用/置顶"; 失焦即收起, 不常驻挡住其他窗口。
+        // onMouseDown preventDefault: 点结果行时保持输入框焦点, 否则 blur 会先卸载本面板导致 click 落空
+        // (draggable="true" 的行仍可拖拽, Chromium 不受 mousedown preventDefault 影响)。
+        <div className="search-results recent" onMouseDown={(e) => e.preventDefault()}>
           <div className="sr-section">
             <Clock size={12} /> 常用 / 置顶
           </div>
@@ -477,7 +486,7 @@ export function SearchBar({
           ))}
           {reindexMsg && <div className="sr-more">{reindexMsg}</div>}
         </div>
-      )}
+      ) : null}
 
       {menu && (
         <FloatingPanel x={menu.x} y={menu.y} className="ctx-menu" onBackdrop={() => setMenu(null)}>

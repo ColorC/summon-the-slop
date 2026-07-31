@@ -1,6 +1,6 @@
 // 全套日志引导 — 必须在最早被 import(放在各 window 入口的第一行)。
 // 把"这个 webview 窗口"里的 console 报错 / 未捕获异常 / Promise 拒绝, 全部送给 Rust(log_js),
-// 落进 %TEMP%\poof-summon.log 的同一条时间线 —— 这样原生侧(panic/钩子/启动)和前端侧的事件
+// 落进 %TEMP%\overlay-shell-summon.log 的同一条时间线 —— 这样原生侧(panic/钩子/启动)和前端侧的事件
 // 按时间对齐, 崩溃(0xcfffffff 这类原生崩)前一刻 webview 在干什么就有据可查, 不用再靠猜。
 import { invoke } from "@tauri-apps/api/core";
 

@@ -25,8 +25,26 @@ import { createRoot, type Root } from "react-dom/client";
 import { createElement } from "react";
 import { TerminalView } from "../regions/Terminal";
 import { runShell } from "../lib";
+import { userConfig, KEY_AI_BLOCKS_HOME } from "../userConfig";
 
-const AI_HOME = "E:\\WindowsWorkspace\\poof\\ai-blocks";
+// AI 块终端的工作目录根(每块一个子目录 <root>/<块id>, pty.rs 按需创建)。可配:
+//   localStorage.setItem("overlay-ai-blocks-home", "D:\\your\\ai-blocks")
+// 缺省 = %USERPROFILE%\overlay-shell\ai-blocks。
+let aiHomeCache: string | null = null;
+async function aiHome(): Promise<string> {
+  const override = userConfig(KEY_AI_BLOCKS_HOME);
+  if (override) return override;
+  if (!aiHomeCache) {
+    let home = "";
+    try {
+      home = ((await runShell("echo %USERPROFILE%")).stdout || "").trim();
+    } catch {
+      /* ignore */
+    }
+    aiHomeCache = home ? home + "\\overlay-shell\\ai-blocks" : "overlay-shell\\ai-blocks";
+  }
+  return aiHomeCache;
+}
 
 // ---- schema / model ----
 type AiBlockProps = {
@@ -129,9 +147,9 @@ class AiBlockComponent extends BlockComponent<AiBlockModel, AiBlockService> {
     const root = createRoot(host);
     aiTerminals.set(blockId, { host, root }); // 先占位防并发重复创建
     slot.appendChild(host);
-    // cwd = ai-blocks/<块id>。pty.rs 会创建它; 它在受信任的 E:\WindowsWorkspace 下 → claude 不弹
-    // "trust 此目录"(实测 claude 从受信任祖先继承信任)。
-    const cwd = AI_HOME + "\\" + blockId;
+    // cwd = ai-blocks/<块id>。pty.rs 会创建它; 放在固定的 aiHome() 根下 → claude 从受信任
+    // 祖先继承信任, 不弹 "trust 此目录"(实测)。
+    const cwd = (await aiHome()) + "\\" + blockId;
     // 这个块以前有没有 claude 对话? 有→--continue 续上; 没有→开新。交互式 claude 的 --continue 在
     // 无对话时会报 "No conversation found to continue" 并退出, 所以必须先查(实测过)。claude 的会话
     // 目录名内含 cwd(含块id), 在 ~/.claude/projects 下 findstr 块id 即可。

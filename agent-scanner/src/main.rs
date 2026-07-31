@@ -2,8 +2,8 @@
 //!
 //! 环境变量:
 //!   AGENT_SCANNER_ADDR        监听地址(默认 127.0.0.1:8765)
-//!   AGENT_SCANNER_TOKEN       鉴权 token(缺省读 %USERPROFILE%\.poof\rec_token;再缺省=开放)
-//!   AGENT_SCANNER_SNAPSHOT    快照路径(默认 %USERPROFILE%\.poof\agents-index.json)
+//!   AGENT_SCANNER_TOKEN       鉴权 token(缺省读 %USERPROFILE%\.overlay-shell\rec_token;再缺省=开放)
+//!   AGENT_SCANNER_SNAPSHOT    快照路径(默认 %USERPROFILE%\.overlay-shell\agents-index.json)
 //!   AGENT_SCANNER_INTERVAL    轮询秒数(默认 2)
 //!   AGENT_SCANNER_CC_SESSIONS cc_sessions.json 路径(可选)
 //!
@@ -34,8 +34,10 @@ fn resolve_token() -> Option<String> {
             return Some(t);
         }
     }
-    let rec = home().join(".poof").join("rec_token");
-    std::fs::read_to_string(rec)
+    let rec = home().join(".overlay-shell").join("rec_token");
+    let legacy = home().join(".poof").join("rec_token");
+    std::fs::read_to_string(&rec)
+        .or_else(|_| std::fs::read_to_string(legacy))
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
@@ -46,7 +48,10 @@ fn main() {
     let token = resolve_token();
     let snapshot = std::env::var("AGENT_SCANNER_SNAPSHOT")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| home().join(".poof").join("agents-index.json"));
+        .unwrap_or_else(|_| home().join(".overlay-shell").join("agents-index.json"));
+    if let Some(dir) = snapshot.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
     let interval: u64 = std::env::var("AGENT_SCANNER_INTERVAL")
         .ok()
         .and_then(|v| v.parse().ok())

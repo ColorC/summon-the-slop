@@ -13,11 +13,11 @@
 |---|---|---|
 | 提权 MFT 全量 | **11,135,014 行**(C 1.58M / D 2.67M / E 6.88M) | `%TEMP%\poof-reindex.log` |
 | 非提权遍历(漏文件) | 4.5M(E 盘只看到 1.07M,MFT 是 6.88M) | 同上对照 |
-| 合成 11M 紧凑 arena 全表扫描(SIMD+并行,debug+opt) | **16ms** | `poof.exe --bench-arena 11000000` |
-| 现在引擎 @4.5M(debug,**已加 opt-level**) | **44ms**(原 281ms) | `poof.exe --bench-search` |
+| 合成 11M 紧凑 arena 全表扫描(SIMD+并行,debug+opt) | **16ms** | `overlay-shell.exe --bench-arena 11000000` |
+| 现在引擎 @4.5M(debug,**已加 opt-level**) | **44ms**(原 281ms) | `overlay-shell.exe --bench-search` |
 | 现在引擎 @11M | ~700ms+ / 冻死 | 用户实测 + 内存 ~2.5GB |
 | 非提权 MFT | **不可能**(CreateFileW `\\.\D:` → ACCESS_DENIED;FSCTL → INVALID_FUNCTION) | bench 探测 + whoami /priv |
-| 本机账号 | `lilithgames` **不在本地管理员组**;提权需输入另一管理员账号凭据 | PowerShell WindowsPrincipal |
+| 本机账号 | 当前账号 **不在本地管理员组**;提权需输入另一管理员账号凭据 | PowerShell WindowsPrincipal |
 
 **结论:11M 完全扛得住(arena 全表扫 16ms),"扛不住"是旧设计太naive,不是物理极限。**
 
@@ -128,7 +128,7 @@ rayon `fold`/`reduce` min-heap top-K,形状不变。每行:
 ```
 
 ### ⭐ 多词跨路径 = 走父指针匹配祖先目录名(对抗评审的关键修正)
-这是早稿做错、被对抗评审揪出的要害。`aiworkspace app` 命中 `D:\P4\main\AIWorkSpace\app`:`app` 是文件行的**名字**,
+这是早稿做错、被对抗评审揪出的要害。`notes web` 命中 `C:\Projects\notes\web`:`app` 是文件行的**名字**,
 但 `aiworkspace` **不在该行名字里、只在祖先目录名里**。早稿"按需重建路径字符串再 substring"会对**几十万个名字含 app 的行**
 逐个重建路径 → O(n·depth) 退化。**正确做法(Everything 真用的):**
 

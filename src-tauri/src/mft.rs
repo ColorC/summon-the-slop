@@ -20,11 +20,11 @@ use windows::Win32::Storage::FileSystem::{
 use windows::Win32::System::Ioctl::{FSCTL_ENUM_USN_DATA, MFT_ENUM_DATA_V0, USN_RECORD_V2};
 use windows::Win32::System::IO::DeviceIoControl;
 
-const ROOT_RECORD: u64 = 5; // NTFS root directory is MFT record #5
-const MASK: u64 = 0x0000_FFFF_FFFF_FFFF; // low 48 bits of an FRN = the MFT record number
+pub(crate) const ROOT_RECORD: u64 = 5; // NTFS root directory is MFT record #5
+pub(crate) const MASK: u64 = 0x0000_FFFF_FFFF_FFFF; // low 48 bits of an FRN = the MFT record number
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 
-fn open_volume(letter: char) -> Option<HANDLE> {
+pub(crate) fn open_volume(letter: char) -> Option<HANDLE> {
     let wide: Vec<u16> = format!("\\\\.\\{}:", letter)
         .encode_utf16()
         .chain(std::iter::once(0))
@@ -44,10 +44,10 @@ fn open_volume(letter: char) -> Option<HANDLE> {
 }
 
 // node = (name, parent_record, is_dir), keyed by this entry's MFT record number.
-type Nodes = HashMap<u64, (String, u64, bool)>;
+pub(crate) type Nodes = HashMap<u64, (String, u64, bool)>;
 
 // full path of a record by walking its parent chain up to the volume root.
-fn build_path(start: u64, nodes: &Nodes, letter: char) -> Option<String> {
+pub(crate) fn build_path(start: u64, nodes: &Nodes, letter: char) -> Option<String> {
     let mut names: Vec<&str> = Vec::new();
     let mut cur = start;
     let mut depth = 0;
@@ -99,7 +99,8 @@ pub fn enumerate_volume_nodes(letter: char) -> Option<Vec<(u64, String, u64, boo
 }
 
 // 扫描 MFT/USN, 构建 record → (name, parent_record, is_dir) 节点表。None = FSCTL 不支持/空。
-fn scan(handle: HANDLE) -> Option<Nodes> {
+// pub(crate): usn_tail 的常驻 daemon 复用它做初始全量扫描, 扫描结果整表常驻内存供增量更新。
+pub(crate) fn scan(handle: HANDLE) -> Option<Nodes> {
     let mut med = MFT_ENUM_DATA_V0 {
         StartFileReferenceNumber: 0,
         LowUsn: 0,

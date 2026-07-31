@@ -1,12 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "poof recorder",
+  "name": "overlay-shell recorder",
   "version": "0.1.0",
-  "description": "录制网页会话(rrweb 语义事件流)送进 poof,给 AI 回放/读。P2.",
+  "description": "录制网页会话(rrweb 语义事件流)送进 overlay-shell,给 AI 回放/读。P2.",
   "permissions": ["activeTab", "storage"],
   "host_permissions": ["<all_urls>"],
   "background": { "service_worker": "src/background.js" },
-  "action": { "default_popup": "popup.html", "default_title": "poof 录像" },
+  "action": { "default_popup": "popup.html", "default_title": "overlay-shell 录像" },
   "content_scripts": [
     {
       "matches": ["<all_urls>"],

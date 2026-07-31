@@ -1,4 +1,4 @@
-// poof 录像 — MV3 service worker. It owns ALL collector HTTP (a content-script fetch loses
+// overlay-shell 录像 — MV3 service worker. It owns ALL collector HTTP (a content-script fetch loses
 // the cross-origin privilege in MV3 — only the SW keeps host_permissions cross-origin access,
 // verified: SW fetch to 127.0.0.1 → 200, page fetch → blocked). The content script just
 // relays page-world rrweb batches here; the page world owns rrweb; the SW owns the wire.
@@ -36,9 +36,9 @@ const Rec = {
     }, 500);
   },
 };
-self.__poofRec = Rec; // exposed on the SW global for tests/introspection (not reachable from web pages)
+self.__overlayShellRec = Rec; // exposed on the SW global for tests/introspection (not reachable from web pages)
 
-// 统一捕获 · 通用 DOM 元素上报: content-script 报"光标下元素", SW 转发到 poof(content-script 不能跨源 fetch)。
+// 统一捕获 · 通用 DOM 元素上报: content-script 报"光标下元素", SW 转发到 overlay-shell(content-script 不能跨源 fetch)。
 let _cfg = null;
 function withCfg(cb) {
   if (_cfg) return cb(_cfg);

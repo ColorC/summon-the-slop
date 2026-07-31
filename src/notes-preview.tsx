@@ -22,8 +22,8 @@ const BLOB_STORE: Record<string, string> = ((window as any).__blobStore ??= {});
       const c = (args?.cmd as string) || "";
       if (c.includes("omni project list"))
         return Promise.resolve({ stdout: JSON.stringify({ projects: [
-          { id: "omnidashboard", name: "Omni Dashboard 驾驶舱", group: "omnicompany", roots: ["E:/WindowsWorkspace/omnicompany"] },
-          { id: "poof", name: "Poof 悬浮层", roots: ["E:/WindowsWorkspace/poof"] },
+          { id: "omnidashboard", name: "Omni Dashboard 驾驶舱", group: "omnicompany", roots: ["C:/projects/omnicompany"] },
+          { id: "overlay-shell", name: "overlay-shell", roots: ["C:/projects/overlay-shell"] },
         ] }), stderr: "", code: 0 });
       if (c.includes("omni plan list"))
         return Promise.resolve({ stdout: JSON.stringify([{ plan_id: "p1", title: "存储落地计划" }]), stderr: "", code: 0 });
@@ -43,7 +43,7 @@ const BLOB_STORE: Record<string, string> = ((window as any).__blobStore ??= {});
     }
     if (cmd === "read_file_b64") return Promise.resolve(PNG1);
     // 落盘存储替身
-    if (cmd === "notes_root") return Promise.resolve("E:/WindowsWorkspace/poof-notes");
+    if (cmd === "notes_root") return Promise.resolve("C:/overlay-note-store");
     if (cmd === "notes_doc_get") return Promise.resolve(DOC_STORE[args.id] ?? null);
     if (cmd === "notes_doc_put") {
       DOC_STORE[args.id] = args.b64;
@@ -130,6 +130,7 @@ import {
   mountNoteExpandButton,
   installFileTemplateSearch,
 } from "./editorConfig";
+import { installShapeTextStabilityGuard } from "./regions/shapeTextGuard";
 
 const THEME = signal("dark" as any);
 const DARK_THEME = OverrideThemeExtension({
@@ -162,6 +163,58 @@ const space = document.createElement("div");
 space.className = "notespace";
 space.appendChild(editor);
 app.appendChild(space);
+
+// Focused regression fixture for the WebView2 shape-text incident. It stays
+// opt-in so the normal visual preview remains unchanged.
+if (location.search.includes("shape-text-test")) {
+  installShapeTextStabilityGuard(editor, doc, collection);
+  const regressionStatus = document.createElement("output");
+  regressionStatus.id = "shape-text-regression-status";
+  regressionStatus.style.cssText =
+    "position:fixed;left:16px;top:52px;z-index:10000;padding:8px 10px;background:#111;color:#fff;border-radius:6px";
+  regressionStatus.textContent = "等待图形文字编辑器";
+  const regressionTrigger = document.createElement("button");
+  regressionTrigger.id = "shape-text-regression-trigger";
+  regressionTrigger.textContent = "写入图形文字回归样本";
+  regressionTrigger.style.cssText =
+    "position:fixed;left:16px;top:12px;z-index:10000;padding:8px 10px";
+  // Keep the real temporary editor mounted until the click handler emits the
+  // same composed input event produced by the virtual rich-text control.
+  regressionTrigger.addEventListener("pointerdown", event => event.stopPropagation());
+  regressionTrigger.addEventListener("click", () => {
+    const shapeEditor = editor.querySelector("edgeless-shape-text-editor") as any;
+    const inline = shapeEditor?.inlineEditor?.rootElement ?? shapeEditor?.querySelector?.(".inline-editor");
+    if (!shapeEditor || !inline) {
+      regressionStatus.textContent = "FAIL: 图形文字编辑器未挂载";
+      return;
+    }
+    const sample = "shape text survives input and blur";
+    inline.innerText = sample;
+    inline.dispatchEvent(new InputEvent("input", { bubbles: true, composed: true, data: sample }));
+    window.setTimeout(() => {
+      const actual = String(shapeEditor.element?.text?.toString?.() ?? "");
+      regressionStatus.textContent = actual === sample
+        ? `PASS: Y.Text=${actual}`
+        : `FAIL: Y.Text=${actual || "<empty>"}`;
+    }, 20);
+  });
+  document.body.append(regressionTrigger, regressionStatus);
+  const seedShape = (attempt = 0) => {
+    const root = editor.querySelector("affine-edgeless-root") as any;
+    if (!root?.service) {
+      if (attempt < 30) window.setTimeout(() => seedShape(attempt + 1), 50);
+      return;
+    }
+    const id = root.service.addElement("shape", {
+      xywh: "[560,80,440,260]",
+      shapeType: "rect",
+      fillColor: "--affine-palette-shape-yellow",
+      filled: true,
+    });
+    (window as any).__shapeTextTestId = id;
+  };
+  window.setTimeout(() => seedShape(), 50);
+}
 
 installChromeTranslator();
 installFileTemplateSearch();

@@ -3,7 +3,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Text } from "@blocksuite/store";
 import { getCollection } from "./regions/notesCollection";
-import { getCachedTitle } from "./regions/fileNotesStore";
+import { flushNotesStore, getCachedTitle } from "./regions/fileNotesStore";
+import { scheduleNoteExport } from "./regions/noteExport";
 import { isBoundSubDoc } from "./regions/boundRegistry";
 import { insertBlock, BLOCK_REGISTRY, type BlockKind } from "./regions/blockBus";
 
@@ -154,6 +155,8 @@ async function handleNoteOp(cmd: any): Promise<any> {
       const props: any = {};
       if (cmd.text) props.text = new Text(String(cmd.text));
       const id = doc.addBlock(cmd.flavour || "affine:paragraph", props, parent);
+      scheduleNoteExport(doc, c);
+      window.setTimeout(() => void flushNotesStore(), 500);
       return { ok: true, added: id, link: `poof-note://${note}/${id}` };
     }
     if (op === "update") {
@@ -173,12 +176,16 @@ async function handleNoteOp(cmd: any): Promise<any> {
         delete props.text;
       }
       if (Object.keys(props).length) doc.updateBlock(b, props);
+      scheduleNoteExport(doc, c);
+      window.setTimeout(() => void flushNotesStore(), 500);
       return { ok: true, updated: cmd.block };
     }
     if (op === "delete") {
       const b = findBlock(doc, cmd.block);
       if (!b) return { ok: false, error: `没找到元素 ${cmd.block}` };
       doc.deleteBlock(b);
+      scheduleNoteExport(doc, c);
+      window.setTimeout(() => void flushNotesStore(), 500);
       return { ok: true, deleted: cmd.block };
     }
     if (op === "add-block") {
@@ -195,6 +202,8 @@ async function handleNoteOp(cmd: any): Promise<any> {
         return { ok: false, error: String(e) };
       }
       if (!blockId) return { ok: false, error: "插入失败(读源/解析失败)" };
+      scheduleNoteExport(doc, c);
+      window.setTimeout(() => void flushNotesStore(), 500);
       return { ok: true, added: blockId, kind: k, link: `poof-note://${note}/${blockId}` };
     }
     if (op === "center") {

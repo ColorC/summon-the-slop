@@ -1,5 +1,5 @@
 //! 全量诊断快照 (Ctrl+Alt+D 触发) —— 给"反馈渠道"用: 一键截下 poof 当前所有可见界面 + 时间 + 关键状态,
-//! 落 ~/Pictures/poof-diagnostics/diag-<ns>/{screen.png, win-<label>.png, report.md}, 并把 report.md
+//! 落 ~/Pictures/overlay-shell-diagnostics/diag-<ns>/{screen.png, win-<label>.png, report.md}, 并把 report.md
 //! 的 [[链接]] 复制到剪贴板(发给 AI / 贴进笔记即用)。前端状态(笔记数/面板/JS 堆)由前端传 state_json。
 use image::codecs::png::{CompressionType, FilterType, PngEncoder};
 use image::{ExtendedColorType, ImageEncoder};
@@ -31,7 +31,7 @@ fn now_ns() -> u128 {
 fn diag_root() -> PathBuf {
     Path::new(&std::env::var("USERPROFILE").unwrap_or_default())
         .join("Pictures")
-        .join("poof-diagnostics")
+        .join("overlay-shell-diagnostics")
 }
 
 fn strip_unc(p: &Path) -> String {
@@ -78,7 +78,7 @@ fn rust_state_summary() -> String {
             })
             .unwrap_or(0)
     };
-    let notes = count_ext(Path::new("E:\\WindowsWorkspace\\poof-notes\\docs"), "ydoc");
+    let notes = count_ext(&crate::notesstore::root().join("docs"), "ydoc");
     let clips = std::fs::read_to_string(Path::new(&home).join(".poof").join("clipboard").join("index.jsonl"))
         .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
         .unwrap_or(0);
@@ -142,7 +142,7 @@ pub fn capture_diag(app: &tauri::AppHandle, state_json: String) -> Result<DiagRe
 
     // 3) 报告
     let mut md = String::new();
-    md.push_str("# 捕获 · poof 全量诊断快照\n\n");
+    md.push_str("# 捕获 · overlay-shell 全量诊断快照\n\n");
     md.push_str(&format!("- 时间: {when}\n"));
     md.push_str(&format!("- 主屏: {mw}×{mh}\n"));
     md.push_str(&format!("- 可见窗口截图: {}\n", win_imgs.len()));

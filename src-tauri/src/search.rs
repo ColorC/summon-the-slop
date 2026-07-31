@@ -31,6 +31,12 @@ static INDEX: Mutex<Option<Vec<Entry>>> = Mutex::new(None); // 旧引擎/合成�
 static ARENA: std::sync::RwLock<Option<arena::Index>> = std::sync::RwLock::new(None);
 static BUILDING: AtomicBool = AtomicBool::new(false);
 static WATCHING: AtomicBool = AtomicBool::new(false);
+// RENAME_OLD_NAME→RENAME_NEW_NAME 配对暂存(FIFO): Windows 后端把改名拆成 From/To 两个独立事件,
+// 各自只带一个 path, 要在这攒起来配对后走 rename_path 原地改行(见 apply_events)。万一 To 没等到
+// (批次边界切开/进程重启), 留在这也无妨 —— 不阻塞索引, 随下次全量重建自愈。
+static PENDING_RENAME_FROM: Mutex<Vec<String>> = Mutex::new(Vec::new());
+// apply_usn_batch 的节流落盘状态(见该函数注释) —— 每次 HTTP 请求是独立调用, 得存在 static 里跨调用记。
+static LAST_USN_PERSIST: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 
 // de-dup keeping order; drop a root nested under an earlier one; keep only existing.
 fn dedup_existing(v: Vec<PathBuf>) -> Vec<PathBuf> {
@@ -50,7 +56,7 @@ fn dedup_existing(v: Vec<PathBuf>) -> Vec<PathBuf> {
 // All FIXED local drives (C:, D:, E:, …) — whole-disk scope, like Everything/Listary. We do
 // NOT avoid any user directory. (Removable/USB/network drives skipped: walking them is slow.)
 #[cfg(windows)]
-fn fixed_drive_roots() -> Vec<PathBuf> {
+pub(crate) fn fixed_drive_roots() -> Vec<PathBuf> {
     use windows::core::PCWSTR;
     use windows::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
     const DRIVE_FIXED: u32 = 3;
@@ -87,7 +93,7 @@ fn index_roots() -> Vec<PathBuf> {
             v.push(PathBuf::from(p)); // fallback if drive enumeration fails
         }
     }
-    if let Ok(s) = std::fs::read_to_string(std::env::temp_dir().join("poof-roots.txt")) {
+    if let Ok(s) = std::fs::read_to_string(std::env::temp_dir().join("overlay-shell-roots.txt")) {
         for line in s.lines() {
             let t = line.trim();
             if !t.is_empty() && !t.starts_with('#') {
@@ -109,8 +115,17 @@ fn watch_roots() -> Vec<PathBuf> {
             v.push(base.join(sub));
         }
     }
-    for p in ["E:/WindowsWorkspace", "D:/P4/main/AIWorkSpace", "D:/P4/main/Excel"] {
-        v.push(PathBuf::from(p));
+    // Extra live-watch roots: opt-in via %OVERLAY_SEARCH_ROOTS% (';' separated), e.g.
+    // "D:/work/project-a;E:/notes". Default: none — the USERPROFILE dirs above are the
+    // out-of-box set. (Whole-index additions can also be listed one per line in
+    // %TEMP%/overlay-shell-roots.txt, honored by index_roots.)
+    if let Ok(extra) = std::env::var("OVERLAY_SEARCH_ROOTS") {
+        for p in extra.split(';') {
+            let t = p.trim();
+            if !t.is_empty() {
+                v.push(PathBuf::from(t));
+            }
+        }
     }
     dedup_existing(v)
 }
@@ -150,7 +165,7 @@ fn usage_file() -> PathBuf {
     index_dir().join("usage.json")
 }
 fn old_usage_file() -> PathBuf {
-    std::env::temp_dir().join("poof-usage.json")
+    std::env::temp_dir().join("overlay-shell-usage.json")
 }
 
 // in-process cache. search() clones the Arc (no IO); bump/override rebuild a fresh Arc + swap.
@@ -594,7 +609,7 @@ fn build_index() -> Vec<Entry> {
     // to open \\.\<vol>, which we PROVED non-elevated poof never has (CreateFileW→ACCESS_DENIED, the
     // FSCTL→ERROR_INVALID_FUNCTION). So in practice every drive falls to the throttled walk; MFT stays a
     // non-fatal fast-path for when poof happens to run elevated. The walk is now UNCAPPED (was 2,000,000,
-    // which truncated D: mid-way through the P4 workspace and dropped D:\P4\main\AIWorkSpace entirely) and
+    // which truncated large drives mid-walk and dropped deep work directories entirely) and
     // deeper (40 vs 18). Bounded by actual disk contents (+ is_noise pruning); slower one-time cold build,
     // then persisted + watched. The latency this buys is paid back later by an index-layout rewrite, NOT
     // by dropping files. Mature precedent: Listary/Alfred/fzf index via ordinary walks; Everything alone
@@ -648,12 +663,12 @@ fn build_index() -> Vec<Entry> {
 }
 
 // ---- persisted index (instant warm start) ----
-// %LOCALAPPDATA%\poof\index.tsv (NOT %TEMP%, which gets cleared).
+// %LOCALAPPDATA%\overlay-shell\index.tsv (NOT %TEMP%, which gets cleared).
 fn index_dir() -> PathBuf {
     std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
-        .join("poof")
+        .join("overlay-shell")
 }
 fn index_file() -> PathBuf {
     index_dir().join("index.tsv")
@@ -687,6 +702,24 @@ fn load_persisted() -> Option<Vec<Entry>> {
         Some(v)
     }
 }
+// 落盘前看一眼磁盘上 index.bin 现有的行数(只读 12 字节头, 不 mmap 整个几百 MB 的文件)。活更新的
+// 节流落盘(notify 白名单 / usn 全盘)和"后台一次性全量重建子进程刚写完更全索引"两条线各管各的进程/
+// 线程, 没有互斥 —— 内存里还没来得及 reload_persisted() 换成新索引前, 若这时活更新恰好触发落盘,
+// 会用行数更少的旧内存态盖掉刚写好的更全文件。落盘前只在"不比磁盘上现有的更小"时才写, 这场赛跑就
+// 只可能"更全的赢", 不会退步(2026-07-07 usn daemon 联调时实测复现过: 提权全量刚写完 1160 万行,
+// 紧接着活更新一落盘就被打回 497 万行的遍历兜底)。
+fn disk_index_len() -> u32 {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(arena_file()) else {
+        return 0;
+    };
+    let mut head = [0u8; 12];
+    if f.read_exact(&mut head).is_err() || &head[..8] != b"POOFIDX4" {
+        return 0;
+    }
+    u32::from_le_bytes(head[8..12].try_into().unwrap_or([0; 4]))
+}
+
 fn persist(idx: &[Entry]) {
     let dir = index_dir();
     let _ = std::fs::create_dir_all(&dir);
@@ -756,6 +789,10 @@ pub fn warm_start() {
     }
     start_watchers();
     start_periodic_refresh();
+    // 全盘实时新鲜度: 常驻 USN journal tail daemon(白名单外的地方靠它秒级新鲜, 而不是等 2 小时一次
+    // 的全量重建)。提权不可用/被拦截时它自己不试, 不影响上面两条既有兜底。
+    #[cfg(windows)]
+    crate::ensure_usn_daemon();
 }
 
 // 当前活跃索引的行数(0 = 还没载入)。用于判断"是否已有全量索引"。
@@ -795,6 +832,41 @@ fn kind_for(name: &str, is_dir: bool) -> &'static str {
     }
 }
 
+// insert_path/rename_path 用的数字 kind 字节(0=file/1=exe/2=folder) —— apply_events 里手写了两遍,
+// apply_usn_batch 复用这份, 不再三写一遍。
+fn kind_byte_for(name: &str, is_dir: bool) -> u8 {
+    if is_dir {
+        return 2;
+    }
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".exe") || lower.ends_with(".bat") || lower.ends_with(".cmd") || lower.ends_with(".ps1") {
+        1
+    } else {
+        0
+    }
+}
+
+// path 的任一分量落在 is_noise 名单里(node_modules/.git/target…), 或本体自己的数据/诊断文件
+// (index.bin 落盘、overlay-shell-reindex.log 这类 ilog 写得很勤的文件)。usn_tail 的常驻 daemon
+// 不挑, 把全盘变更都转发过来 —— 噪声过滤统一在这收口(和 apply_events 对 watch_roots 的过滤同一份
+// 名单)。不挡自己的落盘会自己喂自己: index.bin 每次 save 都在 C 盘产生变更事件, 事件又触发下一次
+// save, 2026-07-07 调试删除 bug 时在 usn 推送日志里实锤看到(一批里一堆自家 index.bin/log 的
+// upsert/delete/rename, 混着真实测试文件)。
+fn path_is_noise(path: &str) -> bool {
+    let p = std::path::Path::new(path);
+    if p.starts_with(index_dir()) {
+        return true;
+    }
+    if p.file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.starts_with("overlay-shell-"))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    p.components().any(|c| c.as_os_str().to_str().map(is_noise).unwrap_or(false))
+}
+
 // apply a coalesced batch of filesystem events to the in-memory index. Returns whether
 // anything changed. Noise paths (node_modules/.git/…) are ignored, so a `git checkout` or
 // `npm install` never touches the index.
@@ -815,6 +887,72 @@ fn apply_events(batch: Vec<Result<notify::Event, notify::Error>>) -> bool {
                 Ok(e) => e,
                 Err(_) => continue,
             };
+            // rename 配对: 走 rename_path 原地改行, 而不是当独立的 create/delete 处理 —— 后者会把
+            // 子项遗弃在被墓碑的旧行下, 拼出再也够不到的幽灵路径(2026-07-07 实测复现, 见 rename_path 注释)。
+            match &ev.kind {
+                notify::EventKind::Modify(notify::event::ModifyKind::Name(
+                    notify::event::RenameMode::From,
+                )) => {
+                    if let Some(p) = ev.paths.into_iter().next() {
+                        if !p.components().any(|c| c.as_os_str().to_str().map(is_noise).unwrap_or(false)) {
+                            PENDING_RENAME_FROM.lock().unwrap().push(p.to_string_lossy().to_string());
+                        }
+                    }
+                    continue;
+                }
+                notify::EventKind::Modify(notify::event::ModifyKind::Name(
+                    notify::event::RenameMode::To,
+                )) => {
+                    if let Some(p) = ev.paths.into_iter().next() {
+                        if p.components().any(|c| c.as_os_str().to_str().map(is_noise).unwrap_or(false)) {
+                            continue;
+                        }
+                        let new_ps = p.to_string_lossy().to_string();
+                        let old_ps = {
+                            let mut q = PENDING_RENAME_FROM.lock().unwrap();
+                            if q.is_empty() { None } else { Some(q.remove(0)) }
+                        };
+                        if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                            let py = pinyin_of(name);
+                            let renamed = old_ps.as_deref().and_then(|old| idx.rename_path(old, &new_ps, &py));
+                            if renamed.is_some() {
+                                changed = true;
+                                if let Some(old) = old_ps {
+                                    deleted.push(old);
+                                }
+                                created.push(new_ps);
+                            } else {
+                                // 没配对上旧行(To 先于 From 到达/旧行本就在索引外)→ 退化成普通新建 + 单独删旧。
+                                let is_dir = p.is_dir();
+                                let lower = name.to_ascii_lowercase();
+                                let kb: u8 = if is_dir {
+                                    2
+                                } else if lower.ends_with(".exe")
+                                    || lower.ends_with(".bat")
+                                    || lower.ends_with(".cmd")
+                                    || lower.ends_with(".ps1")
+                                {
+                                    1
+                                } else {
+                                    0
+                                };
+                                if idx.insert_path(&new_ps, kb, &py).is_some() {
+                                    changed = true;
+                                    created.push(new_ps);
+                                }
+                                if let Some(old) = old_ps {
+                                    if idx.remove_path(&old) {
+                                        changed = true;
+                                    }
+                                    deleted.push(old);
+                                }
+                            }
+                        }
+                    }
+                    continue;
+                }
+                _ => {}
+            }
             for path in ev.paths {
                 if path
                     .components()
@@ -861,6 +999,97 @@ fn apply_events(batch: Vec<Result<notify::Event, notify::Error>>) -> bool {
     changed
 }
 
+// usn_tail.rs(常驻提权子进程)经 http_rec.rs 的 /usn/batch 转发来的一条增量变更。子进程自己配对
+// USN 的 RENAME_OLD_NAME/NEW_NAME(它持有常驻 FRN 表, 能直接算出改名前后的完整路径), 这里只管落地。
+#[derive(serde::Deserialize)]
+#[serde(tag = "op", rename_all = "lowercase")]
+pub enum UsnOp {
+    Upsert { path: String, dir: bool },
+    Delete { path: String },
+    Rename { old: String, new: String, dir: bool },
+}
+
+// 应用 usn_tail daemon 推来的一批变更 —— 语义和 apply_events 一致(同一套 is_noise 过滤、同一个
+// rename_path 原地改行、同样的节流落盘), 只是输入已经是子进程侧解析好的路径, 不是 notify::Event
+// (那是本进程内 watch_roots 白名单专用的, 两边各管各的输入源, 最终都只落进同一个 ARENA)。
+pub fn apply_usn_batch(ops: Vec<UsnOp>) -> bool {
+    let mut changed = false;
+    let mut deleted: Vec<String> = Vec::new();
+    let mut created: Vec<String> = Vec::new();
+    {
+        let mut guard = ARENA.write().unwrap();
+        let idx = match guard.as_mut() {
+            Some(i) => i,
+            None => return false,
+        };
+        for op in ops {
+            match op {
+                UsnOp::Upsert { path, dir } => {
+                    if path_is_noise(&path) {
+                        continue;
+                    }
+                    if let Some(name) = std::path::Path::new(&path).file_name().and_then(|n| n.to_str()) {
+                        let kb = kind_byte_for(name, dir);
+                        if idx.insert_path(&path, kb, &pinyin_of(name)).is_some() {
+                            changed = true;
+                            created.push(path);
+                        }
+                    }
+                }
+                UsnOp::Delete { path } => {
+                    if path_is_noise(&path) {
+                        continue;
+                    }
+                    if idx.remove_path(&path) {
+                        changed = true;
+                    }
+                    deleted.push(path);
+                }
+                UsnOp::Rename { old, new, dir } => {
+                    if path_is_noise(&old) && path_is_noise(&new) {
+                        continue;
+                    }
+                    if let Some(name) = std::path::Path::new(&new).file_name().and_then(|n| n.to_str()) {
+                        let py = pinyin_of(name);
+                        if idx.rename_path(&old, &new, &py).is_some() {
+                            changed = true;
+                            deleted.push(old);
+                            created.push(new);
+                        } else {
+                            let kb = kind_byte_for(name, dir);
+                            if idx.insert_path(&new, kb, &py).is_some() {
+                                changed = true;
+                                created.push(new.clone());
+                            }
+                            if idx.remove_path(&old) {
+                                changed = true;
+                            }
+                            deleted.push(old);
+                        }
+                    }
+                }
+            }
+        }
+        // 节流落盘(和 start_watchers 同一个 4s 阈值): /usn/batch 可能几百毫秒打一次, index.bin 有
+        // ~500MB, 每批都落盘会把磁盘 IO 打爆。跨调用的节流状态放模块级 static(每次 HTTP 请求是独立
+        // 调用, 不像 start_watchers 有常驻循环变量)。
+        if changed {
+            let mut lp = LAST_USN_PERSIST.lock().unwrap();
+            let due = lp
+                .map(|t: std::time::Instant| t.elapsed() > std::time::Duration::from_secs(4))
+                .unwrap_or(true);
+            if due && idx.len() as u32 >= disk_index_len() {
+                let _ = idx.save(&arena_file());
+                *lp = Some(std::time::Instant::now());
+            }
+        }
+    }
+    if !deleted.is_empty() && crate::tags::any_tagged(&deleted) {
+        crate::tags::reconcile(&deleted, &created);
+    }
+    changed
+}
+
 // watch every root for create/delete/rename and keep the index live — non-admin
 // (ReadDirectoryChangesW), no child process, EDR-safe. Coalesces bursts + throttles persist.
 pub fn start_watchers() {
@@ -898,7 +1127,9 @@ pub fn start_watchers() {
             let changed = apply_events(batch);
             if changed && last_persist.elapsed() > Duration::from_secs(4) {
                 if let Some(idx) = ARENA.read().unwrap().as_ref() {
-                    let _ = idx.save(&arena_file());
+                    if idx.len() as u32 >= disk_index_len() {
+                        let _ = idx.save(&arena_file());
+                    }
                 }
                 last_persist = Instant::now();
             }
@@ -1161,7 +1392,7 @@ fn term_quality(term: &[u8], nb: &[u8], pyb: &[u8], pb: &[u8]) -> Option<(i64, i
 }
 
 // 多词 AND 匹配(Everything 语义): 每个 term 必须各自「连续子串」命中(name|pinyin|path 取最优档),
-// 全中才返回 → "aiworkspace app" 命中 D:\P4\main\AIWorkSpace\app, 但无关应用不会被子序列误配。
+// 全中才返回 → "notes web" 命中 C:\Projects\notes\web, 但无关应用不会被子序列误配。
 // combine: pfx 取各 term 最小档(最弱词定档), mn 取均值。单词(!multi)直通旧 match_quality, 逐字节不变
 // (护住已上线的应用优先 + 扩展名搜索)。
 #[inline]
@@ -1277,12 +1508,26 @@ fn parse_query(q: &str) -> (String, Vec<String>, Vec<String>) {
     let mut tags: Vec<String> = Vec::new();
     let mut terms: Vec<String> = Vec::new();
     let mut text = String::new();
+    let qb = q.trim_start().as_bytes();
+    let absolute_windows_path = qb.len() >= 3
+        && qb[0].is_ascii_alphabetic()
+        && qb[1] == b':'
+        && matches!(qb[2], b'\\' | b'/');
+    let mut first_token = true;
     // 分隔符: 空格 + 反斜杠/正斜杠。后者让"文件夹\文件"这类路径片段查询拆成多词, 走同一套祖先匹配
     // (如 aiworkspace app)—— 与 Listary 一致。文件名不含 \ 或 /, 拆开无损。
     for tok in q.split(|c: char| c.is_whitespace() || c == '\\' || c == '/') {
         if tok.is_empty() {
             continue;
         }
+        // arena 把盘符存成每行的 drive 列, 不把 "E:" 建成可匹配的祖先名。完整绝对路径若保留
+        // 首个 "E:" term, 多词 AND 会要求它命中某个路径分量, 从而让明明已索引的精确路径得到 0 结果。
+        // 只在查询确实以 `<盘符>:\` / `<盘符>:/` 开头时丢掉这个结构性前缀; 普通含冒号文本不变。
+        if first_token && absolute_windows_path {
+            first_token = false;
+            continue;
+        }
+        first_token = false;
         if let Some(t) = tok.strip_prefix('#') {
             if !t.is_empty() {
                 tags.push(t.to_lowercase());
@@ -1544,15 +1789,15 @@ pub fn reveal_path(path: String) -> Result<(), String> {
     }
 }
 
-// 重建日志: 同时打 stderr 和 %TEMP%\poof-reindex.log —— 提权运行(GUI 子系统, 无控制台)看不到 stderr,
+// 重建日志: 同时打 stderr 和 %TEMP%\overlay-shell-reindex.log —— 提权运行(GUI 子系统, 无控制台)看不到 stderr,
 // 靠这个文件确认每盘走的是 MFT 还是遍历, 以及是否真出全量。
-fn ilog(msg: &str) {
+pub(crate) fn ilog(msg: &str) {
     use std::io::Write;
     // 文件先写(GUI 子系统无控制台 / 父进程死后 stdout 管道断裂时仍可靠)。
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(std::env::temp_dir().join("poof-reindex.log"))
+        .open(std::env::temp_dir().join("overlay-shell-reindex.log"))
     {
         let _ = writeln!(f, "{} {}", now_secs(), msg);
     }
@@ -1560,7 +1805,7 @@ fn ilog(msg: &str) {
     let _ = writeln!(std::io::stderr(), "{msg}");
 }
 
-/// 全量重建索引并持久化后退出。跑: poof.exe --reindex(普通用户=遍历全盘)或「以管理员运行」(走 MFT,
+/// 全量重建索引并持久化后退出。跑: overlay-shell.exe --reindex(普通用户=遍历全盘)或「以管理员运行」(走 MFT,
 /// Everything 级、秒出全量)。build_index 会逐盘打印用的是 MFT 还是遍历 —— 据此判断本机提权后 MFT 是否
 /// 真能读卷(公司 EDR 可能连管理员都拦)。普通 poof 之后 load_persisted 直接吃这份新索引。
 pub fn reindex_cli() {
@@ -1579,7 +1824,7 @@ pub fn reindex_cli() {
     println!("{n}");
 }
 
-/// 逐字段内存占用报告(poof.exe --mem)。载入持久化 arena → 打印各结构 MB。
+/// 逐字段内存占用报告(overlay-shell.exe --mem)。载入持久化 arena → 打印各结构 MB。
 pub fn mem_cli() {
     match arena::Index::load(&arena_file()) {
         Some(a) => println!("{}", a.mem_report()),
@@ -1595,7 +1840,7 @@ pub fn reload_persisted() -> Option<usize> {
     Some(n)
 }
 
-/// 命令行搜索探针: poof.exe --search "<query>" → 载入持久化索引, 跑真·search() 路径, 打印前 ~20 名
+/// 命令行搜索探针: overlay-shell.exe --search "<query>" → 载入持久化索引, 跑真·search() 路径, 打印前 ~20 名
 /// 命中为 `kind:name :: path`(每行一条), 供无头的"用户视角"基准 —— 用纯英文查询常见文件/应用/文件夹,
 /// 直接看它们落在第几位。与 --bench-search 同款载入(真应用二进制内跑, 原生 DLL 正常加载)。
 pub fn run_search_cli(query: &str) {
@@ -1613,7 +1858,7 @@ pub fn run_search_cli(query: &str) {
     }
 }
 
-/// 对比验证: poof.exe --arena-verify → 用持久化索引建 arena, 对一批查询同时跑现引擎与 arena 引擎,
+/// 对比验证: overlay-shell.exe --arena-verify → 用持久化索引建 arena, 对一批查询同时跑现引擎与 arena 引擎,
 /// 比对 top 结果一致性(PARITY)并各自计时。证明 arena 引擎排序逐位等价、且更快, 再切换。
 #[cfg(windows)]
 pub fn arena_verify() {
@@ -1697,7 +1942,7 @@ pub fn arena_verify() {
     }
 }
 
-/// 架构验证: poof.exe --bench-arena <N> → 合成 N 行的「紧凑名字 arena」(Everything 同款: 名字连续存进
+/// 架构验证: overlay-shell.exe --bench-arena <N> → 合成 N 行的「紧凑名字 arena」(Everything 同款: 名字连续存进
 /// 一个 Vec<u8> + 偏移/长度列), 用 memchr SIMD 子串 + rayon 并行 + top-K 堆扫一遍并计时。用来在动手重写
 /// 整个引擎之前, 真跑证明 1100 万行能不能 <100ms —— 即"去掉每行 4 个堆字符串、只扫名字"到底扛不扛得住。
 #[cfg(windows)]
@@ -1790,7 +2035,7 @@ pub fn bench_arena(n: usize) {
     );
 }
 
-// 逐字拼音输入的真实模拟基准。跑: poof.exe --bench-search(由 lib.rs run() 开头的参数检查触发,
+// 逐字拼音输入的真实模拟基准。跑: overlay-shell.exe --bench-search(由 lib.rs run() 开头的参数检查触发,
 // 在真·应用二进制里跑 → 原生 DLL 正常加载; cargo test 的独立测试 exe 会 STATUS_ENTRYPOINT_NOT_FOUND)。
 pub fn bench_search() {
     use std::io::Write;
@@ -2102,6 +2347,16 @@ pub mod arena {
     fn un_u16(b: &[u8]) -> Vec<u16> {
         b.chunks_exact(2).map(|c| u16::from_le_bytes(c.try_into().unwrap())).collect()
     }
+    fn to_le_u64(v: &[u64]) -> Vec<u8> {
+        let mut b = Vec::with_capacity(v.len() * 8);
+        for &x in v {
+            b.extend_from_slice(&x.to_le_bytes());
+        }
+        b
+    }
+    fn un_u64(b: &[u8]) -> Vec<u64> {
+        b.chunks_exact(8).map(|c| u64::from_le_bytes(c.try_into().unwrap())).collect()
+    }
 
     pub struct Index {
         lname: Vec<u8>, // 全部名字拼接, ASCII 小写(匹配用)
@@ -2264,10 +2519,60 @@ pub mod arena {
             }
         }
 
-        // 追加一行, 返回行号。depth 当场由父算出(父总在子之前建好)。
-        fn push_row(&mut self, name: &str, parent: u32, drive: u8, kind: u8, py: &str) -> u32 {
-            let row = self.n;
-            let off = self.lname.len() as u32; // 偏移进 lname(显示名由 lname + case_bits 重建, 不再存原名)
+        // 活更新: 改名/移动 —— 原地改这一行的名字(+父, 如果目录也变了), 行号不变、不删行不建新行。
+        // 子项的 parent 字段仍指着这同一行号, path_of() 靠父指针 + disp_at 现算路径, 于是整棵子树
+        // 自动跟着换到新名字/新位置, 不必逐个子项发事件。旧版靠 remove(old)+insert(new) 只处理了被
+        // 改名的这一层, 子项还挂在被墓碑的旧行下拼出再也够不到的幽灵路径——2026-07-07 用改名带子
+        // 文件的目录实测复现过这个 bug(白名单实时监听 apply_events 和这里共用的正是这个原因)。
+        // 找不到旧行(比如从没见过这条路径)返回 None, 调用方退化为 insert_path(new)。
+        pub fn rename_path(&mut self, old_path: &str, new_path: &str, py: &str) -> Option<u32> {
+            let row = self.resolve(old_path)?;
+            let (new_drive, new_comps) = split_path(new_path)?;
+            let new_name = *new_comps.last()?;
+            let new_parent = if new_comps.len() > 1 {
+                let parent_path = format!(
+                    "{}:\\{}",
+                    new_drive as char,
+                    new_comps[..new_comps.len() - 1].join("\\")
+                );
+                self.insert_path(&parent_path, KIND_FOLDER, "")?
+            } else {
+                ROOT
+            };
+            // 旧 by_parent_name key 摘掉(此刻 lname_at(row) 还是旧名, 摘完才能换字节)。
+            let old_pkey = if self.parent[row as usize] == ROOT {
+                root_key(self.drive[row as usize])
+            } else {
+                self.parent[row as usize]
+            };
+            self.by_parent_name.remove(&(old_pkey, fnv32(self.lname_at(row))));
+            // 换名字节(旧字节留在 lname 里当死数据不回收, 11M 规模下可忽略, 全量重建会收拢)。
+            let (off, len) = self.write_name(new_name);
+            self.name_off[row as usize] = off;
+            self.name_len[row as usize] = len;
+            if !py.is_empty() {
+                let pyoff = self.py.len() as u32;
+                self.py.extend_from_slice(py.as_bytes());
+                self.py_off[row as usize] = pyoff;
+                self.py_len[row as usize] = py.len().min(u16::MAX as usize) as u16;
+            }
+            self.parent[row as usize] = new_parent;
+            self.drive[row as usize] = new_drive;
+            self.depth[row as usize] = if new_parent == ROOT {
+                1
+            } else {
+                self.depth[new_parent as usize].saturating_add(1)
+            };
+            let new_pkey = if new_parent == ROOT { root_key(new_drive) } else { new_parent };
+            self.by_parent_name.insert((new_pkey, fnv32(new_name.as_bytes())), row);
+            self.tomb_set(row, false);
+            Some(row)
+        }
+
+        // name 的小写字节追加进 lname 尾部 + 记录大写位图, 返回 (offset, len)。push_row 与
+        // rename_path(原地换名字)共用, 后者只需要换名字节 + 改 name_off/name_len, 不必重建整行。
+        fn write_name(&mut self, name: &str) -> (u32, u16) {
+            let off = self.lname.len() as u32;
             let nb = name.as_bytes();
             for (j, &b) in nb.iter().enumerate() {
                 self.lname.push(b.to_ascii_lowercase());
@@ -2281,12 +2586,19 @@ pub mod arena {
                 }
             }
             // 保持 case_bits 覆盖到 lname 末尾(字节对齐), 即便本名无大写。
-            let need = (self.lname.len()).div_ceil(8);
+            let need = self.lname.len().div_ceil(8);
             if self.case_bits.len() < need {
                 self.case_bits.resize(need, 0);
             }
+            (off, nb.len().min(u16::MAX as usize) as u16)
+        }
+
+        // 追加一行, 返回行号。depth 当场由父算出(父总在子之前建好)。
+        fn push_row(&mut self, name: &str, parent: u32, drive: u8, kind: u8, py: &str) -> u32 {
+            let row = self.n;
+            let (off, len) = self.write_name(name);
             self.name_off.push(off);
-            self.name_len.push(nb.len().min(u16::MAX as usize) as u16);
+            self.name_len.push(len);
             let pyoff = self.py.len() as u32;
             self.py.extend_from_slice(py.as_bytes());
             self.py_off.push(pyoff);
@@ -2359,7 +2671,7 @@ pub mod arena {
         }
 
         // 把一批 (kind,name,path,py) 以路径 interning 方式并入(补全祖先目录)。intern 跨调用持续, 用于
-        // 遍历盘 + poof-roots.txt 子根 + 去重。
+        // 遍历盘 + overlay-shell-roots.txt 子根 + 去重。
         fn add_entries(&mut self, interned: &mut HashMap<String, u32>, entries: &[Entry]) {
             let mut key = String::with_capacity(96);
             for (kind, name, path, py) in entries {
@@ -2438,7 +2750,10 @@ pub mod arena {
             let tmp = path.with_extension("bin.tmp");
             let f = std::fs::File::create(&tmp)?;
             let mut w = std::io::BufWriter::new(f);
-            w.write_all(b"POOFIDX3")?; // magic+version (v3: disp 原名拷贝 → case_bits 大写位图)
+            w.write_all(b"POOFIDX4")?; // magic+version (v4: 落 tomb 位图 —— v3 从不存墓碑, 每次
+                                        // save+load 就把所有活更新删除悄悄撤销, 2026-07-07 用 usn
+                                        // daemon 删除测试实锤复现: 内存里 remove_path 明明成功, 存盘
+                                        // 重载后又活过来。旧 v3 文件读不出 magic, 触发一次全量重建。
             w.write_all(&self.n.to_le_bytes())?;
             let blob = |w: &mut std::io::BufWriter<std::fs::File>, b: &[u8]| -> std::io::Result<()> {
                 w.write_all(&(b.len() as u64).to_le_bytes())?;
@@ -2455,6 +2770,7 @@ pub mod arena {
             blob(&mut w, &self.flags)?;
             blob(&mut w, &self.depth)?;
             blob(&mut w, &self.drive)?;
+            blob(&mut w, &to_le_u64(&self.tomb))?;
             w.flush()?;
             drop(w);
             std::fs::rename(&tmp, path)
@@ -2464,8 +2780,8 @@ pub mod arena {
             let file = std::fs::File::open(path).ok()?;
             let mmap = unsafe { memmap2::Mmap::map(&file).ok()? };
             let bytes: &[u8] = &mmap;
-            if bytes.len() < 12 || &bytes[..8] != b"POOFIDX3" {
-                return None; // 旧版(含 disp 全拷)不兼容 → 返回 None → 触发一次重建(自动全量会补上)
+            if bytes.len() < 12 || &bytes[..8] != b"POOFIDX4" {
+                return None; // 旧版(v3 及更早, 不含 tomb 位图/disp 全拷)不兼容 → 触发一次重建(自动全量会补上)
             }
             let n = u32::from_le_bytes(bytes[8..12].try_into().ok()?);
             let mut p = 12usize;
@@ -2494,6 +2810,7 @@ pub mod arena {
             let flags = take(0)?.to_vec();
             let depth = take(0)?.to_vec();
             let drive = take(0)?.to_vec();
+            let tomb = un_u64(take(0)?);
             if name_off.len() != n as usize {
                 return None;
             }
@@ -2510,7 +2827,7 @@ pub mod arena {
                 depth,
                 drive,
                 by_name: Vec::new(),
-                tomb: Vec::new(),
+                tomb,
                 by_parent_name: HashMap::new(),
                 n,
             };
@@ -2602,7 +2919,7 @@ pub mod arena {
             .collect()
     }
 
-    // 生产全量构建: MFT 可用的盘**直建父指针树**(零路径字符串, 省 11M 构建期瞬时内存), 其余盘 + poof-roots
+    // 生产全量构建: MFT 可用的盘**直建父指针树**(零路径字符串, 省 11M 构建期瞬时内存), 其余盘 + overlay-shell-roots
     // 子根走遍历 interning, 最后应用后置(开始菜单 .lnk → kind app)。warm_index/reindex 走这条路。
     pub fn build_full() -> Index {
         let mut idx = Index::with_capacity(4_000_000);
@@ -2971,7 +3288,7 @@ pub mod arena {
 
 #[cfg(test)]
 mod tests {
-    use super::fuse_score;
+    use super::{arena, fuse_score, parse_query, Entry};
 
     // 期望值手算(不调用 fuse_score 自己生成), 与旧内联链 `s = s * X / 1000` 逐乘逐除同序位对位。
 
@@ -3005,5 +3322,45 @@ mod tests {
     fn fuse_score_boundary_high_values() {
         // 边界大值组合(use_fp=2000 频率封顶, pin_fp=4000 置顶标签阈值)。
         assert_eq!(fuse_score(1000, 1000, 2000, 1300, 1300, 1000, 1150, 4000), 15548);
+    }
+
+    #[test]
+    fn parse_query_drops_absolute_windows_drive_designator() {
+        let (text, terms, tags) = parse_query(
+            r"C:\Projects\demo-app\data\reviewstage\files\file_317d2d1991364cde.html",
+        );
+        assert_eq!(
+            terms,
+            [
+                "projects",
+                "demo-app",
+                "data",
+                "reviewstage",
+                "files",
+                "file_317d2d1991364cde.html",
+            ]
+        );
+        assert_eq!(
+            text,
+            "Projects demo-app data reviewstage files file_317d2d1991364cde.html"
+        );
+        assert!(tags.is_empty());
+    }
+
+    #[test]
+    fn arena_search_finds_an_indexed_file_by_full_windows_path() {
+        let path =
+            r"C:\Projects\demo-app\data\reviewstage\files\file_317d2d1991364cde.html";
+        let entries: Vec<Entry> = vec![(
+            "file".into(),
+            "file_317d2d1991364cde.html".into(),
+            path.into(),
+            String::new(),
+        )];
+        let idx = arena::build(&entries);
+        arena::clear_narrow_cache();
+        let hits = arena::search(&idx, path.into(), 20);
+        arena::clear_narrow_cache();
+        assert!(hits.iter().any(|hit| hit.path.eq_ignore_ascii_case(path)));
     }
 }

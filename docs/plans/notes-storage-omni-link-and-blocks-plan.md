@@ -9,7 +9,7 @@
   - 文档: `IndexedDBDocSource("poof-notes")`(notesCollection.ts)
   - blob(图片/PDF 字节): collection.blobSync 默认 IndexedDB
   - 版本历史: 自建 IndexedDB(noteVersions.ts)
-  - 物理落点: `C:\Users\lilithgames\AppData\Local\com.lilithgames.poof\EBWebView\Default\IndexedDB\`(WebView2 的 LevelDB, 不透明, 不能直接读/搬/备份)。→ 这就是"保存路径在哪儿、能不能搬到浅位置"的答案: 现在没有干净文件路径。
+  - 物理落点: `C:\Users\<user>\AppData\Local\com.example.overlayshell\EBWebView\Default\IndexedDB\`(WebView2 的 LevelDB, 不透明, 不能直接读/搬/备份)。→ 这就是"保存路径在哪儿、能不能搬到浅位置"的答案: 现在没有干净文件路径。
 - **markdown**: BlockSuite **没有"专门的 markdown 块"**。它的段落/列表本身就是富文本模型, markdown 是三条通道: (a) 打字快捷(`# `、`- `、`1. `+空格, 默认开)(b) 导入/导出适配器 (c) 粘贴。**粘贴纯文本走 MixTextAdapter, 不做 markdown→块转换** → 这就是"复制 1. 2. 序号没反应"的根因。
 - **文件块已落地(本轮)**: 文本→可编辑 `affine:code`+写回源文件; 图片→`affine:image`; PDF→`affine:attachment` 内嵌预览; 其它→附件卡; md 源码⇄渲染预览切换; 系统拖文件进笔记直接插入。
 
@@ -17,7 +17,7 @@
 
 ## 工作流一 · 存储落地到 WindowsWorkspace 浅路径
 
-**目标**: 笔记/blob/版本从 AppData 的不透明 IndexedDB, 迁到 `E:\WindowsWorkspace\` 下一个浅、可见、可备份(可 git/可同步/可被 omni 与 CLI 直接读)的位置。
+**目标**: 笔记/blob/版本从 AppData 的不透明 IndexedDB, 迁到磁盘上一个浅、可见、可备份(可 git/可同步/可被 omni 与 CLI 直接读)的位置。
 
 **初步调研(已知)**:
 - 替换 `IndexedDBDocSource` 为自定义 **DocSource**: 把每个 doc 的 Yjs update 落成磁盘文件(`<id>.ydoc` 或一个 SQLite)。Tauri 侧已有 fileio.rs 可读写; 也可上 `tauri-plugin-sql`(SQLite)。
@@ -31,7 +31,7 @@
 3. 迁移: 一次性把现有 IndexedDB 导出(collection→snapshot / Yjs update)写到新位置再切 source; 保证不丢老笔记。
 
 **验收测试列表**:
-- [ ] 笔记数据出现在 `E:\WindowsWorkspace\<浅路径>\`, 资源管理器能看到、能整个复制走。
+- [ ] 笔记数据出现在 `<工作区>\<浅路径>\`, 资源管理器能看到、能整个复制走。
 - [ ] 关 poof → 删 AppData 里的 IndexedDB → 重开, 笔记仍在(证明真源已搬出 WebView2)。
 - [ ] 改一条笔记 → 对应磁盘文件内容/mtime 变化。
 - [ ] 图片/PDF 的 blob 也落在该位置(独立可见文件), 不再塞 IndexedDB。

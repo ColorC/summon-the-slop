@@ -8,9 +8,11 @@
 import { html } from "lit";
 import { RefNodeSlotsProvider } from "@blocksuite/affine-components/rich-text";
 import { runShell, focusWindow, openPath } from "../lib";
+import { userConfig, KEY_BOARD_URL } from "../userConfig";
 
 const OMNI_PREFIX = "__omni:"; // pageId: __omni:project:<id> / __omni:plan:<id>
-const BOARD_URL = "http://localhost:8210/";
+// omnidashboard 看板 URL: 可配 localStorage.setItem("overlay-board-url", "http://your-host:8210/")
+const BOARD_URL = userConfig(KEY_BOARD_URL, "http://localhost:8210/");
 
 export interface OmniEntity {
   id: string;

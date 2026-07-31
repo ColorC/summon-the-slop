@@ -1,9 +1,9 @@
-// 当前任务 面板 —— poof 接本地目标管理系统 whatnow（Rust 服务 :8230）的置顶区。
+// 当前任务 面板 —— overlay-shell 接本地 progress-service（Rust 服务 :8230）的置顶区。
 // 打开时拉取一次 /api/board，渲染 pins[]（按置顶顺序，最新在前），手动刷新按钮，不做密集轮询。
 
 import { useCallback, useEffect, useState } from "react";
 
-const WHATNOW = "http://127.0.0.1:8230";
+const PROGRESS_SERVICE = "http://127.0.0.1:8230";
 
 interface Pin {
   subject_kind: "task" | "goal";
@@ -53,12 +53,12 @@ export default function PinnedSurface() {
   const [err, setErr] = useState<string | null>(null);
 
   const load = useCallback(() => {
-    fetch(`${WHATNOW}/api/board`).then((r) => r.json()).then((b) => { setBoard(b); setErr(null); })
+    fetch(`${PROGRESS_SERVICE}/api/board`).then((r) => r.json()).then((b) => { setBoard(b); setErr(null); })
       .catch((e) => setErr(String(e)));
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  if (err) return <div style={{ padding: 12, color: "#ff8a80", fontSize: 13, lineHeight: 1.6 }}>连不上 whatnow（:8230）：{err}<br />启动：<code>whatnowd.exe</code></div>;
+  if (err) return <div style={{ padding: 12, color: "#ff8a80", fontSize: 13, lineHeight: 1.6 }}>连不上 progress-service（:8230）：{err}<br />启动：<code>progressd.exe</code></div>;
   if (!board) return <div style={{ padding: 12, color: "#8b97a4", fontSize: 13 }}>加载中…</div>;
 
   const pins = board.pins || [];

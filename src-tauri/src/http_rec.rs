@@ -25,6 +25,11 @@ pub fn latest_element(within_ms: u128) -> Option<String> {
 
 fn token_path() -> std::path::PathBuf {
     std::path::Path::new(&std::env::var("USERPROFILE").unwrap_or_default())
+        .join(".overlay-shell")
+        .join("rec_token")
+}
+fn legacy_token_path() -> std::path::PathBuf {
+    std::path::Path::new(&std::env::var("USERPROFILE").unwrap_or_default())
         .join(".poof")
         .join("rec_token")
 }
@@ -35,7 +40,7 @@ fn now_ns() -> u128 {
         .unwrap_or(0)
 }
 
-/// Shared token from %USERPROFILE%\.poof\rec_token, or generate + write one. The user pastes
+/// Shared token from %USERPROFILE%\.overlay-shell\rec_token, or generate + write one. The user pastes
 /// it into the extension popup once (extensions can't read disk). Loopback binding is the
 /// real boundary; the token just keeps other LOCAL processes from posting blindly.
 fn token() -> &'static str {
@@ -44,6 +49,17 @@ fn token() -> &'static str {
         if let Ok(t) = std::fs::read_to_string(&p) {
             let t = t.trim().to_string();
             if !t.is_empty() {
+                return t;
+            }
+        }
+        let legacy = legacy_token_path();
+        if let Ok(t) = std::fs::read_to_string(&legacy) {
+            let t = t.trim().to_string();
+            if !t.is_empty() {
+                if let Some(dir) = p.parent() {
+                    let _ = std::fs::create_dir_all(dir);
+                }
+                let _ = std::fs::write(&p, &t);
                 return t;
             }
         }
@@ -64,6 +80,17 @@ fn token() -> &'static str {
 fn json_resp(resp: Response<std::io::Cursor<Vec<u8>>>) -> Response<std::io::Cursor<Vec<u8>>> {
     let h = |k: &str, v: &str| Header::from_bytes(k.as_bytes(), v.as_bytes()).unwrap();
     resp.with_header(h("Content-Type", "application/json"))
+}
+
+#[derive(serde::Deserialize)]
+struct SearchRequest {
+    query: String,
+    limit: Option<usize>,
+}
+
+fn parse_search_request(body: &str) -> Result<(String, usize), String> {
+    let request: SearchRequest = serde_json::from_str(body).map_err(|e| e.to_string())?;
+    Ok((request.query.trim().to_string(), request.limit.unwrap_or(40).clamp(1, 100)))
 }
 
 fn handle(method: &Method, url: &str, body: &str) -> (u16, String) {
@@ -160,6 +187,33 @@ fn handle(method: &Method, url: &str, body: &str) -> (u16, String) {
                 (200, "[]".into())
             }
         }
+        // Dashboard 的远程文件搜索只复用现有索引，不另建第二份文件数据库。HTTP 仍受
+        // loopback + bearer token 保护；浏览器通过 Dashboard 同源桥访问，不直接持有 token。
+        "/search" => match parse_search_request(body) {
+            Ok((query, limit)) => {
+                let hits = if query.is_empty() {
+                    Vec::new()
+                } else {
+                    crate::search::search(query, limit)
+                };
+                match serde_json::to_string(&hits) {
+                    Ok(json) => (200, json),
+                    Err(e) => (500, format!("{{\"error\":{}}}", serde_json::to_string(&e.to_string()).unwrap_or_default())),
+                }
+            }
+            Err(e) => (400, format!("{{\"error\":{}}}", serde_json::to_string(&e).unwrap_or_default())),
+        },
+        // usn_tail.rs(常驻提权子进程)把 NTFS USN Journal 拉到的增量变更批量推过来 —— 全盘实时新鲜度
+        // 的关键管道: 子进程持有卷句柄(提权)+ 常驻 FRN 表, 本进程只管把 {op,path/old/new,dir} 落进
+        // ARENA(search::apply_usn_batch, 和 watch_roots 的 notify 事件走同一条 insert_path/remove_path/
+        // rename_path)。同一用户下的子进程能读到这份 token(不受提权等级影响), 鉴权边界不变。
+        "/usn/batch" => match serde_json::from_str::<Vec<crate::search::UsnOp>>(body) {
+            Ok(ops) => {
+                crate::search::apply_usn_batch(ops);
+                (200, "{}".into())
+            }
+            Err(e) => (400, format!("{{\"error\":{}}}", serde_json::to_string(&e.to_string()).unwrap_or_default())),
+        },
         // 统一捕获 · 通用 DOM 元素上报: 扩展(经 SW)把光标下元素 JSON 喂进来, 存最新一条。
         "/element" => {
             if !body.trim().is_empty() {
@@ -173,16 +227,42 @@ fn handle(method: &Method, url: &str, body: &str) -> (u16, String) {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::parse_search_request;
+
+    #[test]
+    fn search_request_trims_query_and_clamps_limit() {
+        assert_eq!(
+            parse_search_request(r#"{"query":"  E:\\WindowsWorkspace  ","limit":999}"#).unwrap(),
+            ("E:\\WindowsWorkspace".to_string(), 100)
+        );
+        assert_eq!(
+            parse_search_request(r#"{"query":"notes","limit":0}"#).unwrap(),
+            ("notes".to_string(), 1)
+        );
+    }
+
+    #[test]
+    fn search_request_uses_default_limit_and_rejects_invalid_json() {
+        assert_eq!(
+            parse_search_request(r#"{"query":"overlay"}"#).unwrap(),
+            ("overlay".to_string(), 40)
+        );
+        assert!(parse_search_request(r#"{"limit":20}"#).is_err());
+    }
+}
+
 pub fn start_http_server() {
     let token = token().to_string();
     let server = match Server::http(ADDR) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("poof rec collector: bind {ADDR} failed: {e}");
+            eprintln!("overlay-shell rec collector: bind {ADDR} failed: {e}");
             return;
         }
     };
-    eprintln!("poof rec collector on http://{ADDR} (token at %USERPROFILE%\\.poof\\rec_token)");
+    eprintln!("overlay-shell rec collector on http://{ADDR} (token at %USERPROFILE%\\.overlay-shell\\rec_token)");
     for mut req in server.incoming_requests() {
         // A browser page preflight (OPTIONS) gets 200 but NO Access-Control-Allow-Origin, so the
         // page's actual cross-origin POST is blocked. The extension SW never preflights (it isn't

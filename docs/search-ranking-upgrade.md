@@ -78,7 +78,7 @@ struct UsageDb {
 ### 热循环保持零浮点
 所有 factor ×1000 定点整数,乘完右移;`subseq_score` 已算出 first/gaps/全等三个 flag,只需透出供 prefix_boost 用。375 万条单键预期仍几十 ms。
 
-### 验证(沿用 `poof.exe --bench-search`)
+### 验证(沿用 `overlay-shell.exe --bench-search`)
 - 性能红线:单键中位 < 60ms。
 - 抗霸榜断言:frecency 拉满的子序列命中项 vs frecency=0 的精确文件名命中项 → 断言后者排前。
 - frecency 衰减/重启不丢分单测。

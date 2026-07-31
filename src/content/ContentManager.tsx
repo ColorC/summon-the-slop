@@ -6,6 +6,7 @@ import { createPortal } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { renderMarkdownSafe, sanitizeHtml } from "../lib/sanitizeHtml";
 import { X } from "lucide-react";
+import { userConfig, KEY_CAPTURES_DIR } from "../userConfig";
 import "./ContentManager.css";
 import {
   FileText,
@@ -25,7 +26,9 @@ import {
 } from "lucide-react";
 
 type Tab = "clipboard" | "snapshots" | "captures" | "recordings";
-const CAPTURES_DIR = "E:/WindowsWorkspace/captures";
+// 捕获/圈选目录: 可配 localStorage.setItem("overlay-captures-dir", "D:/your/captures");
+// 缺省空串 = 捕获页温和停用(列表为空)。
+const CAPTURES_DIR = userConfig(KEY_CAPTURES_DIR, "");
 
 // 预览的是外部 HTML(剪贴板复制来的 / markdown 渲染), 跑在 sandbox="" 的 iframe 里 —— poof 的暗色
 // 主题与样式都跨不进这个边界, 浏览器会用默认样式渲染里面的原生表单控件。最扎眼的是 <input type=number>
@@ -219,7 +222,9 @@ export function ContentManager() {
           path: s.session_path, // read_session 用
         }));
       } else {
-        const files: any[] = await invoke<any[]>("list_dir", { path: CAPTURES_DIR }).catch(() => []);
+        const files: any[] = CAPTURES_DIR
+          ? await invoke<any[]>("list_dir", { path: CAPTURES_DIR }).catch(() => [])
+          : [];
         out = files
           .filter((f) => !f.is_dir && (f.ext === "md" || f.ext === "png" || f.ext === "jpg"))
           .map((f) => ({
@@ -576,7 +581,7 @@ function Preview({
         if (alive && b64) setImg("data:image/png;base64," + b64);
         return;
       }
-      if (/poof-diagnostics/i.test(fp) && /report\.md$/i.test(fp)) {
+      if (/overlay-shell-diagnostics/i.test(fp) && /report\.md$/i.test(fp)) {
         const shot = fp.replace(/report\.md$/i, "screen.png"); // 诊断报告旁的整屏截图
         const b64 = await invoke<string>("read_file_b64", { path: shot }).catch(() => "");
         if (alive && b64) setImg("data:image/png;base64," + b64);

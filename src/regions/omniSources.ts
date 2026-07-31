@@ -5,8 +5,12 @@
 // 决策见 docs/plans/synced-source-blocks-and-browse-plan.md §9。
 import { runShell, readFileText } from "../lib";
 import { registerSourceAdapter, insertBoundSource } from "./boundSource";
+import { userConfig, KEY_OMNI_REVIEWSTAGE } from "../userConfig";
 
-const REVIEWSTAGE = "E:/WindowsWorkspace/omnicompany/data/boss_sight/reviewstage";
+// omnicompany 审阅材料目录(与 omnicompany 部署深度耦合)。可配:
+//   localStorage.setItem("overlay-omni-reviewstage", "D:/your/omnicompany/data/boss_sight/reviewstage")
+// 缺省空串 = 审阅源只读适配自然停用(读不到即返回空)。
+const REVIEWSTAGE = userConfig(KEY_OMNI_REVIEWSTAGE, "");
 
 export interface OmniListItem {
   kind: "plan" | "progress" | "review";

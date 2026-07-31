@@ -65,9 +65,15 @@ export function TerminalView({
     term.open(ref.current!);
     try {
       // crisp GPU rendering; falls back to canvas if WebGL is unavailable
-      term.loadAddon(new WebglAddon());
+      const webgl = new WebglAddon();
+      // 面板隐藏(display:none)会丢失 WebGL 上下文, 再显示时整屏发黑。丢了就弃用 WebGL,
+      // xterm 自动退回 DOM 渲染器(不再变黑, 略慢但稳)。
+      webgl.onContextLoss(() => {
+        try { webgl.dispose(); } catch { /* already gone */ }
+      });
+      term.loadAddon(webgl);
     } catch {
-      /* no webgl — canvas renderer is fine */
+      /* no webgl — canvas/DOM renderer is fine */
     }
     try {
       fit.fit();
@@ -111,6 +117,7 @@ export function TerminalView({
       try {
         fit.fit();
         ptyResize(id, term.cols, term.rows);
+        term.refresh(0, term.rows - 1); // 从隐藏恢复显示后强制重绘, 清掉可能残留的黑屏
       } catch {
         /* ignore */
       }

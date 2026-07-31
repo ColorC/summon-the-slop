@@ -1,5 +1,5 @@
-// poof 录像 — popup. Start/stop toggle + the one-time port/token config (token is read from
-// %USERPROFILE%\.poof\rec_token by the user and pasted here; extensions can't read disk).
+// overlay-shell 录像 — popup. Start/stop toggle + the one-time port/token config (token is read from
+// %USERPROFILE%\.overlay-shell\rec_token by the user and pasted here; extensions can't read disk).
 const $ = (id) => document.getElementById(id);
 let recording = false;
 

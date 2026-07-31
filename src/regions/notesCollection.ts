@@ -4,7 +4,7 @@
 // NotesWorkspace.tsx 里曾经 `export function getCollection()`(非组件)会毒化整个文件的边界,
 // 于是任何相关文件一保存,Vite 就从"热更"升级成"整页强制重载"(日志里的 unload→boot)。
 // 而整页重载会把还挂着的 BlockSuite/Yjs/Lit/IndexedDB 非确定性地拆掉重建,撞崩 WebView2 渲染
-// 进程 —— poof.exe 原生退出 0xcfffffff("未响应"后整窗消失)。把 getCollection 挪到这个纯 .ts
+// 进程 —— overlay-shell.exe 原生退出 0xcfffffff("未响应"后整窗消失)。把 getCollection 挪到这个纯 .ts
 // 模块后,NotesWorkspace.tsx 只剩组件导出 → 恢复热更 → 不再整页重载,崩溃的触发源被根除。
 import { Schema, DocCollection } from "@blocksuite/store";
 import { AffineSchemas } from "@blocksuite/blocks";
@@ -49,7 +49,7 @@ export function getCollection(): DocCollection {
   // aiBlockSchemas: 复制放宽 surface 的 children 白名单 + 追加 AiBlockSchema(见 blocks/aiblock)
   const schema = new Schema().register(aiBlockSchemas(AffineSchemas as any));
   // 落盘存储: 先跑一次性迁移(旧 IndexedDB → 磁盘), source 的 pull/push 会 await 这个 ready,
-  // 所以 collection 可同步创建, IO 自动等迁移完成。数据落 E:\WindowsWorkspace\poof-notes\。
+  // 所以 collection 可同步创建, IO 自动等迁移完成。数据落盘根见 notesstore.rs(OVERLAY_NOTE_STORE_ROOT)。
   const ready = ensureMigrated();
   const collection = new DocCollection({
     id: "poof-notes",

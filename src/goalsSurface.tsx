@@ -1,10 +1,10 @@
-// 目标 / 任务 面板 —— poof 接本地目标管理系统 whatnow（Rust 服务 :8230，仿 Leantime）。
-// 用户 2026-06-23 /goal R1：本地目标管理系统要和 omnidashboard 和 poof 集成。
+// 目标 / 任务 面板 —— overlay-shell 接本地 progress-service（Rust 服务 :8230，仿 Leantime）。
+// 用户 2026-06-23 /goal R1：本地目标管理系统要和 omnidashboard 和 overlay-shell 集成。
 // 紧凑视图：北极星主线/支线 → 计划（完成度条）+ 当前专注 + 外部收件箱计数。点"拉取"同步 meego/multica。
 
 import { useCallback, useEffect, useState } from "react";
 
-const WHATNOW = "http://127.0.0.1:8230";
+const PROGRESS_SERVICE = "http://127.0.0.1:8230";
 
 interface Task { id: string; title: string; status: string; completion: number; line: string; channel: string; latest_progress?: string | null }
 interface Goal { id: string; title: string; kind: string; line: string; objective: string; tasks: Task[] }
@@ -34,18 +34,18 @@ export default function GoalsSurface() {
   const [msg, setMsg] = useState("");
 
   const load = useCallback(() => {
-    fetch(`${WHATNOW}/api/board`).then((r) => r.json()).then((b) => { setBoard(b); setErr(null); })
+    fetch(`${PROGRESS_SERVICE}/api/board`).then((r) => r.json()).then((b) => { setBoard(b); setErr(null); })
       .catch((e) => setErr(String(e)));
   }, []);
   useEffect(() => { load(); }, [load]);
 
   const sync = async () => {
     setMsg("同步中…");
-    await Promise.allSettled([fetch(`${WHATNOW}/api/sync/meego`, { method: "POST" }), fetch(`${WHATNOW}/api/sync/multica`, { method: "POST" })]);
+    await Promise.allSettled([fetch(`${PROGRESS_SERVICE}/api/sync/meego`, { method: "POST" }), fetch(`${PROGRESS_SERVICE}/api/sync/multica`, { method: "POST" })]);
     setMsg(""); load();
   };
 
-  if (err) return <div style={{ padding: 12, color: "#ff8a80", fontSize: 13, lineHeight: 1.6 }}>连不上 whatnow（:8230）：{err}<br />启动：<code>whatnowd.exe</code></div>;
+  if (err) return <div style={{ padding: 12, color: "#ff8a80", fontSize: 13, lineHeight: 1.6 }}>连不上 progress-service（:8230）：{err}<br />启动：<code>progressd.exe</code></div>;
   if (!board) return <div style={{ padding: 12, color: "#8b97a4", fontSize: 13 }}>加载目标…</div>;
 
   return (

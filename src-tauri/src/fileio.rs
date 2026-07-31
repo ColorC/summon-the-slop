@@ -79,7 +79,7 @@ pub fn write_file_text(path: String, content: String) -> Result<(), String> {
     let p = Path::new(&path);
     let dir = p.parent().ok_or_else(|| "路径无父目录".to_string())?;
     let tmp = dir.join(format!(
-        ".{}.poof.tmp",
+        ".{}.overlay-shell.tmp",
         p.file_name().and_then(|s| s.to_str()).unwrap_or("note")
     ));
     std::fs::write(&tmp, content.as_bytes()).map_err(|e| format!("写临时文件失败: {e}"))?;

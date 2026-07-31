@@ -59,13 +59,13 @@ fn capture_region(x: i32, y: i32, w: i32, h: i32) -> Result<Vec<u8>, String> {
     }
 }
 
-/// Capture a screen rect to a PNG under %TEMP%/poof-snapshots and return its path.
+/// Capture a screen rect to a PNG under %TEMP%/overlay-shell-snapshots and return its path.
 #[cfg(windows)]
 #[tauri::command]
 pub fn snapshot_region(x: i32, y: i32, w: i32, h: i32) -> Result<String, String> {
     let rgba = capture_region(x, y, w, h)?;
     let img = image::RgbaImage::from_raw(w as u32, h as u32, rgba).ok_or("buffer→image")?;
-    let dir = std::env::temp_dir().join("poof-snapshots");
+    let dir = std::env::temp_dir().join("overlay-shell-snapshots");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

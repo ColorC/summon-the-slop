@@ -161,8 +161,8 @@ mod tests {
 
     #[test]
     fn project_rules_and_fallback() {
-        assert_eq!(derive_project("", "E:/WindowsWorkspace/poof/src"), "omnidashboard-os");
-        assert_eq!(derive_project("", "E:/WindowsWorkspace/quant-lab"), "quant-lab");
+        assert_eq!(derive_project("", "C:/projects/poof/src"), "omnidashboard-os");
+        assert_eq!(derive_project("", "C:/projects/quant-lab"), "quant-lab");
         assert_eq!(derive_project("我的项目", "E:/whatever"), "我的项目");
         assert_eq!(derive_project("信息不足", "E:/foo/bar"), "bar");
         assert_eq!(derive_project("", "E:\\a\\b\\zeta"), "zeta");

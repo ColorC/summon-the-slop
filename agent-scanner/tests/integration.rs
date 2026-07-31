@@ -122,7 +122,7 @@ fn scans_codex_session_from_meta() {
         .join("24")
         .join("rollout-2026-06-24T10-00-00-99999999-8888-7777-6666-555555555555.jsonl");
     let lines = [
-        r#"{"type":"session_meta","payload":{"id":"codexsid-123","cwd":"E:/WindowsWorkspace/quant-lab"}}"#,
+        r#"{"type":"session_meta","payload":{"id":"codexsid-123","cwd":"C:/projects/quant-lab"}}"#,
         r#"{"type":"event_msg","payload":{"type":"user_message","role":"user","content":"跑个回测"}}"#,
     ]
     .join("\n");
@@ -132,7 +132,7 @@ fn scans_codex_session_from_meta() {
     idx.rebuild(&roots(&base), 1_000_000_000.0);
     let r = idx.residents.get("codex:codexsid-123").expect("codex indexed");
     assert_eq!(r.provider, "codex");
-    assert_eq!(r.cwd, "E:/WindowsWorkspace/quant-lab");
+    assert_eq!(r.cwd, "C:/projects/quant-lab");
     assert_eq!(r.project, "quant-lab");
     assert_eq!(r.location, "codex桌面");
 }

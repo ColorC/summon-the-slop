@@ -1,4 +1,4 @@
-// 自定义文件标签 —— path → tags, 落 %LOCALAPPDATA%\poof\tags.json(不用 %TEMP%, 不被清)。
+// 自定义文件标签 —— path → tags, 落 %LOCALAPPDATA%\overlay-shell\tags.json(不用 %TEMP%, 不被清)。
 // 进程内 Arc 缓存; search() 取 scoring_snapshot() 零 IO。与 notes 的 localStorage 标签独立(键空间
 // 不同: 这里是 path, notes 是 docId), 但前端复用同一套 chip 视觉。定义(TagDef: 名/色/组/置顶)与
 // 赋予(PathTags)解耦。详见 docs/file-tagging-system.md。
@@ -46,7 +46,7 @@ fn tags_dir() -> PathBuf {
     std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
-        .join("poof")
+        .join("overlay-shell")
 }
 fn tags_file() -> PathBuf {
     tags_dir().join("tags.json")

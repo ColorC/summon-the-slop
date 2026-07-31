@@ -4,6 +4,7 @@
 import { ptyWrite, copyText } from "./lib";
 import { pushChatIntent } from "./chatIntents";
 import { focusPane } from "./poofPanes";
+import { userConfig, KEY_CONTROLLER_HOME } from "./userConfig";
 
 export type ControllerKind = "codex" | "claude" | "omni-web";
 
@@ -16,8 +17,10 @@ export function setControllerKind(k: ControllerKind): void {
   localStorage.setItem(KIND_KEY, k);
 }
 
-// 总控 codex 的家: 带 AGENTS.md(总控角色+omni工具), 短路径不在用户 home。
-export const CONTROLLER_HOME = "E:\\WindowsWorkspace\\poof\\controller";
+// 总控 codex 的家: 带 AGENTS.md(总控角色+omni工具)的目录。可配:
+//   localStorage.setItem("overlay-controller-home", "D:\\your\\controller")
+// 缺省空串 → 终端退回 home(pty.rs 兜底)。
+export const CONTROLLER_HOME = userConfig(KEY_CONTROLLER_HOME, "");
 // 总控 web 界面: 已迁到收编 chatui(:7348)的 controller provider(原 omnidashboard ChatStandalone 已删)。
 // ?provider=controller 让 chatui 预选总控 provider(本地 opus + 总控系统提示)。
 export const OMNI_WEB_URL = "http://127.0.0.1:7348/?provider=controller";

@@ -1,13 +1,24 @@
-// 笔记落盘存储(工作流一): 把笔记从 WebView2 不透明 IndexedDB 搬到
-// `E:\WindowsWorkspace\poof-notes\` —— 浅、可见、可备份、可被 omni/CLI 直接读。
+// 笔记落盘存储(工作流一): 把笔记从 WebView2 不透明 IndexedDB 搬到磁盘浅路径 ——
+// 可见、可备份、可被外部 CLI 直接读。根目录 = 环境变量 `OVERLAY_NOTE_STORE_ROOT`,
+// 缺省 `%LOCALAPPDATA%\overlay-shell\note-store\`(与 index/tags 同处, 不进 %TEMP% 以免被清)。
 //  · docs/<id>.ydoc   每个 Yjs doc(工作区根 + 每条笔记)一份合并后的二进制快照
 //  · blobs/<sha>      图片/PDF 的字节(原来是 MemoryBlobSource, 关 poof 就丢 → 现在落盘)
 // 纯 std::fs(不派生子进程, EDR 不拦)。二进制走 base64 过 IPC。原子写(临时文件 + rename)。
 use base64::{engine::general_purpose::STANDARD, Engine};
 use std::path::{Path, PathBuf};
 
-fn root() -> PathBuf {
-    PathBuf::from("E:\\WindowsWorkspace\\poof-notes")
+pub(crate) fn root() -> PathBuf {
+    if let Ok(p) = std::env::var("OVERLAY_NOTE_STORE_ROOT") {
+        let t = p.trim();
+        if !t.is_empty() {
+            return PathBuf::from(t);
+        }
+    }
+    std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("overlay-shell")
+        .join("note-store")
 }
 fn docs_dir() -> PathBuf {
     root().join("docs")
@@ -220,4 +231,3 @@ pub fn notes_version_del_all(doc_id: String) -> Result<(), String> {
     let _ = std::fs::remove_dir_all(versions_dir(doc_id));
     Ok(())
 }
-

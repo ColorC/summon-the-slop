@@ -189,7 +189,7 @@ unsafe fn hicon_to_png(hicon: isize) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// 自检: poof.exe --test-icon <path> → 抽该路径图标, 报尺寸/字节数, 存 %TEMP%\poof-icon-test.png。
+/// 自检: overlay-shell.exe --test-icon <path> → 抽该路径图标, 报尺寸/字节数, 存 %TEMP%\overlay-shell-icon-test.png。
 #[cfg(windows)]
 pub fn test_icon(path: &str) {
     match extract_png_b64(path) {
@@ -199,7 +199,7 @@ pub fn test_icon(path: &str) {
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(b64)
                 .unwrap_or_default();
-            let out = std::env::temp_dir().join("poof-icon-test.png");
+            let out = std::env::temp_dir().join("overlay-shell-icon-test.png");
             let _ = std::fs::write(&out, &bytes);
             println!(
                 "✓ 图标抽取成功: {} 字节 PNG → {}",

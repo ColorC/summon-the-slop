@@ -1,5 +1,5 @@
 //! 剪贴板历史 —— 后台监听系统剪贴板(序列号轮询), 把每次变更的内容(文本 / 图片 / HTML)持久化到
-//! ~/.poof/clipboard/(index.jsonl + <id>.txt/.png/.html), 供"快选内容管理界面"浏览/预览/恢复/删除。
+//! ~/.overlay-shell/clipboard/(index.jsonl + <id>.txt/.png/.html), 供"快选内容管理界面"浏览/预览/恢复/删除。
 //! 捕获所有剪贴板内容(不止 poof 自己复制的)。文本/图片走 arboard; HTML 走 Win32 CF_HTML。
 use base64::Engine;
 use std::io::Write;
@@ -21,7 +21,7 @@ fn now_ns() -> u128 {
 
 fn clip_dir() -> PathBuf {
     Path::new(&std::env::var("USERPROFILE").unwrap_or_default())
-        .join(".poof")
+        .join(".overlay-shell")
         .join("clipboard")
 }
 fn index_path() -> PathBuf {

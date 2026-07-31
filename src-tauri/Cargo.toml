@@ -4,6 +4,9 @@ version = "0.1.0"
 description = "Summoned overlay shell for omnidashboard-os"
 authors = ["you"]
 edition = "2021"
+# crate 有两个 bin(overlay-shell + ocr_batch)。`tauri dev` 监视到源码变动重建时用裸 `cargo run`,
+# 没有默认 bin 会因"不知道跑哪个"直接报错退出整个 dev 链。指明默认 bin, 让重建能自动重跑主程序。
+default-run = "overlay-shell"
 
 [lib]
 name = "overlay_shell_lib"

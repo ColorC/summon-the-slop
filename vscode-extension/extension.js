@@ -1,7 +1,7 @@
-// poof 录像 — VSCode activity recorder (P3). rrweb can't reach VSCode's own UI / Simple
+// overlay-shell 录像 — VSCode activity recorder (P3). rrweb can't reach VSCode's own UI / Simple
 // Browser / other extensions' webviews, so instead of DOM we record the genuinely useful
 // VSCode signal via the extension API: file open/edit/save, active-editor switches, terminal,
-// debug — as schema envelopes (surface:"vscode") POSTed to poof's localhost collector (P2).
+// debug — as schema envelopes (surface:"vscode") POSTed to overlay-shell's localhost collector (P2).
 // The extension host is Node, so it can fetch localhost directly (no content-script limits).
 // PRIVACY: edits record a per-file SUMMARY (counts + line deltas), never file content.
 const vscode = require("vscode");
@@ -40,20 +40,20 @@ function schedule() {
 }
 
 async function start() {
-  if (session) { vscode.window.showInformationMessage("poof 已在录制"); return; }
-  const cfg = vscode.workspace.getConfiguration("poof");
+  if (session) { vscode.window.showInformationMessage("overlay-shell 已在录制"); return; }
+  const cfg = vscode.workspace.getConfiguration("overlay-shell");
   const port = cfg.get("port", 8732);
   const token = cfg.get("token", "");
-  if (!token) { vscode.window.showWarningMessage("先在设置里填 poof.token(见 %USERPROFILE%\\.poof\\rec_token)"); return; }
+  if (!token) { vscode.window.showWarningMessage("先在设置里填 overlay-shell.token(见 %USERPROFILE%\\.overlay-shell\\rec_token)"); return; }
   const resp = await post("/rec/start", { title: "VSCode: " + (vscode.workspace.name || "无工作区"), surface: "vscode" }, port, token);
   let sid = null;
   try { sid = JSON.parse(resp).sid; } catch (e) {}
-  if (!sid) { vscode.window.showErrorMessage("poof 收集口无响应(poof 在运行吗?)"); return; }
+  if (!sid) { vscode.window.showErrorMessage("overlay-shell 收集口无响应(overlay-shell 在运行吗?)"); return; }
 
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-  status.text = "● poof 录制中";
-  status.tooltip = "点击停止 poof 录制";
-  status.command = "poof.stopRecording";
+  status.text = "● overlay-shell 录制中";
+  status.tooltip = "点击停止 overlay-shell 录制";
+  status.command = "overlay-shell.stopRecording";
   status.show();
 
   const d = [];
@@ -87,7 +87,7 @@ async function start() {
   d.push(vscode.window.onDidOpenTerminal((t) => emit("vscode.terminal.open", { name: t.name })));
   d.push(vscode.debug.onDidStartDebugSession((s) => emit("vscode.debug.start", { name: s.name, type: s.type })));
 
-  vscode.window.showInformationMessage("poof 录制开始(VSCode 活动)");
+  vscode.window.showInformationMessage("overlay-shell 录制开始(VSCode 活动)");
 }
 
 async function stop() {
@@ -102,12 +102,12 @@ async function stop() {
   if (s.buffer.length) await post("/rec/event", { sid: s.sid, batch: s.buffer }, s.port, s.token);
   await post("/rec/stop", { sid: s.sid }, s.port, s.token);
   try { s.status.dispose(); } catch (e) {}
-  vscode.window.showInformationMessage("poof 录制已保存");
+  vscode.window.showInformationMessage("overlay-shell 录制已保存");
 }
 
 function activate(context) {
-  context.subscriptions.push(vscode.commands.registerCommand("poof.startRecording", start));
-  context.subscriptions.push(vscode.commands.registerCommand("poof.stopRecording", stop));
+  context.subscriptions.push(vscode.commands.registerCommand("overlay-shell.startRecording", start));
+  context.subscriptions.push(vscode.commands.registerCommand("overlay-shell.stopRecording", stop));
 }
 function deactivate() { if (session) return stop(); }
 module.exports = { activate, deactivate };

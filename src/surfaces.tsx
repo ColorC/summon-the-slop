@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { NoteSpace } from "./regions/NoteSpace";
 import { runShell, askAi, copyText } from "./lib";
+import { userConfig, KEY_BOARD_URL } from "./userConfig";
 
 // ---------- shared helpers ----------
 
@@ -43,7 +44,8 @@ interface Project {
 
 // ---------- omnidashboard 驾驶舱 (iframe-embedded; the real UI, fully aligned) ----------
 
-const DASH = "http://127.0.0.1:8210";
+// omnidashboard 驾驶舱地址: 与 omniLink 共用 overlay-board-url 键(去掉尾斜杠)。
+const DASH = userConfig(KEY_BOARD_URL, "http://127.0.0.1:8210").replace(/\/+$/, "");
 
 /** Embed the real omnidashboard cockpit (port 8210). No CSP / X-Frame-Options / auth on
  *  the localhost server, so WebView2 can iframe it directly. If it isn't running, offer to

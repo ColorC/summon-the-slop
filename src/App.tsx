@@ -25,7 +25,7 @@ import { Notifications } from "./regions/Notifications";
 import { TerminalBar } from "./regions/TerminalBar";
 import { ProjectSurface, ReviewSurface } from "./surfaces";
 import { NotesWorkspace } from "./regions/NotesWorkspace";
-import { DockStage, type PanelKind } from "./panels";
+import { DockStage, PersistentChatDock, type PanelKind } from "./panels";
 import GoalsSurface from "./goalsSurface";
 import PinnedSurface from "./pinnedSurface";
 import { sendToController, OMNI_WEB_URL } from "./controller";
@@ -414,7 +414,6 @@ export default function App() {
   }
 
   function panelContent(k: PanelKind) {
-    if (k === "chat") return <TerminalBar />;
     if (k === "clips") return <ContentManager />;
     return (
       <div className="pf-scroll">
@@ -435,12 +434,17 @@ export default function App() {
           Notes is NOT a panel here (a CSS transform would break BlockSuite's
           pointer math); it renders as its own fixed fullscreen workspace below. */}
       <DockStage
-        open={open.filter((k) => k !== "notes")}
+        open={open.filter((k) => k !== "notes" && k !== "chat")}
         pinned={pinned}
         onPin={togglePin}
         onClose={closePanel}
         renderContent={panelContent}
       />
+
+      {/* 对话 / 终端 — 常驻挂载(不进 DockStage), 关面板/召出只隐藏不卸载, 终端与对话会话一直保留 */}
+      <PersistentChatDock open={isOpen("chat")} onClose={() => closePanel("chat")}>
+        <TerminalBar />
+      </PersistentChatDock>
 
       {/* 笔记空间 — fixed fullscreen (no transform), persistent BlockSuite library */}
       {open.includes("notes") && <NotesWorkspace onClose={() => closePanel("notes")} />}

@@ -727,6 +727,10 @@ body,
   right: 0;
   border-left: 1px solid rgba(255, 255, 255, 0.1);
 }
+/* 常驻对话/终端面板: 在其它停靠面板(z 8)之上、顶部/底部两条 bar(z 10)之下 */
+.pf-chat-dock {
+  z-index: 9;
+}
 /* a stacked view within a dock */
 .pf-view {
   display: flex;
@@ -1224,7 +1228,7 @@ body,
   top: 52px;
   left: 16px;
   bottom: 16px;
-  width: 282px;
+  width: min(360px, calc(100% - 32px));
   z-index: 3;
   display: flex;
   flex-direction: column;
@@ -1508,13 +1512,34 @@ body,
   background: rgba(45, 108, 246, 0.18);
   color: #fff;
 }
+.notes-item-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
 .notes-item-title {
+  flex: 1;
+  min-width: 0;
   font-size: 13px;
   font-weight: 500;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  padding-right: 40px;
+}
+.notes-rename-input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 4px 7px;
+  border: 1px solid rgba(91, 145, 255, 0.85);
+  border-radius: 7px;
+  outline: none;
+  background: rgba(7, 9, 14, 0.96);
+  box-shadow: 0 0 0 2px rgba(45, 108, 246, 0.24);
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
 }
 .notes-item-tags {
   display: flex;
@@ -1530,25 +1555,35 @@ body,
   border-radius: 6px;
 }
 .notes-item-acts {
-  position: absolute;
-  right: 6px;
-  top: 7px;
   display: none;
-  gap: 2px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(12, 14, 19, 0.96);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
 }
 .notes-item:hover .notes-item-acts {
   display: flex;
 }
 .notes-item-acts button {
-  background: transparent;
-  border: none;
-  color: #8a90a0;
-  cursor: pointer;
-  padding: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 5px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #b6bcc9;
+  cursor: pointer;
 }
 .notes-item-acts button:hover {
-  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(91, 145, 255, 0.45);
+  background: rgba(45, 108, 246, 0.3);
   color: #fff;
 }
 
