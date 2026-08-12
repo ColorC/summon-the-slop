@@ -57,6 +57,7 @@ import {
   type MaterialCanvasDocument,
   type MaterialSource,
 } from "./materialCanvasModel";
+import { registerCanvasHandler, type CanvasOpArgs } from "./canvasOps";
 
 type ResizeDirection =
   | "top"
@@ -139,6 +140,8 @@ interface CardActions {
 }
 
 const CardActionsContext = createContext<CardActions | null>(null);
+// omni canvas highlight op 的聚光灯卡 id(不进 node data, 避免渗进持久化文档)
+const SpotlightContext = createContext<string | null>(null);
 const RESIZE_DIRECTIONS: ResizeDirection[] = [
   "top-left", "top", "top-right", "right",
   "bottom-right", "bottom", "bottom-left", "left",
@@ -375,6 +378,7 @@ function EditableText({ id, data, actions }: { id: string; data: CardData; actio
 
 const MaterialCard = memo(function MaterialCard({ id, data, selected }: NodeProps<CanvasNode>) {
   const actions = useContext(CardActionsContext);
+  const spotlight = useContext(SpotlightContext);
   const { zoom } = useViewport();
   const [deleteArmed, setDeleteArmed] = useState(false);
   if (!actions) return null;
@@ -387,7 +391,7 @@ const MaterialCard = memo(function MaterialCard({ id, data, selected }: NodeProp
       ? streamUrl(data.source.token)
       : null;
   return (
-    <article className={`material-canvas-card${selected ? " selected" : ""}`}>
+    <article className={`material-canvas-card${selected ? " selected" : ""}${spotlight === id ? " spotlight" : ""}`}>
       <Handle type="target" position={Position.Left} className="material-card-handle input" />
       <Handle type="source" position={Position.Right} className="material-card-handle output" />
       {selected && RESIZE_DIRECTIONS.map((direction) => (
@@ -494,6 +498,9 @@ export function MaterialNotesWorkspace({
   const [legacyNotes, setLegacyNotes] = useState<LegacyNote[]>([]);
   const [legacyLoading, setLegacyLoading] = useState(false);
   const [fullscreenId, setFullscreenId] = useState<string | null>(null);
+  const [highlightId, setHighlightId] = useState<string | null>(null);
+  const highlightRef = useRef<string | null>(null);
+  const highlightTimer = useRef<number | null>(null);
 
   // 卡片被移除时退出其全屏; Esc 随时退出
   useEffect(() => {
@@ -620,6 +627,7 @@ export function MaterialNotesWorkspace({
 
   useEffect(() => () => {
     if (saveTimer.current !== null) window.clearTimeout(saveTimer.current);
+    if (highlightTimer.current !== null) window.clearTimeout(highlightTimer.current);
     for (const timer of textWriteTimers.current.values()) window.clearTimeout(timer);
   }, []);
 
@@ -854,6 +862,98 @@ export function MaterialNotesWorkspace({
     },
   }), [pushHistory, setGraph, writeDocument, writeTextMaterial]);
 
+  // omni canvas 活画布 ops(cb 文件队列桥, 见 canvasOps.ts): state/update/remove/viewport/focus/highlight
+  useEffect(() => {
+    const applyHighlight = (id: string | null, seconds = 6) => {
+      if (highlightTimer.current !== null) {
+        window.clearTimeout(highlightTimer.current);
+        highlightTimer.current = null;
+      }
+      highlightRef.current = id;
+      setHighlightId(id);
+      if (id && seconds > 0) {
+        highlightTimer.current = window.setTimeout(() => {
+          highlightRef.current = null;
+          setHighlightId(null);
+          highlightTimer.current = null;
+        }, seconds * 1000);
+      }
+    };
+    return registerCanvasHandler(storageId, {
+      state: () => ({
+        canvas: storageId,
+        viewport: flowRef.current ? flowRef.current.getViewport() : null,
+        cards: nodesRef.current.length,
+        selected: nodesRef.current.filter((node) => node.selected).map((node) => node.id),
+        highlighted: highlightRef.current,
+      }),
+      update: (args: CanvasOpArgs) => {
+        const id = String(args.card || "");
+        if (!nodesRef.current.some((item) => item.id === id)) throw new Error(`没找到卡片 ${id}`);
+        pushHistory();
+        const next = nodesRef.current.map((item) => item.id !== id ? item : {
+          ...item,
+          position: {
+            x: typeof args.x === "number" ? args.x : item.position.x,
+            y: typeof args.y === "number" ? args.y : item.position.y,
+          },
+          style: {
+            ...item.style,
+            width: typeof args.width === "number" ? Math.max(260, args.width) : item.style?.width,
+            height: typeof args.height === "number" ? Math.max(180, args.height) : item.style?.height,
+          },
+          data: {
+            ...item.data,
+            title: typeof args.title === "string" && args.title.trim() ? args.title : item.data.title,
+            adapter: typeof args.adapter === "string" ? (args.adapter as MaterialAdapter) : item.data.adapter,
+          },
+        });
+        setGraph(next, edgesRef.current);
+        return { updated: id };
+      },
+      remove: (args: CanvasOpArgs) => {
+        const id = String(args.card || "");
+        if (!nodesRef.current.some((item) => item.id === id)) throw new Error(`没找到卡片 ${id}`);
+        cardActions.removeCard(id);
+        return { removed: id };
+      },
+      viewport: (args: CanvasOpArgs) => {
+        const flow = flowRef.current;
+        if (!flow) throw new Error("画布视图未就绪");
+        const current = flow.getViewport();
+        const next = {
+          x: typeof args.x === "number" ? args.x : current.x,
+          y: typeof args.y === "number" ? args.y : current.y,
+          zoom: typeof args.zoom === "number" ? args.zoom : current.zoom,
+        };
+        void flow.setViewport(next, { duration: 200 });
+        return { viewport: next };
+      },
+      focus: (args: CanvasOpArgs) => {
+        const id = String(args.card || "");
+        const node = nodesRef.current.find((item) => item.id === id);
+        if (!node) throw new Error(`没找到卡片 ${id}`);
+        const flow = flowRef.current;
+        if (!flow) throw new Error("画布视图未就绪");
+        const size = dimensionsOf(node);
+        const zoom = typeof args.zoom === "number" ? args.zoom : flow.getViewport().zoom;
+        void flow.setCenter(node.position.x + size.width / 2, node.position.y + size.height / 2, { zoom, duration: 300 });
+        return { focused: id, zoom };
+      },
+      highlight: (args: CanvasOpArgs) => {
+        if (args.clear) {
+          applyHighlight(null);
+          return { cleared: true };
+        }
+        const id = String(args.card || "");
+        if (!nodesRef.current.some((item) => item.id === id)) throw new Error(`没找到卡片 ${id}`);
+        const seconds = typeof args.seconds === "number" ? args.seconds : 6;
+        applyHighlight(id, seconds);
+        return { highlighted: id, seconds };
+      },
+    });
+  }, [storageId, cardActions, pushHistory, setGraph]);
+
   const onNodesChange = useCallback((changes: NodeChange<CanvasNode>[]) => {
     const next = applyNodeChanges(changes, nodesRef.current);
     nodesRef.current = next;
@@ -908,6 +1008,7 @@ export function MaterialNotesWorkspace({
   return (
     <InvokeContext.Provider value={invokeCommand}>
       <CardActionsContext.Provider value={cardActions}>
+        <SpotlightContext.Provider value={highlightId}>
         <main className="material-notes-workspace" data-material-canvas="ready">
         <header className="material-canvas-toolbar">
           <div className="material-canvas-title"><strong>{session.label}</strong><small>{saveLabel}</small></div>
@@ -1006,6 +1107,7 @@ export function MaterialNotesWorkspace({
           </CanvasDialog>
         )}
         </main>
+        </SpotlightContext.Provider>
       </CardActionsContext.Provider>
     </InvokeContext.Provider>
   );

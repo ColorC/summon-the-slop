@@ -314,3 +314,14 @@
   .material-toolbar-actions { padding-bottom: 1px; }
   .material-search-form { grid-template-columns: 1fr; }
 }
+
+/* omni canvas highlight op: 聚光灯脉冲描边, 到秒自动消(见 canvasOps.ts / SpotlightContext) */
+.material-canvas-card.spotlight {
+  outline: 2px solid rgba(245, 197, 66, 0.95);
+  outline-offset: 3px;
+  animation: material-spotlight-pulse 1.1s ease-in-out infinite;
+}
+@keyframes material-spotlight-pulse {
+  0%, 100% { outline-color: rgba(245, 197, 66, 0.95); }
+  50% { outline-color: rgba(245, 197, 66, 0.2); }
+}
