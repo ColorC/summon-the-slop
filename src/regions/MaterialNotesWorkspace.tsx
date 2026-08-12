@@ -42,7 +42,6 @@ import {
   Search,
   Snowflake,
   Sun,
-  Check,
   Copy,
   Trash2,
   Undo2,
@@ -412,7 +411,6 @@ const MaterialCard = memo(function MaterialCard({ id, data, selected }: NodeProp
   const spotlight = useContext(SpotlightContext);
   const { zoom } = useViewport();
   const [deleteArmed, setDeleteArmed] = useState(false);
-  const [refCopied, setRefCopied] = useState(false);
   if (!actions) return null;
   const kindLabel = data.kind === "text"
     ? (data.draft ? "未保存" : "文字")
@@ -464,18 +462,6 @@ const MaterialCard = memo(function MaterialCard({ id, data, selected }: NodeProp
             <Sun size={14} />
           </button>
         )}
-        <button
-          className="nodrag nopan" type="button"
-          title={refCopied ? "已复制卡片引用" : "复制卡片引用（会话#卡片，可直接给 AI/CLI 用）"}
-          onClick={() => {
-            void actions.copyCardRef(id).then(() => {
-              setRefCopied(true);
-              window.setTimeout(() => setRefCopied(false), 1500);
-            });
-          }}
-        >
-          {refCopied ? <Check size={14} /> : <Copy size={14} />}
-        </button>
         <button className="nodrag nopan" type="button" title="全屏查看（Esc 退出）" onClick={() => actions.toggleFullscreen(id)}>
           <Maximize2 size={14} />
         </button>
@@ -563,6 +549,7 @@ export function MaterialNotesWorkspace({
   const [legacyLoading, setLegacyLoading] = useState(false);
   const [fullscreenId, setFullscreenId] = useState<string | null>(null);
   const [freezingId, setFreezingId] = useState<string | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; kind: "pane" | "card" | "edge"; id?: string } | null>(null);
   const [highlightId, setHighlightId] = useState<string | null>(null);
   const highlightRef = useRef<string | null>(null);
   const highlightTimer = useRef<number | null>(null);
@@ -742,16 +729,16 @@ export function MaterialNotesWorkspace({
     setDialog(null);
   }, [pushHistory, setGraph]);
 
-  const addText = useCallback(() => {
+  // 右键菜单"新建文字卡": 落在右键点的流坐标上(有空 draft 则只选中, 不堆空卡)
+  const addTextAt = useCallback((clientX: number, clientY: number) => {
     const currentDraft = nodesRef.current.find((node) => node.data.kind === "text" && node.data.draft);
     if (currentDraft) {
       setNodes((current) => current.map((node) => ({ ...node, selected: node.id === currentDraft.id })));
       return;
     }
     pushHistory();
-    const count = nodesRef.current.length;
-    const next = [...nodesRef.current, draftNode(80 + (count % 3) * 580, 72 + Math.floor(count / 3) * 460)];
-    setGraph(next, edgesRef.current, false);
+    const point = flowRef.current?.screenToFlowPosition({ x: clientX, y: clientY }) || { x: 100, y: 90 };
+    setGraph([...nodesRef.current, draftNode(point.x, point.y)], edgesRef.current, false);
   }, [pushHistory, setGraph]);
 
   const addLink = useCallback((url: string) => {
@@ -1079,6 +1066,17 @@ export function MaterialNotesWorkspace({
         return { frozen: id, stats };
       },
       unfreeze: (args: CanvasOpArgs) => ({ unfrozen: String(args.card || ""), ...cardActions.unfreezeCard(String(args.card || "")) }),
+      say: (args: CanvasOpArgs) => {
+        // AI 回写: 新建一块带内容的文字卡(走 changeText 既有落盘链, 标题取首行)
+        const text = String(args.text || "").trim();
+        if (!text) throw new Error("空内容");
+        pushHistory();
+        const count = nodesRef.current.length;
+        const node = draftNode(80 + (count % 3) * 580, 72 + Math.floor(count / 3) * 460);
+        setGraph([...nodesRef.current, node], edgesRef.current, false);
+        cardActions.changeText(node.id, text);
+        return { created: node.id };
+      },
     });
   }, [storageId, cardActions, pushHistory, setGraph]);
 
@@ -1163,10 +1161,10 @@ export function MaterialNotesWorkspace({
     writeDocument(nodesRef.current, next);
   }, [pushHistory, writeDocument]);
 
-  const deleteSelectedRelations = useCallback(() => {
-    if (!edgesRef.current.some((edge) => edge.selected)) return;
+  const removeRelation = useCallback((edgeId: string) => {
+    if (!edgesRef.current.some((edge) => edge.id === edgeId)) return;
     pushHistory();
-    const next = edgesRef.current.filter((edge) => !edge.selected);
+    const next = edgesRef.current.filter((edge) => edge.id !== edgeId);
     edgesRef.current = next;
     setEdges(next);
     writeDocument(nodesRef.current, next);
@@ -1177,9 +1175,55 @@ export function MaterialNotesWorkspace({
       : saveState === "saving" ? "保存中…"
         : saveState === "saved" ? "已保存"
           : "保存失败";
-  const hasSelectedRelation = edges.some((edge) => edge.selected);
   const fullscreenNode = fullscreenId ? nodes.find((node) => node.id === fullscreenId) : undefined;
   void historyRevision;
+
+  // 右键菜单条目(画布空白/卡片/关系三类); 菜单是后续功能的扩展位
+  const menuNode = menu?.kind === "card" ? nodesRef.current.find((node) => node.id === menu.id) : undefined;
+  const menuItems: ({ label: string; icon?: React.ReactNode; disabled?: boolean; onSelect: () => void } | "divider")[] = [];
+  if (menu?.kind === "pane") {
+    menuItems.push(
+      { label: "新建文字卡", icon: <FilePlus2 size={14} />, onSelect: () => addTextAt(menu.x, menu.y) },
+      { label: "加入材料（链接/文件）…", icon: <Link2 size={14} />, onSelect: () => { setDialog("material"); setSearchError(""); } },
+      { label: "接入旧札记…", icon: <FileText size={14} />, onSelect: openLegacy },
+      "divider",
+      { label: "撤销", icon: <Undo2 size={14} />, disabled: !past.current.length, onSelect: undo },
+      { label: "重做", icon: <Redo2 size={14} />, disabled: !future.current.length, onSelect: redo },
+    );
+  } else if (menu?.kind === "card" && menuNode) {
+    const cardId = menuNode.id;
+    menuItems.push(
+      { label: "复制卡片引用", icon: <Copy size={14} />, onSelect: () => void cardActions.copyCardRef(cardId) },
+      { label: "全屏查看", icon: <Maximize2 size={14} />, onSelect: () => cardActions.toggleFullscreen(cardId) },
+    );
+    if (menuNode.data.frozen) {
+      menuItems.push({ label: "解冻出新卡", icon: <Sun size={14} />, onSelect: () => cardActions.unfreezeCard(cardId) });
+    } else if (menuNode.data.kind === "material" && menuNode.data.source?.kind === "link" && menuNode.data.adapter === "web") {
+      menuItems.push({ label: "冻结成快照", icon: <Snowflake size={14} />, disabled: freezingId === cardId, onSelect: () => void cardActions.freezeCard(cardId).catch(() => {}) });
+    }
+    menuItems.push(
+      "divider",
+      { label: "从画布移除", icon: <Trash2 size={14} />, onSelect: () => cardActions.removeCard(cardId) },
+    );
+  } else if (menu?.kind === "edge" && menu.id) {
+    const edgeId = menu.id;
+    menuItems.push({ label: "移除这条关系", icon: <Trash2 size={14} />, onSelect: () => removeRelation(edgeId) });
+  }
+
+  // 菜单全局关闭: 点别处/滚轮/Esc
+  useEffect(() => {
+    if (!menu) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") setMenu(null); };
+    const onDown = () => setMenu(null);
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("wheel", onDown, true);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("wheel", onDown, true);
+    };
+  }, [menu]);
 
   if (booting) {
     return <div className="material-canvas-boot" data-material-canvas="loading"><Loader2 className="spin" />正在打开札记…</div>;
@@ -1199,15 +1243,6 @@ export function MaterialNotesWorkspace({
         <main className="material-notes-workspace" data-material-canvas="ready">
         <header className="material-canvas-toolbar">
           <div className="material-canvas-title"><strong>{session.label}</strong><small>{saveLabel}</small></div>
-          <div className="material-toolbar-actions">
-            <button type="button" onClick={addText}><FilePlus2 size={15} />文字</button>
-            <button type="button" className="primary" onClick={() => { setDialog("material"); setSearchError(""); }}><Link2 size={15} />材料</button>
-            <button type="button" onClick={openLegacy}>旧札记</button>
-            <span className="material-toolbar-divider" />
-            <button type="button" title="撤销" disabled={!past.current.length} onClick={undo}><Undo2 size={15} /></button>
-            <button type="button" title="重做" disabled={!future.current.length} onClick={redo}><Redo2 size={15} /></button>
-            {hasSelectedRelation && <button type="button" title="移除选中关系" onClick={deleteSelectedRelations}><Trash2 size={15} />关系</button>}
-          </div>
         </header>
         <section className="material-canvas-stage" ref={stageRef}>
           <ReactFlow<CanvasNode, CanvasEdge>
@@ -1223,6 +1258,18 @@ export function MaterialNotesWorkspace({
               if (dragSnapshot.current) pushHistory(dragSnapshot.current);
               dragSnapshot.current = null;
               writeDocument(nodesRef.current, edgesRef.current);
+            }}
+            onPaneContextMenu={(event) => {
+              event.preventDefault();
+              setMenu({ x: event.clientX, y: event.clientY, kind: "pane" });
+            }}
+            onNodeContextMenu={(event, node) => {
+              event.preventDefault();
+              setMenu({ x: event.clientX, y: event.clientY, kind: "card", id: node.id });
+            }}
+            onEdgeContextMenu={(event, edge) => {
+              event.preventDefault();
+              setMenu({ x: event.clientX, y: event.clientY, kind: "edge", id: edge.id });
             }}
             fitView
             fitViewOptions={{ padding: 0.18, maxZoom: 1 }}
@@ -1240,8 +1287,31 @@ export function MaterialNotesWorkspace({
           </ReactFlow>
         </section>
 
-        {fullscreenNode && (
-          <div className="material-fullscreen-layer" data-testid="material-fullscreen">
+        {menu && menuItems.length > 0 && (
+          <div
+            className="material-context-menu"
+            data-testid="material-context-menu"
+            style={{ left: menu.x, top: menu.y }}
+            onMouseDown={(event) => event.stopPropagation()}
+            onContextMenu={(event) => event.preventDefault()}
+          >
+            {menuItems.map((item, index) => item === "divider"
+              ? <div key={`d${index}`} className="material-context-divider" />
+              : (
+                <button
+                  key={item.label}
+                  type="button"
+                  disabled={item.disabled}
+                  onClick={() => { setMenu(null); item.onSelect(); }}
+                >
+                  {item.icon}
+                  <span>{item.label}</span>
+                </button>
+              ))}
+          </div>
+        )}
+
+        {fullscreenNode && (          <div className="material-fullscreen-layer" data-testid="material-fullscreen">
             <header className="material-fullscreen-bar">
               {fullscreenNode.data.kind === "text" ? <FileText size={15} /> : <Link2 size={15} />}
               <strong title={fullscreenNode.data.title}>{fullscreenNode.data.title}</strong>
