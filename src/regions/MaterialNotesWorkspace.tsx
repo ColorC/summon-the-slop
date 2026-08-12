@@ -341,16 +341,31 @@ function LinkPreview({ source, adapter }: {
 }
 
 function MaterialBody({ data }: { data: CardData }) {
-  if (data.frozen && data.source?.kind === "file") return <FrozenPreview source={data.source} />;
+  if (data.frozen && data.source?.kind === "file") return <FrozenPreview source={data.source} frozen={data.frozen} />;
   if (!data.source) return <div className="material-preview-message">材料引用缺失</div>;
   if (data.source.kind === "file") return <FilePreview source={data.source} />;
   if (data.source.kind === "legacy-note") return <LegacyPreview source={data.source} />;
   return <LinkPreview source={data.source} adapter={data.adapter} />;
 }
 
-/** 冻结快照: sandbox 空值=禁脚本禁表单, 渲染烘焙出的单文件静态 HTML(双保险, 烘焙时已剥 script)。 */
-function FrozenPreview({ source }: { source: Extract<MaterialSource, { kind: "file" }> }) {
-  return <iframe className="material-frame-preview" sandbox="" src={streamUrl(source.token)} title="冻结快照" />;
+/** 冻结快照: 顶部横幅标明"这是死的"(时间+活源), 正文 sandbox 空值=禁脚本禁表单(双保险, 烘焙时已剥 script)。 */
+function FrozenPreview({ source, frozen }: {
+  source: Extract<MaterialSource, { kind: "file" }>;
+  frozen?: CardData["frozen"];
+}) {
+  const fromUrl = frozen?.from.kind === "link" ? frozen.from.url : "";
+  let host = fromUrl;
+  try { host = fromUrl ? new URL(fromUrl).host : ""; } catch { /* 保留原始串 */ }
+  const when = frozen?.capturedAt ? frozen.capturedAt.replace("T", " ").slice(0, 16) : "";
+  return (
+    <div className="material-frozen-preview">
+      <div className="material-frozen-banner" title={fromUrl ? `活源: ${fromUrl}` : "冻结快照"}>
+        <Snowflake size={12} />
+        <span>静态快照{when ? ` · ${when}` : ""}{host ? ` · 源 ${host}` : ""}</span>
+      </div>
+      <iframe className="material-frame-preview" sandbox="" src={streamUrl(source.token)} title="冻结快照" />
+    </div>
+  );
 }
 
 function EditableText({ id, data, actions }: { id: string; data: CardData; actions: CardActions }) {
@@ -404,7 +419,7 @@ const MaterialCard = memo(function MaterialCard({ id, data, selected }: NodeProp
       ? streamUrl(data.source.token)
       : null;
   return (
-    <article className={`material-canvas-card${selected ? " selected" : ""}${spotlight === id ? " spotlight" : ""}`}>
+    <article className={`material-canvas-card${selected ? " selected" : ""}${spotlight === id ? " spotlight" : ""}${data.frozen ? " frozen" : ""}`}>
       <Handle type="target" position={Position.Left} className="material-card-handle input" />
       <Handle type="source" position={Position.Right} className="material-card-handle output" />
       {selected && RESIZE_DIRECTIONS.map((direction) => (

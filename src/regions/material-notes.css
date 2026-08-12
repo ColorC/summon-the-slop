@@ -325,3 +325,31 @@
   0%, 100% { outline-color: rgba(245, 197, 66, 0.95); }
   50% { outline-color: rgba(245, 197, 66, 0.2); }
 }
+
+/* 冻结快照卡: 虚线琥珀框 + 顶部"这是死的"横幅(时间+活源), 一眼可辨 */
+.material-canvas-card.frozen {
+  border-style: dashed;
+  border-color: rgba(245, 197, 66, 0.55);
+}
+.material-frozen-preview {
+  display: grid;
+  grid-template-rows: 22px minmax(0, 1fr);
+  height: 100%;
+}
+.material-frozen-banner {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  font-size: 11px;
+  color: #e8c15a;
+  background: rgba(245, 197, 66, 0.08);
+  border-bottom: 1px dashed rgba(245, 197, 66, 0.4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.material-frozen-banner span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
