@@ -1077,6 +1077,15 @@ export function MaterialNotesWorkspace({
         cardActions.changeText(node.id, text);
         return { created: node.id };
       },
+      rewrite: (args: CanvasOpArgs) => {
+        // 覆写既有文字卡正文(如 @AI 回应覆写提问卡), 走 changeText 既有链
+        const id = String(args.card || "");
+        const node = nodesRef.current.find((item) => item.id === id);
+        if (!node || node.data.kind !== "text") throw new Error(`不是文字卡或没找到: ${id}`);
+        cardActions.beginTextEdit();
+        cardActions.changeText(id, String(args.text ?? ""));
+        return { rewritten: id };
+      },
     });
   }, [storageId, cardActions, pushHistory, setGraph]);
 

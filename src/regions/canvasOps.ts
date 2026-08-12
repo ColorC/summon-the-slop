@@ -17,6 +17,7 @@ export interface CanvasOpHandlers {
   freeze: (args: CanvasOpArgs) => unknown;
   unfreeze: (args: CanvasOpArgs) => unknown;
   say: (args: CanvasOpArgs) => unknown;
+  rewrite: (args: CanvasOpArgs) => unknown;
 }
 
 type CanvasOpCommand = { op?: string; args?: CanvasOpArgs };
@@ -44,6 +45,7 @@ async function handleCanvasOp(storageId: string, cmd: CanvasOpCommand): Promise<
       case "freeze": return JSON.stringify({ ok: true, result: await target.freeze(args) });
       case "unfreeze": return JSON.stringify({ ok: true, result: await target.unfreeze(args) });
       case "say": return JSON.stringify({ ok: true, result: await target.say(args) });
+      case "rewrite": return JSON.stringify({ ok: true, result: await target.rewrite(args) });
       default: return JSON.stringify({ ok: false, error: `未知 op ${op}` });
     }
   } catch (error) {
