@@ -27,6 +27,8 @@ export interface CanvasCardRecord {
   y: number;
   width: number;
   height: number;
+  /** 冻结快照元数据: 存在即渲染为死快照; from/fromAdapter 记住活源供解冻新开一块。 */
+  frozen?: { capturedAt: string; from: MaterialSource; fromAdapter: MaterialAdapter };
 }
 
 export interface CanvasRelationRecord {
@@ -96,6 +98,17 @@ function validSource(value: unknown): value is MaterialSource {
   return false;
 }
 
+function validFrozen(value: unknown): CanvasCardRecord["frozen"] {
+  if (!value || typeof value !== "object") return undefined;
+  const frozen = value as Record<string, unknown>;
+  if (!validSource(frozen.from) || typeof frozen.fromAdapter !== "string") return undefined;
+  return {
+    capturedAt: typeof frozen.capturedAt === "string" ? frozen.capturedAt : "",
+    from: frozen.from,
+    fromAdapter: frozen.fromAdapter as MaterialAdapter,
+  };
+}
+
 export function parseCanvasDocument(raw: string | null, sessionId: string): MaterialCanvasDocument | null {
   if (!raw) return null;
   try {
@@ -113,6 +126,7 @@ export function parseCanvasDocument(raw: string | null, sessionId: string): Mate
         text: typeof candidate.text === "string" ? candidate.text : undefined,
         source: validSource(candidate.source) ? candidate.source : undefined,
         adapter: typeof candidate.adapter === "string" ? candidate.adapter as MaterialAdapter : "auto",
+        frozen: validFrozen(candidate.frozen),
         x: finite(candidate.x, 80),
         y: finite(candidate.y, 72),
         width: Math.max(260, finite(candidate.width, 440)),

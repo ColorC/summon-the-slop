@@ -40,6 +40,8 @@ import {
   Redo2,
   RotateCcw,
   Search,
+  Snowflake,
+  Sun,
   Trash2,
   Undo2,
   X,
@@ -58,6 +60,7 @@ import {
   type MaterialSource,
 } from "./materialCanvasModel";
 import { registerCanvasHandler, type CanvasOpArgs } from "./canvasOps";
+import { webNotesInvoke } from "../webNotesInvoke";
 
 type ResizeDirection =
   | "top"
@@ -131,6 +134,9 @@ interface CardActions {
   finishTextEdit: (id: string) => void;
   removeCard: (id: string) => void;
   toggleFullscreen: (id: string) => void;
+  freezeCard: (id: string) => Promise<unknown>;
+  unfreezeCard: (id: string) => { created: string };
+  freezingId: string | null;
   beginResize: (
     id: string,
     direction: ResizeDirection,
@@ -335,10 +341,16 @@ function LinkPreview({ source, adapter }: {
 }
 
 function MaterialBody({ data }: { data: CardData }) {
+  if (data.frozen && data.source?.kind === "file") return <FrozenPreview source={data.source} />;
   if (!data.source) return <div className="material-preview-message">材料引用缺失</div>;
   if (data.source.kind === "file") return <FilePreview source={data.source} />;
   if (data.source.kind === "legacy-note") return <LegacyPreview source={data.source} />;
   return <LinkPreview source={data.source} adapter={data.adapter} />;
+}
+
+/** 冻结快照: sandbox 空值=禁脚本禁表单, 渲染烘焙出的单文件静态 HTML(双保险, 烘焙时已剥 script)。 */
+function FrozenPreview({ source }: { source: Extract<MaterialSource, { kind: "file" }> }) {
+  return <iframe className="material-frame-preview" sandbox="" src={streamUrl(source.token)} title="冻结快照" />;
 }
 
 function EditableText({ id, data, actions }: { id: string; data: CardData; actions: CardActions }) {
@@ -384,6 +396,7 @@ const MaterialCard = memo(function MaterialCard({ id, data, selected }: NodeProp
   if (!actions) return null;
   const kindLabel = data.kind === "text"
     ? (data.draft ? "未保存" : "文字")
+    : data.frozen ? "快照 · 已冻结"
     : data.source?.kind === "legacy-note" ? "旧札记 · 只读" : "材料";
   const openUrl = data.source?.kind === "link"
     ? data.source.url
@@ -411,6 +424,24 @@ const MaterialCard = memo(function MaterialCard({ id, data, selected }: NodeProp
         {openUrl && (
           <button className="nodrag nopan" type="button" title="打开源材料" onClick={() => window.open(openUrl, "_blank", "noopener") }>
             <ArrowUpRight size={14} />
+          </button>
+        )}
+        {!data.frozen && data.kind === "material" && data.source?.kind === "link" && data.adapter === "web" && (
+          <button
+            className="nodrag nopan" type="button" disabled={actions.freezingId === id}
+            title="冻结成静态快照（剥交互，烘焙成单文件 HTML，原地取代活页）"
+            onClick={() => void actions.freezeCard(id).catch((reason) => console.error("[material-canvas] freeze failed", reason))}
+          >
+            {actions.freezingId === id ? <Loader2 className="spin" size={14} /> : <Snowflake size={14} />}
+          </button>
+        )}
+        {data.frozen && (
+          <button
+            className="nodrag nopan" type="button"
+            title="解冻：按记住的活源在旁边新开一块（本快照保留）"
+            onClick={() => actions.unfreezeCard(id)}
+          >
+            <Sun size={14} />
           </button>
         )}
         <button className="nodrag nopan" type="button" title="全屏查看（Esc 退出）" onClick={() => actions.toggleFullscreen(id)}>
@@ -498,6 +529,7 @@ export function MaterialNotesWorkspace({
   const [legacyNotes, setLegacyNotes] = useState<LegacyNote[]>([]);
   const [legacyLoading, setLegacyLoading] = useState(false);
   const [fullscreenId, setFullscreenId] = useState<string | null>(null);
+  const [freezingId, setFreezingId] = useState<string | null>(null);
   const [highlightId, setHighlightId] = useState<string | null>(null);
   const highlightRef = useRef<string | null>(null);
   const highlightTimer = useRef<number | null>(null);
@@ -814,6 +846,56 @@ export function MaterialNotesWorkspace({
       setGraph(nextNodes.length ? nextNodes : [draftNode()], nextEdges);
     },
     toggleFullscreen: (id) => setFullscreenId((current) => (current === id ? null : id)),
+    freezeCard: async (id) => {
+      const node = nodesRef.current.find((item) => item.id === id);
+      if (!node) throw new Error(`没找到卡片 ${id}`);
+      if (node.data.frozen) throw new Error("已是冻结快照卡");
+      const source = node.data.source;
+      if (node.data.kind !== "material" || source?.kind !== "link" || node.data.adapter !== "web") {
+        throw new Error("只有 web 页面链接卡能冻结");
+      }
+      setFreezingId(id);
+      try {
+        // 捕获是秒级慢操作且只有 HTTP 桥有实现(桌面 Rust 侧无此命令), 直连 webNotesInvoke 给足 60s
+        const payload = await webNotesInvoke<FileHit & { snapshotId: string; stats: Record<string, number> }>(
+          "notes_snapshot_capture", { id, url: source.url }, 60_000);
+        pushHistory();
+        const frozen = { capturedAt: new Date().toISOString(), from: source, fromAdapter: node.data.adapter };
+        const next = nodesRef.current.map((item) => item.id !== id ? item : {
+          ...item,
+          data: {
+            ...item.data,
+            frozen,
+            source: { kind: "file" as const, path: payload.path, token: payload.open_token, mime: payload.mime },
+          },
+        });
+        setGraph(next, edgesRef.current);
+        return payload.stats;
+      } finally {
+        setFreezingId(null);
+      }
+    },
+    unfreezeCard: (id) => {
+      const node = nodesRef.current.find((item) => item.id === id);
+      const frozen = node?.data.frozen;
+      if (!node || !frozen) throw new Error("不是冻结快照卡");
+      pushHistory();
+      const size = dimensionsOf(node);
+      const live = nodeFromCard({
+        id: safeRandomId("material-"),
+        kind: "material",
+        title: node.data.title,
+        source: frozen.from,
+        adapter: frozen.fromAdapter,
+        x: node.position.x + size.width + 60,
+        y: node.position.y,
+        width: size.width,
+        height: size.height,
+      });
+      setGraph([...nodesRef.current, live], edgesRef.current);
+      return { created: live.id };
+    },
+    freezingId,
     beginResize: (id, direction, event, zoom) => {
       event.preventDefault();
       event.stopPropagation();
@@ -860,7 +942,7 @@ export function MaterialNotesWorkspace({
       target.addEventListener("pointerup", finish);
       target.addEventListener("pointercancel", finish);
     },
-  }), [pushHistory, setGraph, writeDocument, writeTextMaterial]);
+  }), [pushHistory, setGraph, writeDocument, writeTextMaterial, freezingId]);
 
   // omni canvas 活画布 ops(cb 文件队列桥, 见 canvasOps.ts): state/update/remove/viewport/focus/highlight
   useEffect(() => {
@@ -951,6 +1033,12 @@ export function MaterialNotesWorkspace({
         applyHighlight(id, seconds);
         return { highlighted: id, seconds };
       },
+      freeze: async (args: CanvasOpArgs) => {
+        const id = String(args.card || "");
+        const stats = await cardActions.freezeCard(id);
+        return { frozen: id, stats };
+      },
+      unfreeze: (args: CanvasOpArgs) => ({ unfrozen: String(args.card || ""), ...cardActions.unfreezeCard(String(args.card || "")) }),
     });
   }, [storageId, cardActions, pushHistory, setGraph]);
 

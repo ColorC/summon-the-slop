@@ -130,6 +130,7 @@ async function invokeHttp<T>(
 async function invokeWebSocket<T>(
   command: string,
   args: Record<string, unknown>,
+  timeoutMs: number,
 ): Promise<T> {
   const socket = await ensureSocket();
   const id = `note-${Date.now().toString(36)}-${(++nextRequestId).toString(36)}`;
@@ -139,7 +140,7 @@ async function invokeWebSocket<T>(
       reject(new SocketDeliveryUncertain(
         `note bridge request timed out after it may have been delivered: ${command}`,
       ));
-    }, 15_000);
+    }, timeoutMs);
     pending.set(id, {
       resolve: (value) => resolve(value as T),
       reject,
@@ -160,9 +161,10 @@ async function invokeWebSocket<T>(
 export async function webNotesInvoke<T>(
   command: string,
   args: Record<string, unknown> = {},
+  timeoutMs = 15_000,
 ): Promise<T> {
   try {
-    return await invokeWebSocket<T>(command, args);
+    return await invokeWebSocket<T>(command, args, timeoutMs);
   } catch (error) {
     // Only retry when the command was definitely not sent. Retrying an uncertain
     // write could execute it twice; those errors stay visible to the caller.

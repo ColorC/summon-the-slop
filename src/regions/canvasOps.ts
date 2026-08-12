@@ -14,6 +14,8 @@ export interface CanvasOpHandlers {
   viewport: (args: CanvasOpArgs) => unknown;
   focus: (args: CanvasOpArgs) => unknown;
   highlight: (args: CanvasOpArgs) => unknown;
+  freeze: (args: CanvasOpArgs) => unknown;
+  unfreeze: (args: CanvasOpArgs) => unknown;
 }
 
 type CanvasOpCommand = { op?: string; args?: CanvasOpArgs };
@@ -32,12 +34,14 @@ async function handleCanvasOp(storageId: string, cmd: CanvasOpCommand): Promise<
   const args = cmd.args || {};
   try {
     switch (op) {
-      case "state": return JSON.stringify({ ok: true, result: target.state() });
-      case "update": return JSON.stringify({ ok: true, result: target.update(args) });
-      case "remove": return JSON.stringify({ ok: true, result: target.remove(args) });
-      case "viewport": return JSON.stringify({ ok: true, result: target.viewport(args) });
-      case "focus": return JSON.stringify({ ok: true, result: target.focus(args) });
-      case "highlight": return JSON.stringify({ ok: true, result: target.highlight(args) });
+      case "state": return JSON.stringify({ ok: true, result: await target.state() });
+      case "update": return JSON.stringify({ ok: true, result: await target.update(args) });
+      case "remove": return JSON.stringify({ ok: true, result: await target.remove(args) });
+      case "viewport": return JSON.stringify({ ok: true, result: await target.viewport(args) });
+      case "focus": return JSON.stringify({ ok: true, result: await target.focus(args) });
+      case "highlight": return JSON.stringify({ ok: true, result: await target.highlight(args) });
+      case "freeze": return JSON.stringify({ ok: true, result: await target.freeze(args) });
+      case "unfreeze": return JSON.stringify({ ok: true, result: await target.unfreeze(args) });
       default: return JSON.stringify({ ok: false, error: `未知 op ${op}` });
     }
   } catch (error) {
