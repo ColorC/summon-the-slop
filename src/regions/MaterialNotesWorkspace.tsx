@@ -35,6 +35,8 @@ import {
   FileText,
   Link2,
   Loader2,
+  Maximize2,
+  Minimize2,
   Redo2,
   RotateCcw,
   Search,
@@ -127,6 +129,7 @@ interface CardActions {
   beginTextEdit: () => void;
   finishTextEdit: (id: string) => void;
   removeCard: (id: string) => void;
+  toggleFullscreen: (id: string) => void;
   beginResize: (
     id: string,
     direction: ResizeDirection,
@@ -365,7 +368,7 @@ function EditableText({ id, data, actions }: { id: string; data: CardData; actio
       onBlur={() => actions.finishTextEdit(id)}
       onChange={(event) => actions.changeText(id, event.currentTarget.value)}
       onPointerDown={(event) => event.stopPropagation()}
-      onKeyDown={(event) => event.stopPropagation()}
+      onKeyDown={(event) => { if (event.key !== "Escape") event.stopPropagation(); }}
     />
   );
 }
@@ -406,6 +409,9 @@ const MaterialCard = memo(function MaterialCard({ id, data, selected }: NodeProp
             <ArrowUpRight size={14} />
           </button>
         )}
+        <button className="nodrag nopan" type="button" title="全屏查看（Esc 退出）" onClick={() => actions.toggleFullscreen(id)}>
+          <Maximize2 size={14} />
+        </button>
         <button
           className={`nodrag nopan material-delete${deleteArmed ? " armed" : ""}`}
           type="button"
@@ -487,6 +493,18 @@ export function MaterialNotesWorkspace({
   const [hits, setHits] = useState<FileHit[]>([]);
   const [legacyNotes, setLegacyNotes] = useState<LegacyNote[]>([]);
   const [legacyLoading, setLegacyLoading] = useState(false);
+  const [fullscreenId, setFullscreenId] = useState<string | null>(null);
+
+  // 卡片被移除时退出其全屏; Esc 随时退出
+  useEffect(() => {
+    if (fullscreenId && !nodes.some((node) => node.id === fullscreenId)) setFullscreenId(null);
+  }, [fullscreenId, nodes]);
+  useEffect(() => {
+    if (!fullscreenId) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") setFullscreenId(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fullscreenId]);
 
   const refreshHistory = () => setHistoryRevision((value) => value + 1);
   const pushHistory = useCallback((value = snapshotOf(nodesRef.current, edgesRef.current)) => {
@@ -658,8 +676,8 @@ export function MaterialNotesWorkspace({
       return;
     }
     pushHistory();
-    const point = flowRef.current?.screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 }) || { x: 100, y: 90 };
-    const next = [...nodesRef.current, draftNode(point.x - 220, point.y - 120)];
+    const count = nodesRef.current.length;
+    const next = [...nodesRef.current, draftNode(80 + (count % 3) * 580, 72 + Math.floor(count / 3) * 460)];
     setGraph(next, edgesRef.current, false);
   }, [pushHistory, setGraph]);
 
@@ -787,6 +805,7 @@ export function MaterialNotesWorkspace({
       const nextEdges = edgesRef.current.filter((edge) => edge.source !== id && edge.target !== id);
       setGraph(nextNodes.length ? nextNodes : [draftNode()], nextEdges);
     },
+    toggleFullscreen: (id) => setFullscreenId((current) => (current === id ? null : id)),
     beginResize: (id, direction, event, zoom) => {
       event.preventDefault();
       event.stopPropagation();
@@ -872,6 +891,7 @@ export function MaterialNotesWorkspace({
         : saveState === "saved" ? "已保存"
           : "保存失败";
   const hasSelectedRelation = edges.some((edge) => edge.selected);
+  const fullscreenNode = fullscreenId ? nodes.find((node) => node.id === fullscreenId) : undefined;
   void historyRevision;
 
   if (booting) {
@@ -931,6 +951,28 @@ export function MaterialNotesWorkspace({
             <Controls showInteractive={false} />
           </ReactFlow>
         </section>
+
+        {fullscreenNode && (
+          <div className="material-fullscreen-layer" data-testid="material-fullscreen">
+            <header className="material-fullscreen-bar">
+              {fullscreenNode.data.kind === "text" ? <FileText size={15} /> : <Link2 size={15} />}
+              <strong title={fullscreenNode.data.title}>{fullscreenNode.data.title}</strong>
+              <small>
+                {fullscreenNode.data.kind === "text"
+                  ? "文字"
+                  : fullscreenNode.data.source?.kind === "legacy-note" ? "旧札记 · 只读" : "材料"}
+              </small>
+              <button type="button" title="退出全屏（Esc）" onClick={() => setFullscreenId(null)}>
+                <Minimize2 size={15} />退出全屏
+              </button>
+            </header>
+            <div className="material-fullscreen-body">
+              {fullscreenNode.data.kind === "text"
+                ? <EditableText id={fullscreenNode.id} data={fullscreenNode.data} actions={cardActions} />
+                : <MaterialBody data={fullscreenNode.data} />}
+            </div>
+          </div>
+        )}
 
         {dialog === "material" && (
           <CanvasDialog title="加入材料" onClose={() => setDialog(null)}>
