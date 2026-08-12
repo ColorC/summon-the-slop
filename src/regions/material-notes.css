@@ -6,7 +6,9 @@
   --canvas-text: #dce7f4;
   --canvas-muted: #8394a9;
   --canvas-accent: #73b8ff;
-  position: fixed;
+  /* absolute 而非 fixed: 独立页由 #app(定位宿主)容住等于全屏; 被陪伴面等宿主内嵌时
+     必须被容器截住, 否则会盖住宿主整个视口并截胡所有指针事件(2026-08-12 实证故障)。 */
+  position: absolute;
   inset: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -193,7 +195,7 @@
 .material-canvas-stage .react-flow__edge.selected .react-flow__edge-path { stroke: #b7dcff; stroke-width: 3; }
 
 .material-dialog-backdrop {
-  position: fixed;
+  position: absolute;
   z-index: 100;
   inset: 0;
   display: grid;
@@ -219,7 +221,7 @@
 .spin { animation: material-spin 0.85s linear infinite; }
 
 .material-canvas-boot {
-  position: fixed;
+  position: absolute;
   inset: 0;
   display: grid;
   place-content: center;
