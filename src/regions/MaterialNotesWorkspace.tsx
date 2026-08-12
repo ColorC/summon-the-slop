@@ -542,6 +542,7 @@ export function MaterialNotesWorkspace({
   nodesRef.current = nodes;
   edgesRef.current = edges;
   const flowRef = useRef<ReactFlowInstance<CanvasNode, CanvasEdge> | null>(null);
+  const stageRef = useRef<HTMLElement | null>(null);
   const past = useRef<CanvasSnapshot[]>([]);
   const future = useRef<CanvasSnapshot[]>([]);
   const dragSnapshot = useRef<CanvasSnapshot | null>(null);
@@ -1081,6 +1082,65 @@ export function MaterialNotesWorkspace({
     });
   }, [storageId, cardActions, pushHistory, setGraph]);
 
+  // Ctrl+滚轮: 手势起点在卡片上→整段手势只缩那张卡(中途光标移到别处也不换目标),
+  // 起点在空白处→不干预(交给 React Flow 原生画布缩放)。停顿 450ms 算手势结束, 结束时一次性入历史+落盘。
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const GESTURE_GAP = 450;
+    let lockedCard: string | null | undefined; // undefined=不在手势中
+    let lastTick = 0;
+    let preGesture: CanvasSnapshot | null = null;
+    let endTimer: number | null = null;
+    const finish = () => {
+      if (endTimer !== null) {
+        window.clearTimeout(endTimer);
+        endTimer = null;
+      }
+      if (preGesture) {
+        pushHistory(preGesture);
+        writeDocument(nodesRef.current, edgesRef.current);
+        preGesture = null;
+      }
+      lockedCard = undefined;
+    };
+    const onWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey && !event.metaKey) return;
+      const now = Date.now();
+      if (lockedCard === undefined || now - lastTick > GESTURE_GAP) {
+        const nodeEl = (event.target as Element | null)?.closest?.(".react-flow__node-materialCard");
+        lockedCard = nodeEl?.getAttribute("data-id") || null;
+        preGesture = lockedCard ? snapshotOf(nodesRef.current, edgesRef.current) : null;
+      }
+      lastTick = now;
+      if (lockedCard === null) return; // 画布手势: 原生缩放, 不碰
+      event.preventDefault();
+      event.stopPropagation();
+      const factor = event.deltaY < 0 ? 1.09 : 1 / 1.09;
+      const target = lockedCard;
+      const next = nodesRef.current.map((node) => {
+        if (node.id !== target) return node;
+        const size = dimensionsOf(node);
+        const width = Math.min(1800, Math.max(260, Math.round(size.width * factor)));
+        const height = Math.min(1400, Math.max(180, Math.round(size.height * factor)));
+        return {
+          ...node,
+          position: { x: node.position.x - (width - size.width) / 2, y: node.position.y - (height - size.height) / 2 },
+          style: { ...node.style, width, height },
+        };
+      });
+      nodesRef.current = next;
+      setNodes(next);
+      if (endTimer !== null) window.clearTimeout(endTimer);
+      endTimer = window.setTimeout(finish, GESTURE_GAP);
+    };
+    stage.addEventListener("wheel", onWheel, { passive: false, capture: true });
+    return () => {
+      stage.removeEventListener("wheel", onWheel, { capture: true });
+      finish();
+    };
+  }, [pushHistory, writeDocument, booting]);
+
   const onNodesChange = useCallback((changes: NodeChange<CanvasNode>[]) => {
     const next = applyNodeChanges(changes, nodesRef.current);
     nodesRef.current = next;
@@ -1149,7 +1209,7 @@ export function MaterialNotesWorkspace({
             {hasSelectedRelation && <button type="button" title="移除选中关系" onClick={deleteSelectedRelations}><Trash2 size={15} />关系</button>}
           </div>
         </header>
-        <section className="material-canvas-stage">
+        <section className="material-canvas-stage" ref={stageRef}>
           <ReactFlow<CanvasNode, CanvasEdge>
             nodes={nodes}
             edges={edges}
