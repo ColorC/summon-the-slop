@@ -6,6 +6,10 @@
 // src-tauri/src/record_cmd.rs (top-of-file doc comment) — the masking is load-bearing.
 (function () {
   function maskInput(text, el) {
+    text = String(text == null ? "" : text).replace(
+      /\b[A-Za-z]:[\\/](?:Users|P4|WindowsWorkspace)(?:[\\/][^\r\n\t"'<>]*)?/gi,
+      "[local-path]"
+    );
     var type = (el && el.getAttribute && el.getAttribute("type")) || "";
     if (type === "password") return "*".repeat(text.length);
     var hay = "";
@@ -45,7 +49,7 @@
       timer = setTimeout(function () { timer = null; flush(); }, 250);
     }
 
-    var stopFn = window.rrweb.record({
+    var recordOptions = Object.assign({
       emit: function (ev) {
         buffer.push({ sid: o.sid, seq: seq++, ts: Date.now(), surface: o.surface, src: o.src, kind: "rrweb", p: { ev: ev } });
         if (buffer.length >= 50) flush(); else schedule();
@@ -56,7 +60,18 @@
       blockClass: "rr-block",
       maskInputFn: maskInput,
       checkoutEveryNth: 100,
-    });
+    }, o.recordOptions || {});
+    // Transport identity and emit are part of the canonical Poof envelope. Callers may tune
+    // rrweb capture fidelity, but must not replace the sink or bypass source-side masking.
+    recordOptions.emit = function (ev) {
+      buffer.push({ sid: o.sid, seq: seq++, ts: Date.now(), surface: o.surface, src: o.src, kind: "rrweb", p: { ev: ev } });
+      if (buffer.length >= 50) flush(); else schedule();
+    };
+    recordOptions.maskAllInputs = true;
+    recordOptions.maskInputOptions = { password: true };
+    recordOptions.maskInputFn = maskInput;
+
+    var stopFn = window.rrweb.record(recordOptions);
 
     return {
       stop: function () {
