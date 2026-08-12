@@ -5,29 +5,23 @@
 //
 // 必须在任何 @tauri-apps/api 调用前 import(notes-web.tsx 第一行 import 本模块)。
 import { copyPlainText, installDoubleCtrlForwarder, installWebClipboardCompat } from "./webRuntimeCompat";
+import { webNotesInvoke } from "./webNotesInvoke";
 
 const warnedUnknownCmds = new Set<string>();
 
 installWebClipboardCompat();
 installDoubleCtrlForwarder();
 
-async function bridge(cmd: string, args: any): Promise<any> {
-  const r = await fetch("/lofa/overlay/invoke", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ cmd, args: args || {} }),
-  });
-  const j = await r.json().catch(() => null);
-  if (!j || j.ok === false) throw new Error((j && j.error) || `overlay-shell bridge error: ${cmd}`);
-  return j.result;
-}
-
 (window as any).__TAURI_INTERNALS__ = {
   invoke: (cmd: string, args: any) => {
-    if (typeof cmd === "string" && cmd.startsWith("notes_")) return bridge(cmd, args);
+    if (typeof cmd === "string" && cmd.startsWith("notes_")) return webNotesInvoke(cmd, args);
     switch (cmd) {
       case "search":
-        return bridge(cmd, args);
+      case "file_inspect":
+        return webNotesInvoke(cmd, args);
+      case "nb_pending":
+      case "nb_respond":
+        return webNotesInvoke(cmd, args);
       case "copy_text":
         return copyPlainText(String(args?.text ?? ""));
       case "read_file_text":

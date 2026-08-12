@@ -1,13 +1,37 @@
-// poof 笔记的纯网页入口: 接 8210 笔记桥, 挂真 <NotesWorkspace>(BlockSuite 笔记, 与桌面 overlay-shell 共用)。
-// 看板/LOFA app 都嵌这个页(经 8210 一个口)。
-import "./tauri-web-shim"; // 必须最先: 装 invoke 垫片 → 8210 桥
-import "@toeverything/theme/style.css";
-import "./App.css";
-import ReactDOM from "react-dom/client";
-import { NotesWorkspace } from "./regions/NotesWorkspace";
+// 网页札记入口只启动轻量画布。旧 BlockSuite 数据由画布内的迁移入口按需读取，
+// 不再参与首屏，也不会成为新画布的存储格式。
+import "./tauri-web-shim";
+import React from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { MaterialNotesWorkspace } from "./regions/MaterialNotesWorkspace";
 
-ReactDOM.createRoot(document.getElementById("app") as HTMLElement).render(
-  <div className="poof-notes-web" style={{ position: "fixed", inset: 0 }}>
-    <NotesWorkspace onClose={() => { /* 网页端无关闭 */ }} />
-  </div>,
-);
+export interface MaterialNotesMountOptions {
+  sessionId?: string;
+  sessionTitle?: string;
+  onReady?: () => void;
+  onError?: (error: string) => void;
+}
+
+const mountedRoots = new WeakMap<HTMLElement, Root>();
+
+export function mountMaterialNotesWorkspace(
+  container: HTMLElement,
+  options: MaterialNotesMountOptions = {},
+): () => void {
+  mountedRoots.get(container)?.unmount();
+  const root = createRoot(container);
+  mountedRoots.set(container, root);
+  root.render(
+    <React.StrictMode>
+      <MaterialNotesWorkspace {...options} />
+    </React.StrictMode>,
+  );
+  return () => {
+    if (mountedRoots.get(container) !== root) return;
+    root.unmount();
+    mountedRoots.delete(container);
+  };
+}
+
+const app = document.getElementById("app");
+if (app) mountMaterialNotesWorkspace(app);

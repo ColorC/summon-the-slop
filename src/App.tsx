@@ -415,6 +415,7 @@ export default function App() {
 
   function panelContent(k: PanelKind) {
     if (k === "clips") return <ContentManager />;
+    if (k === "notes") return <NotesWorkspace embedded onClose={() => closePanel("notes")} />;
     return (
       <div className="pf-scroll">
         {k === "project" ? <ProjectSurface /> : k === "goals" ? <GoalsSurface /> : k === "pinned" ? <PinnedSurface /> : <ReviewSurface />}
@@ -430,11 +431,9 @@ export default function App() {
         </div>
       )}
       {/* middle band — real dock: panels are flush-to-edge, full-height sidebars
-          (left / right) with a drag-sash on the inner seam, or floating cards.
-          Notes is NOT a panel here (a CSS transform would break BlockSuite's
-          pointer math); it renders as its own fixed fullscreen workspace below. */}
+          (left / right) with a drag-sash on the inner seam, or floating cards. */}
       <DockStage
-        open={open.filter((k) => k !== "notes" && k !== "chat")}
+        open={open.filter((k) => k !== "chat")}
         pinned={pinned}
         onPin={togglePin}
         onClose={closePanel}
@@ -445,9 +444,6 @@ export default function App() {
       <PersistentChatDock open={isOpen("chat")} onClose={() => closePanel("chat")}>
         <TerminalBar />
       </PersistentChatDock>
-
-      {/* 笔记空间 — fixed fullscreen (no transform), persistent BlockSuite library */}
-      {open.includes("notes") && <NotesWorkspace onClose={() => closePanel("notes")} />}
 
       {/* 总控选 omni-web 时: 嵌 omnidashboard 现成的 BOSS SIGHT 总控对话界面 */}
       {omniWeb && (

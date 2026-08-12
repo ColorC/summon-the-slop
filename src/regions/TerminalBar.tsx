@@ -6,6 +6,7 @@ import { drainChatIntents, CHAT_EVENT } from "../chatIntents";
 import { registerPane, unregisterPane, FOCUS_PANE_EVENT } from "../poofPanes";
 import { setControllerPane, getControllerPane } from "../controller";
 import { userConfig, KEY_TERMINAL_CWD } from "../userConfig";
+import { setActiveNoteSession } from "../noteSession";
 
 interface Tab {
   id: string;
@@ -15,6 +16,9 @@ interface Tab {
   cwd?: string;
 }
 let counter = 0;
+// term-1 这类页签 id 会在应用重启后复用；加一次运行作用域，避免新会话错误接回
+// 上一次运行中同名页签的会话札记。
+const TERMINAL_SESSION_SCOPE = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
 
 // #3 所有对话 skip-permissions 起。
 const CLAUDE_CMD = "claude --dangerously-skip-permissions";
@@ -85,6 +89,17 @@ export function TerminalBar() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 札记跟随当前真实对话页签。页签本身不落空札记；NotesWorkspace 只在
+  // 第一次出现非空内容时，才把这个 session id 物化成持久笔记。
+  useEffect(() => {
+    const tab = tabs.find((item) => item.id === active);
+    setActiveNoteSession(
+      tab
+        ? { id: `terminal:${TERMINAL_SESSION_SCOPE}:${tab.id}`, label: `${tab.title} 会话札记` }
+        : null
+    );
+  }, [active, tabs]);
 
   return (
     <div className="termbar">

@@ -57,37 +57,30 @@ export function getCollection(): DocCollection {
     docSources: { main: new FileDocSource(ready) },
     blobSources: { main: new FileBlobSource(ready) },
   });
+  // DocEngine otherwise pulls every sub-document in metadata order. Prioritize
+  // the user's last active note before sync starts so first paint does not wait
+  // behind the entire library.
+  const preferredDocId = localStorage.getItem("poof-notes-last") || "";
+  if (preferredDocId) {
+    collection.docSync.setPriorityRule((id) => id === preferredDocId);
+  }
   collection.meta.initialize();
   collection.start();
   g.__poofNotesCollection = collection;
   // 自愈: 等迁移 + 首轮 meta pull 落定后, ① 把磁盘上有 .ydoc 却没进 meta 的孤儿笔记加回列表;
   // ② 给"在列表但标题空"的笔记从 .ydoc 内容回填标题(否则得逐篇打开才显标题, 见 healOrphanNotes)。
-  // docMetas 是异步逐条 pull 的, 固定延时容易"赶早了"。所以订阅 docMetaAdded: 每当有笔记进列表就防抖
-  // 跑一遍, 直到加载稳定; 再加两个绝对时点兜底(防全部早已在列表→不触发 docMetaAdded 的情况)。
-  // 幂等(已登记/已有标题都跳过), 不会重复登记或来回改标题。加载窗口过后退订, 免得后续每次新建都全盘扫。
+  // docMetas 是异步逐条 pull 的。自愈若在加载窗口内启动，会把尚未到达的正常 meta
+  // 误判成孤儿，继而加载并回写整库，直接阻塞首次打开。把维护扫描移出交互关键路径：
+  // 等编辑器有充分时间完成首屏，再在浏览器空闲期运行一次。
   void ready.then(() => {
-    let healTimer: ReturnType<typeof setTimeout> | undefined;
     const runHeal = () => void healOrphanNotes(collection).catch(() => {});
-    const scheduleHeal = () => {
-      if (healTimer) clearTimeout(healTimer);
-      healTimer = setTimeout(runHeal, 700);
-    };
-    let off: any;
-    try {
-      off = collection.meta.docMetaAdded.on(scheduleHeal);
-    } catch {
-      /* ignore */
-    }
-    scheduleHeal();
-    setTimeout(runHeal, 2500); // 兜底一遍
     setTimeout(() => {
-      runHeal(); // 兜底两遍
-      try {
-        off?.dispose?.();
-      } catch {
-        /* ignore */
+      if (typeof window.requestIdleCallback === "function") {
+        window.requestIdleCallback(runHeal, { timeout: 5000 });
+      } else {
+        runHeal();
       }
-    }, 6000);
+    }, 15000);
   });
   return collection;
 }
