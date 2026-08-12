@@ -534,6 +534,7 @@ export function MaterialNotesWorkspace({
   const dragSnapshot = useRef<CanvasSnapshot | null>(null);
   const saveTimer = useRef<number | null>(null);
   const saveRevision = useRef(0);
+  const baseRevision = useRef<string | null>(null);  // 页面已知的 store 版本(updatedAt), 乐观并发用
   const textWriteTimers = useRef(new Map<string, number>());
   const textWriteRevisions = useRef(new Map<string, number>());
   const [historyRevision, setHistoryRevision] = useState(0);
@@ -573,6 +574,33 @@ export function MaterialNotesWorkspace({
     refreshHistory();
   }, []);
 
+  // 把一份 store 文档应用到画布(启动载入与冲突重载共用), 同步已知版本号
+  const applyDocument = useCallback((document: MaterialCanvasDocument | null) => {
+    if (!document || !document.cards.length) {
+      const draft = draftNode();
+      nodesRef.current = [draft];
+      edgesRef.current = [];
+      setNodes([draft]);
+      setEdges([]);
+      setSaveState("empty");
+      baseRevision.current = null;
+      return;
+    }
+    const loadedNodes = document.cards.map((card) => nodeFromCard(card));
+    const loadedEdges = document.relations.map((relation) => ({
+      id: relation.id,
+      source: relation.source,
+      target: relation.target,
+      label: relation.label,
+    }));
+    nodesRef.current = loadedNodes;
+    edgesRef.current = loadedEdges;
+    setNodes(loadedNodes);
+    setEdges(loadedEdges);
+    setSaveState("saved");
+    baseRevision.current = document.updatedAt;
+  }, []);
+
   const writeDocument = useCallback((nextNodes: CanvasNode[], nextEdges: CanvasEdge[]) => {
     if (saveTimer.current !== null) window.clearTimeout(saveTimer.current);
     const revision = ++saveRevision.current;
@@ -581,16 +609,28 @@ export function MaterialNotesWorkspace({
     saveTimer.current = window.setTimeout(() => {
       setSaveState("saving");
       const operation = document.cards.length
-        ? invokeCommand("notes_canvas_put", { id: storageId, json: JSON.stringify(document) })
+        ? invokeCommand("notes_canvas_put", { id: storageId, json: JSON.stringify(document), base: baseRevision.current })
         : invokeCommand("notes_canvas_del", { id: storageId });
       void operation
-        .then(() => { if (saveRevision.current === revision) setSaveState(document.cards.length ? "saved" : "empty"); })
+        .then(() => {
+          if (saveRevision.current === revision) {
+            baseRevision.current = document.cards.length ? document.updatedAt : null;
+            setSaveState(document.cards.length ? "saved" : "empty");
+          }
+        })
         .catch((reason) => {
+          if (String(reason).includes("画布已被外部修改")) {
+            // 版本冲突: 外部(离线 CLI / 另一页)已改 store — 以 store 为准重载, 绝不用旧内存回盖
+            void invokeCommand<string | null>("notes_canvas_get", { id: storageId })
+              .then((raw) => applyDocument(parseCanvasDocument(raw, session.id)))
+              .catch(() => {});
+            return;
+          }
           console.error("[material-canvas] save failed", reason);
           if (saveRevision.current === revision) setSaveState("error");
         });
     }, 180);
-  }, [invokeCommand, session.id, storageId]);
+  }, [invokeCommand, session.id, storageId, applyDocument]);
 
   const writeTextMaterial = useCallback((id: string, content: string) => {
     const existing = textWriteTimers.current.get(id);
@@ -633,27 +673,7 @@ export function MaterialNotesWorkspace({
     void invokeCommand<string | null>("notes_canvas_get", { id: storageId })
       .then((raw) => {
         if (!live) return;
-        const document = parseCanvasDocument(raw, session.id);
-        if (!document || !document.cards.length) {
-          const draft = draftNode();
-          nodesRef.current = [draft];
-          setNodes([draft]);
-          setEdges([]);
-          setSaveState("empty");
-        } else {
-          const loadedNodes = document.cards.map((card) => nodeFromCard(card));
-          const loadedEdges = document.relations.map((relation) => ({
-            id: relation.id,
-            source: relation.source,
-            target: relation.target,
-            label: relation.label,
-          }));
-          nodesRef.current = loadedNodes;
-          edgesRef.current = loadedEdges;
-          setNodes(loadedNodes);
-          setEdges(loadedEdges);
-          setSaveState("saved");
-        }
+        applyDocument(parseCanvasDocument(raw, session.id));
         setBooting(false);
       })
       .catch((reason) => {
