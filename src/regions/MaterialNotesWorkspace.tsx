@@ -42,6 +42,8 @@ import {
   Search,
   Snowflake,
   Sun,
+  Check,
+  Copy,
   Trash2,
   Undo2,
   X,
@@ -61,6 +63,7 @@ import {
 } from "./materialCanvasModel";
 import { registerCanvasHandler, type CanvasOpArgs } from "./canvasOps";
 import { webNotesInvoke } from "../webNotesInvoke";
+import { copyPlainText } from "../webRuntimeCompat";
 
 type ResizeDirection =
   | "top"
@@ -136,6 +139,7 @@ interface CardActions {
   toggleFullscreen: (id: string) => void;
   freezeCard: (id: string) => Promise<unknown>;
   unfreezeCard: (id: string) => { created: string };
+  copyCardRef: (id: string) => Promise<string>;
   freezingId: string | null;
   beginResize: (
     id: string,
@@ -408,6 +412,7 @@ const MaterialCard = memo(function MaterialCard({ id, data, selected }: NodeProp
   const spotlight = useContext(SpotlightContext);
   const { zoom } = useViewport();
   const [deleteArmed, setDeleteArmed] = useState(false);
+  const [refCopied, setRefCopied] = useState(false);
   if (!actions) return null;
   const kindLabel = data.kind === "text"
     ? (data.draft ? "未保存" : "文字")
@@ -459,6 +464,18 @@ const MaterialCard = memo(function MaterialCard({ id, data, selected }: NodeProp
             <Sun size={14} />
           </button>
         )}
+        <button
+          className="nodrag nopan" type="button"
+          title={refCopied ? "已复制卡片引用" : "复制卡片引用（会话#卡片，可直接给 AI/CLI 用）"}
+          onClick={() => {
+            void actions.copyCardRef(id).then(() => {
+              setRefCopied(true);
+              window.setTimeout(() => setRefCopied(false), 1500);
+            });
+          }}
+        >
+          {refCopied ? <Check size={14} /> : <Copy size={14} />}
+        </button>
         <button className="nodrag nopan" type="button" title="全屏查看（Esc 退出）" onClick={() => actions.toggleFullscreen(id)}>
           <Maximize2 size={14} />
         </button>
@@ -910,6 +927,13 @@ export function MaterialNotesWorkspace({
       setGraph([...nodesRef.current, live], edgesRef.current);
       return { created: live.id };
     },
+    copyCardRef: async (id) => {
+      // 跨画布唯一引用: <会话id>#<卡片id>, 会话 id 去掉 external: 前缀更可读
+      const raw = session.id.startsWith("external:") ? session.id.slice("external:".length) : session.id;
+      const ref = `${raw}#${id}`;
+      await copyPlainText(ref);
+      return ref;
+    },
     freezingId,
     beginResize: (id, direction, event, zoom) => {
       event.preventDefault();
@@ -957,7 +981,7 @@ export function MaterialNotesWorkspace({
       target.addEventListener("pointerup", finish);
       target.addEventListener("pointercancel", finish);
     },
-  }), [pushHistory, setGraph, writeDocument, writeTextMaterial, freezingId]);
+  }), [pushHistory, setGraph, writeDocument, writeTextMaterial, freezingId, session.id]);
 
   // omni canvas 活画布 ops(cb 文件队列桥, 见 canvasOps.ts): state/update/remove/viewport/focus/highlight
   useEffect(() => {
