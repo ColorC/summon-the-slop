@@ -272,6 +272,39 @@ pub fn start_monitor() {
     });
 }
 
+/// 远程剪切板同步允许外送的单条文本上限。整块截断而不是拒绝: 同步端拿到前 256KiB 也比拿不到强。
+const MAX_SYNC_TEXT_BYTES: usize = 256 * 1024;
+
+/// 最新一条剪贴板摘要(供 dashboard 远程剪切板同步)。刻意只暴露最新一条、且只有文本才带内容:
+/// 历史里几乎必然有密码/token, 不提供历史浏览面, 也不提供按 id 抓取面。
+pub fn latest_summary() -> Option<serde_json::Value> {
+    let e = read_index().into_iter().last()?;
+    let mut text: Option<String> = None;
+    let mut truncated = false;
+    if e.kind == "text" {
+        if let Some(f) = &e.text_file {
+            if let Ok(mut t) = std::fs::read_to_string(clip_dir().join(f)) {
+                if t.len() > MAX_SYNC_TEXT_BYTES {
+                    let mut cut = MAX_SYNC_TEXT_BYTES;
+                    while cut > 0 && !t.is_char_boundary(cut) {
+                        cut -= 1;
+                    }
+                    t.truncate(cut);
+                    truncated = true;
+                }
+                text = Some(t);
+            }
+        }
+    }
+    Some(serde_json::json!({
+        "id": e.id,
+        "ts_ms": e.ts_ms,
+        "kind": e.kind,
+        "text": text,
+        "truncated": truncated,
+    }))
+}
+
 // ---- 命令 ----
 #[tauri::command]
 pub fn clip_list(limit: usize) -> Result<Vec<ClipEntry>, String> {

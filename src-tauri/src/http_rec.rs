@@ -187,6 +187,13 @@ fn handle(method: &Method, url: &str, body: &str) -> (u16, String) {
                 (200, "[]".into())
             }
         }
+        // 远程剪切板同步(dashboard 桌面壳/网页): 只回最新一条, 且只有文本才带内容。刻意不做
+        // 历史浏览与按 id 抓取 —— 剪贴板历史里几乎必然有密码/token。HTTP 仍受 loopback +
+        // bearer token 保护; 浏览器通过 Dashboard 同源桥访问, 不直接持有 token。
+        "/clipboard/latest" => match crate::clipclip::latest_summary() {
+            Some(v) => (200, v.to_string()),
+            None => (200, "null".into()),
+        },
         // Dashboard 的远程文件搜索只复用现有索引，不另建第二份文件数据库。HTTP 仍受
         // loopback + bearer token 保护；浏览器通过 Dashboard 同源桥访问，不直接持有 token。
         "/search" => match parse_search_request(body) {
