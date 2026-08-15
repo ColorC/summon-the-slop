@@ -24,8 +24,23 @@ export interface SearchHit {
   tags: string[]; // 文件标签
   pinned: boolean; // 用户置顶(override=Pin)
 }
-export const search = (query: string, limit = 30) =>
-  invoke<SearchHit[]>("search", { query, limit });
+const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** The first query lazily loads the persisted whole-disk index. */
+export const search = async (query: string, limit = 30): Promise<SearchHit[]> => {
+  let hits = await invoke<SearchHit[]>("search", { query, limit });
+  if (hits.length > 0 || (await invoke<boolean>("search_index_ready"))) return hits;
+
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    await wait(250);
+    if (await invoke<boolean>("search_index_ready")) {
+      hits = await invoke<SearchHit[]>("search", { query, limit });
+      return hits;
+    }
+  }
+  return [];
+};
 export const openPath = (path: string) => invoke<void>("open_path", { path });
 
 /** 取某路径的真实 Windows 图标(data:image/png;base64,...); 取不到 → null。Rust 侧已按 path 缓存。 */

@@ -197,7 +197,7 @@ async function handleNoteOp(cmd: any): Promise<any> {
       }
       let blockId: string | null = null;
       try {
-        blockId = await insertBlock(doc, k, { ref: cmd.ref, name: cmd.name, text: cmd.text });
+        blockId = await insertBlock(doc, k, { ref: cmd.ref, name: cmd.name, text: cmd.text, xywh: cmd.xywh });
       } catch (e) {
         return { ok: false, error: String(e) };
       }
@@ -205,6 +205,44 @@ async function handleNoteOp(cmd: any): Promise<any> {
       scheduleNoteExport(doc, c);
       window.setTimeout(() => void flushNotesStore(), 500);
       return { ok: true, added: blockId, kind: k, link: `poof-note://${note}/${blockId}` };
+    }
+    if (op === "add-element") {
+      // 画布(surface)元素: connector/shape/text 是 surface element(走 model.addElement);
+      // frame 在本版 BlockSuite 不是 element 而是 affine:frame 块(GfxCompatible, 在 surface children 白名单内)。
+      doc.load();
+      const surface = doc.getBlocksByFlavour?.("affine:surface")?.[0];
+      const surfaceModel: any = surface?.model ?? surface;
+      const surfaceId = surfaceModel?.id;
+      if (!surfaceId || !surfaceModel?.addElement) return { ok: false, error: "没找到画布 surface" };
+      const etype = String(cmd.etype || "");
+      let elemId: string | null = null;
+      if (etype === "connector") {
+        if (!cmd.from || !cmd.to) return { ok: false, error: "connector 缺 from/to" };
+        const props: any = {
+          type: "connector", mode: 1, // ConnectorMode.Orthogonal
+          source: { id: String(cmd.from) }, target: { id: String(cmd.to) },
+        };
+        if (cmd.text) props.text = String(cmd.text); // 连线标签(propsToY 自动转 Y.Text)
+        elemId = surfaceModel.addElement(props);
+      } else if (etype === "shape" || etype === "text") {
+        if (!cmd.xywh) return { ok: false, error: `${etype} 缺 xywh` };
+        const props: any = { type: etype, xywh: String(cmd.xywh) };
+        if (etype === "shape") props.shapeType = "rect";
+        if (cmd.text) props.text = String(cmd.text);
+        elemId = surfaceModel.addElement(props);
+      } else if (etype === "frame") {
+        if (!cmd.xywh) return { ok: false, error: "frame 缺 xywh" };
+        elemId = doc.addBlock(
+          "affine:frame",
+          { xywh: String(cmd.xywh) as any, title: new Text(String(cmd.name || "")) },
+          surfaceId
+        );
+      } else {
+        return { ok: false, error: `未知 etype ${etype}(支持 connector/shape/frame/text)` };
+      }
+      scheduleNoteExport(doc, c);
+      window.setTimeout(() => void flushNotesStore(), 500);
+      return { ok: true, added: elemId, etype, link: `poof-note://${note}/${elemId}` };
     }
     if (op === "center") {
       if (!activeEditor) return { ok: false, error: "笔记面板没开,无法居中(数据 op 不受影响)" };

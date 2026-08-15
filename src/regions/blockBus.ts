@@ -4,7 +4,7 @@ import { insertFileIntoNote } from "./fileInsert";
 import { insertOmniSource } from "./omniSources";
 import { insertAiBlock } from "../blocks/aiblock";
 
-export type BlockKind = "md" | "file" | "plan" | "progress" | "review" | "ai";
+export type BlockKind = "md" | "file" | "image" | "plan" | "progress" | "review" | "ai";
 
 export interface BlockSpec {
   kind: BlockKind;
@@ -16,6 +16,7 @@ export interface BlockSpec {
 export const BLOCK_REGISTRY: BlockSpec[] = [
   { kind: "md", label: "Markdown 文件(原生块·双向同步)", needsRef: true, synced: true },
   { kind: "file", label: "文件(代码块/原文·写回)", needsRef: true, synced: true },
+  { kind: "image", label: "图片(可带 xywh 摆上画布)", needsRef: true, synced: false },
   { kind: "plan", label: "omni 计划(双向同步)", needsRef: true, synced: true },
   { kind: "progress", label: "omni 进度/任务(双向同步)", needsRef: true, synced: true },
   { kind: "review", label: "omni 审阅材料(只读)", needsRef: true, synced: true },
@@ -25,13 +26,15 @@ export const BLOCK_REGISTRY: BlockSpec[] = [
 export async function insertBlock(
   doc: any,
   kind: BlockKind,
-  args: { ref?: string; name?: string; text?: string } = {}
+  args: { ref?: string; name?: string; text?: string; xywh?: string } = {}
 ): Promise<string | null> {
   switch (kind) {
     case "md":
       return insertFileIntoNote(doc, args.ref!, args.name); // md → 同步源块(原生)
     case "file":
       return insertFileIntoNote(doc, args.ref!, args.name, { raw: true }); // 其它文件 → 代码块/原文
+    case "image":
+      return insertFileIntoNote(doc, args.ref!, args.name, { xywh: args.xywh }); // 图片 → 可摆画布
     case "plan":
     case "progress":
     case "review":

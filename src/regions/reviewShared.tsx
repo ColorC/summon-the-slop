@@ -1,0 +1,156 @@
+/** 审阅队列共享件（2026-08-14 抽出）：札记画布审阅面与 dashboard 审阅台同源消费，别抄一份。
+ *  含：全模态预览缩略 ReviewThumb、二值裁决条 SubmissionVerdictBar、跨画布裁决写回
+ *  verdictCardOnCanvas（head 取 revision → 读画布改卡 → mutate；写失败重取重试一次）。 */
+import { useEffect, useState } from "react";
+import {
+  safeRandomId,
+  type CardSubmission,
+} from "./materialCanvasModel";
+import "./reviewShared.css";
+
+export interface CanvasHead {
+  revision: number;
+  updatedAt?: string;
+  lastMutation?: { id: string; actor: string; sequence: number; at: string };
+}
+
+export interface CanvasMutationResult extends CanvasHead {
+  json: string;
+  merged: boolean;
+  duplicate: boolean;
+}
+
+/** notes 桥 invoke 的最小形状(webNotesInvoke / MaterialNotesWorkspace 的 invokeCommand 都满足)。 */
+export type NotesInvoke = <T>(
+  command: string,
+  args?: Record<string, unknown>,
+  timeoutMs?: number,
+) => Promise<T>;
+
+export function streamUrl(token: string): string {
+  return `/lofa/overlay/file/${encodeURIComponent(token)}`;
+}
+
+/** 审阅队列项(M1b): 本会话与全局统一形状; canvasKey 区分归属, 外部画布项走新 tab 深链跳回。 */
+export interface ReviewItemData {
+  key: string;
+  cardId: string;
+  canvasKey: string;
+  sessionId: string;
+  sessionLabel: string;
+  canvasTitle: string;
+  title: string;
+  kind: string;
+  adapter: string;
+  mime: string;
+  /** 文件卡读取令牌(image/audio/video/pdf 内联预览用); 文本卡为 null */
+  fileToken: string | null;
+  /** 文本卡正文材料 id(内联摘要预取用) */
+  editableId: string | null;
+  submission: CardSubmission;
+}
+
+/** 全模态内联预览(M1b 定稿): image/audio/video/pdf 直接渲, 文本预取摘要, 其它给类型签。
+ *  variant="thumb"(默认, 列表小图) / "full"(2026-08-14: 详情窗口主角位, 全文/全尺寸)。 */
+export function ReviewThumb({ item, fetchText, variant = "thumb" }: {
+  item: ReviewItemData;
+  fetchText: (id: string) => Promise<string>;
+  variant?: "thumb" | "full";
+}) {
+  const full = variant === "full";
+  const [snippet, setSnippet] = useState<string | null>(null);
+  useEffect(() => {
+    if (item.kind !== "text" || !item.editableId || snippet !== null) return;
+    let live = true;
+    void fetchText(item.editableId)
+      .then((text) => {
+        if (!live) return;
+        const trimmed = text.trim();
+        setSnippet(full ? (trimmed || "（空）") : (trimmed.slice(0, 160) || "（空）"));
+      })
+      .catch(() => { if (live) setSnippet("（读取失败）"); });
+    return () => { live = false; };
+  }, [item.kind, item.editableId, fetchText, snippet, full]);
+  if (item.kind === "text") {
+    return <span className="material-review-snippet" data-variant={variant}>{snippet ?? "读取…"}</span>;
+  }
+  const src = item.fileToken ? streamUrl(item.fileToken) : null;
+  if (!src) return <span className="material-review-noimg">材料</span>;
+  if (item.adapter === "image") return <img data-variant={variant} src={src} alt={item.title} />;
+  if (item.adapter === "audio") return <audio data-variant={variant} src={src} controls />;
+  if (item.adapter === "video") return <video data-variant={variant} src={src} controls />;
+  if (item.adapter === "pdf" || item.adapter === "web") return <iframe data-variant={variant} src={src} title={item.title} sandbox="" />;
+  return <span className="material-review-noimg">{item.mime || "材料"}</span>;
+}
+
+/** 二值裁决条: 一次点击即裁决完 —— 「完全通过 / 未完全通过」两个终态钮, 没有第二步。
+ *  未通过的理由**不由人填**(用户裁决: 理由由伴随 agent 维护, 受控词表见
+ *  SUBMISSION_FAIL_REASONS, agent 写进 submission.reason)。已裁决态只读显示结论 + 理由。 */
+export function SubmissionVerdictBar({ submission, onVerdict }: {
+  submission: CardSubmission;
+  onVerdict: (pass: boolean, reason?: string) => void;
+}) {
+  if (submission.state === "fully-passed" || submission.state === "not-fully-passed") {
+    return (
+      <div className={`submission-verdict done ${submission.state}`}>
+        <span>{submission.state === "fully-passed" ? "✓ 已通过" : "✗ 未通过"}</span>
+        {submission.reason ? <small>{submission.reason}</small> : null}
+        {submission.verdictAt ? <small>{submission.verdictAt.slice(0, 10)}</small> : null}
+      </div>
+    );
+  }
+  return (
+    <div className="submission-verdict" onPointerDown={(event) => event.stopPropagation()}>
+      <button type="button" className="pass" onClick={() => onVerdict(true)}>完全通过</button>
+      <button type="button" className="fail" onClick={() => onVerdict(false)}>未完全通过</button>
+    </div>
+  );
+}
+
+/** 跨画布裁决写回: 对【该卡所属画布】head 取 revision → 读画布改卡 submission → mutate。
+ *  写失败(409 真冲突等)整链重取重试一次; 仍败抛首次错误。 */
+export async function verdictCardOnCanvas(
+  invoke: NotesInvoke,
+  item: ReviewItemData,
+  pass: boolean,
+  reason: string | undefined,
+  actor: string,
+): Promise<void> {
+  const writeOnce = async () => {
+    const head = await invoke<CanvasHead | null>("notes_canvas_head", { id: item.canvasKey });
+    const raw = await invoke<string | null>("notes_canvas_get", { id: item.canvasKey });
+    const doc = raw ? JSON.parse(raw) as Record<string, unknown> : null;
+    const cards = (doc?.cards ?? []) as Record<string, unknown>[];
+    const card = cards.find((entry) => entry.id === item.cardId);
+    if (!doc || !card || typeof card.submission !== "object" || !card.submission) {
+      throw new Error(`目标卡或提审记录不存在: ${item.canvasKey}/${item.cardId}`);
+    }
+    card.submission = {
+      ...(card.submission as Record<string, unknown>),
+      state: pass ? "fully-passed" : "not-fully-passed",
+      verdictAt: new Date().toISOString(),
+      verdictBy: actor,
+      ...(reason ? { reason } : {}),
+    };
+    const sessionId = typeof doc.sessionId === "string" ? doc.sessionId : `external:${item.sessionId}`;
+    await invoke("notes_canvas_mutate", {
+      id: item.canvasKey,
+      session_id: sessionId,
+      mutation_id: safeRandomId("web-review-"),
+      actor,
+      workspace_ref: { kind: "note-session", ref: sessionId },
+      actor_ref: { kind: "browser", ref: actor },
+      base_revision: head?.revision ?? (typeof doc.revision === "number" ? doc.revision : 0),
+      patch: { upsert_cards: [card] },
+    });
+  };
+  try {
+    await writeOnce();
+  } catch (firstError) {
+    try {
+      await writeOnce();
+    } catch {
+      throw firstError;
+    }
+  }
+}

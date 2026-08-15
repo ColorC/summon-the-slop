@@ -5,12 +5,25 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <link rel="icon" href="data:," />
     <title>overlay-shell 笔记</title>
+    <script>
+      (function () {
+        var requested = new URLSearchParams(location.search).get("theme") || "";
+        var workshop = requested === "workshop" || requested === "warm";
+        document.documentElement.dataset.notesTheme = workshop ? "workshop" : "omni";
+        document.documentElement.style.colorScheme = workshop ? "light" : "dark";
+        document.documentElement.style.background = workshop ? "#F7F3EB" : "#0b1830";
+      })();
+    </script>
     <style>
       html,
       body {
         margin: 0;
         height: 100%;
-        background: #0f1115;
+        background: #0b1830;
+      }
+      html[data-notes-theme='workshop'],
+      html[data-notes-theme='workshop'] body {
+        background: #F7F3EB;
       }
       #app {
         height: 100%;
@@ -25,10 +38,16 @@
         gap: 10px;
         color: #dbe7f5;
         font: 14px/1.5 system-ui, sans-serif;
-        background: #0b1830;
+        background: inherit;
+      }
+      html[data-notes-theme='workshop'] .notes-boot {
+        color: #332D27;
       }
       .notes-boot small {
         color: #7890ad;
+      }
+      html[data-notes-theme='workshop'] .notes-boot small {
+        color: #9A8B7D;
       }
       .notes-boot-spinner {
         width: 22px;

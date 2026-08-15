@@ -21,6 +21,24 @@ let activeSocket: WebSocket | null = null;
 let openingSocket: Promise<WebSocket> | null = null;
 let nextRequestId = 0;
 
+function bridgeOptions(): { prefix: string; httpOnly: boolean } {
+  if (typeof location === "undefined") return { prefix: "", httpOnly: false };
+  const params = new URLSearchParams(location.search);
+  const candidate = params.get("bridge_prefix") ?? "";
+  const safePrefix = /^\/(?:[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*)?$/.test(candidate)
+    && !candidate.split("/").includes("..")
+    ? candidate.replace(/\/$/, "")
+    : "";
+  return {
+    prefix: safePrefix,
+    httpOnly: params.get("notes_transport") === "http",
+  };
+}
+
+function bridgePath(suffix: string): string {
+  return `${bridgeOptions().prefix}${suffix}`;
+}
+
 function rejectPending(error: Error): void {
   for (const request of pending.values()) {
     clearTimeout(request.timeout);
@@ -50,7 +68,7 @@ function receiveBridgeMessage(event: MessageEvent): void {
 
 function websocketUrl(): string {
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-  return `${scheme}//${location.host}/lofa/overlay/invoke-ws`;
+  return `${scheme}//${location.host}${bridgePath("/lofa/overlay/invoke-ws")}`;
 }
 
 function ensureSocket(): Promise<WebSocket> {
@@ -111,7 +129,7 @@ async function invokeHttp<T>(
   command: string,
   args: Record<string, unknown>,
 ): Promise<T> {
-  const response = await fetch("/lofa/overlay/invoke", {
+  const response = await fetch(bridgePath("/lofa/overlay/invoke"), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ cmd: command, args }),
@@ -163,6 +181,7 @@ export async function webNotesInvoke<T>(
   args: Record<string, unknown> = {},
   timeoutMs = 15_000,
 ): Promise<T> {
+  if (bridgeOptions().httpOnly) return invokeHttp<T>(command, args);
   try {
     return await invokeWebSocket<T>(command, args, timeoutMs);
   } catch (error) {

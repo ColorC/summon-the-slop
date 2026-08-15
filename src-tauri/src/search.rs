@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -31,6 +31,11 @@ static INDEX: Mutex<Option<Vec<Entry>>> = Mutex::new(None); // 旧引擎/合成�
 static ARENA: std::sync::RwLock<Option<arena::Index>> = std::sync::RwLock::new(None);
 static BUILDING: AtomicBool = AtomicBool::new(false);
 static WATCHING: AtomicBool = AtomicBool::new(false);
+// The whole-disk arena is intentionally cold by default. On this machine the ~489MB
+// persisted file expands to roughly 1.2GB once its derived lookup tables are rebuilt.
+static LAST_SEARCH_SECS: AtomicU64 = AtomicU64::new(0);
+static IDLE_REAPER_RUNNING: AtomicBool = AtomicBool::new(false);
+const DEFAULT_SEARCH_IDLE_UNLOAD_SECS: u64 = 300;
 // RENAME_OLD_NAME→RENAME_NEW_NAME 配对暂存(FIFO): Windows 后端把改名拆成 From/To 两个独立事件,
 // 各自只带一个 path, 要在这攒起来配对后走 rename_path 原地改行(见 apply_events)。万一 To 没等到
 // (批次边界切开/进程重启), 留在这也无妨 —— 不阻塞索引, 随下次全量重建自愈。
@@ -768,36 +773,77 @@ pub fn warm_index() {
     crate::tags::sweep_orphans(14); // 14 天宽限后清理失踪文件的标签
 }
 
-// startup: load the persisted arena instantly (search works on the 1st keystroke),
-// then do a full fresh walk in the background and swap it in.
-pub fn warm_start() {
-    if ARENA.read().unwrap().is_none() {
-        if let Some(aidx) = load_arena_or_migrate() {
-            *ARENA.write().unwrap() = Some(aidx);
-        }
-    }
-    let loaded = ARENA.read().unwrap().as_ref().map(|a| a.len()).unwrap_or(0);
-    // 提权时(MFT 能建全量)→ 刷新重建; 非提权但已载入索引(很可能是更全的 MFT 索引)→ 跳过遍历重walk:
-    // 它既会被上面的"不覆盖"守卫丢弃, 又白费 ~50s/1.8GB。靠实时监听刷新工作目录, 全量靠管理员「全量重建」。
-    if loaded == 0 || crate::is_elevated() {
-        warm_index();
-    } else {
-        ilog(&format!(
-            "[life] warm_start: 已载入 {} 行, 非提权 → 跳过遍历重walk(保全量; 刷新靠实时监听 + 管理员「全量重建」)",
-            loaded
-        ));
-    }
-    start_watchers();
-    start_periodic_refresh();
-    // 全盘实时新鲜度: 常驻 USN journal tail daemon(白名单外的地方靠它秒级新鲜, 而不是等 2 小时一次
-    // 的全量重建)。提权不可用/被拦截时它自己不试, 不影响上面两条既有兜底。
-    #[cfg(windows)]
-    crate::ensure_usn_daemon();
+// 当前活跃索引的行数(0 = 还没载入)。全盘索引默认只驻留在磁盘上。
+fn idle_unload_secs() -> u64 {
+    std::env::var("OMNI_SEARCH_IDLE_UNLOAD_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&v| v >= 30)
+        .unwrap_or(DEFAULT_SEARCH_IDLE_UNLOAD_SECS)
 }
 
-// 当前活跃索引的行数(0 = 还没载入)。用于判断"是否已有全量索引"。
+fn touch_search() {
+    LAST_SEARCH_SECS.store(now_secs().max(0) as u64, Ordering::Release);
+}
+
+fn start_idle_reaper() {
+    if IDLE_REAPER_RUNNING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    std::thread::spawn(|| {
+        let idle_secs = idle_unload_secs();
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(15));
+            let now = now_secs().max(0) as u64;
+            let last = LAST_SEARCH_SECS.load(Ordering::Acquire);
+            if now.saturating_sub(last) < idle_secs {
+                continue;
+            }
+            let mut arena = ARENA.write().unwrap();
+            // A search may have arrived while this thread waited for the write lock.
+            let last = LAST_SEARCH_SECS.load(Ordering::Acquire);
+            if now.saturating_sub(last) < idle_secs {
+                continue;
+            }
+            if arena.take().is_some() {
+                *INDEX.lock().unwrap() = None;
+                arena::clear_narrow_cache();
+                ilog(&format!(
+                    "[life] global search idle for {idle_secs}s; released in-memory arena"
+                ));
+            }
+            IDLE_REAPER_RUNNING.store(false, Ordering::Release);
+            return;
+        }
+    });
+}
+
+fn load_index_on_demand() {
+    let t = std::time::Instant::now();
+    if let Some(aidx) = load_arena_or_migrate() {
+        let n = aidx.len();
+        *ARENA.write().unwrap() = Some(aidx);
+        ilog(&format!(
+            "[life] lazy-loaded global search index: {n} rows in {:?}, mem={}MB",
+            t.elapsed(),
+            crate::proc_mem_mb()
+        ));
+    } else {
+        // First use without a persisted index builds it then, never at app startup.
+        warm_index();
+    }
+    if current_len() > 0 {
+        start_idle_reaper();
+    }
+}
+
 pub fn current_len() -> usize {
     ARENA.read().unwrap().as_ref().map(|a| a.len()).unwrap_or(0)
+}
+
+/// Number of rows available on disk without loading the arena.
+pub fn persisted_len() -> usize {
+    disk_index_len() as usize
 }
 
 // Whole drives can't be cheaply watched live (no admin → no USN journal), so areas outside the
@@ -1543,9 +1589,10 @@ fn parse_query(q: &str) -> (String, Vec<String>, Vec<String>) {
     (text, terms, tags)
 }
 
-/// 搜索入口(arena 引擎)。索引未就绪 → 后台预热并先返回空(下一次按键即有结果)。
+/// 搜索入口(arena 引擎)。索引未就绪 → 后台从磁盘加载；前端等待 ready 后自动重试。
 #[tauri::command]
 pub fn search(query: String, limit: usize) -> Vec<SearchHit> {
+    touch_search();
     {
         let g = ARENA.read().unwrap();
         if let Some(idx) = g.as_ref() {
@@ -1554,11 +1601,16 @@ pub fn search(query: String, limit: usize) -> Vec<SearchHit> {
     }
     if !BUILDING.swap(true, Ordering::SeqCst) {
         std::thread::spawn(|| {
-            warm_index();
+            load_index_on_demand();
             BUILDING.store(false, Ordering::SeqCst);
         });
     }
     Vec::new()
+}
+
+#[tauri::command]
+pub fn search_index_ready() -> bool {
+    ARENA.read().unwrap().is_some()
 }
 
 // 旧引擎(读 Vec<Entry> INDEX): 切到 arena 后不再是生产入口, 仅供 --bench-search 断言与 --arena-verify 对比。
@@ -1735,9 +1787,13 @@ pub fn legacy_search(query: String, limit: usize) -> Vec<SearchHit> {
 
 #[tauri::command]
 pub fn search_reindex() {
+    touch_search();
     if !BUILDING.swap(true, Ordering::SeqCst) {
         std::thread::spawn(|| {
             warm_index();
+            if current_len() > 0 {
+                start_idle_reaper();
+            }
             BUILDING.store(false, Ordering::SeqCst);
         });
     }
@@ -1833,10 +1889,18 @@ pub fn mem_cli() {
 }
 
 /// 把磁盘上的持久化索引热换进 INDEX(提权重建完成后, 运行中的普通 poof 据此立刻吃上新索引, 不必重启)。
-pub fn reload_persisted() -> Option<usize> {
+pub fn refresh_after_reindex() -> Option<usize> {
+    // Reindexing a cold app must not turn it into a 1.2GB resident process. Hot search
+    // sessions swap in the fresh file; cold sessions leave the fresh index on disk.
+    if ARENA.read().unwrap().is_none() {
+        let n = persisted_len();
+        return (n > 0).then_some(n);
+    }
     let aidx = load_arena_or_migrate()?;
     let n = aidx.len();
     *ARENA.write().unwrap() = Some(aidx);
+    touch_search();
+    start_idle_reaper();
     Some(n)
 }
 

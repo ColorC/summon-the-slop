@@ -398,7 +398,7 @@ fn request_full_reindex(app: tauri::AppHandle, force: bool) -> Result<String, St
         use windows_sys::Win32::System::Threading::WaitForSingleObject;
 
         let state = mft_state_read();
-        let have_full = crate::search::current_len() >= 8_000_000; // 已有 MFT 级全量索引
+        let have_full = crate::search::persisted_len() >= 8_000_000; // 已有 MFT 级全量磁盘索引
         if !force {
             // 已有全量索引且已定论(成功/被 EDR 拦)→ 不再触发。但若索引还不全(从没建过, 或被非提权遍历
             // 覆盖过)则即便 state=ok 也要重建 —— 自动恢复全量。取消累计 ≥3 次仍停(避免无谓重试)。
@@ -417,7 +417,7 @@ fn request_full_reindex(app: tauri::AppHandle, force: bool) -> Result<String, St
                 WaitForSingleObject(hproc, 600_000);
                 CloseHandle(hproc);
             }
-            let n = crate::search::reload_persisted().unwrap_or(0);
+            let n = crate::search::refresh_after_reindex().unwrap_or(0);
             // 读重建日志, 看是否真走了 MFT(管理员) —— 公司 EDR 可能连管理员都拦卷。
             let log = std::fs::read_to_string(std::env::temp_dir().join("overlay-shell-reindex.log"))
                 .unwrap_or_default();
@@ -1191,29 +1191,9 @@ pub fn run() {
         .manage(pty::PtyState::default())
         .setup(|app| {
             let handle = app.handle().clone();
-            // 存全局 AppHandle, 供后台线程(periodic refresh / 启动自动全量)触发 reindex + emit。
+            // 存全局 AppHandle, 供显式全量重建完成后 emit。
             let _ = APP_HANDLE.set(handle.clone());
-            // warm the file-search index: load persisted instantly, then refresh in bg
-            std::thread::spawn(|| search::warm_start());
-            // 自动全量: 非提权且尚无全量索引(从没建过 / 被遍历覆盖过)→ 启动后静默触发提权子进程走 MFT
-            // 建全量(本机 runas 无弹窗, 落用户会话)。一次到位且持久(不覆盖守卫保住), 无需任何按钮。
-            #[cfg(windows)]
-            {
-                let h = app.handle().clone();
-                std::thread::spawn(move || {
-                    // 先等持久化索引在 warm_start 里载入(它在另一线程), 最多等 ~60s。
-                    for _ in 0..120 {
-                        if crate::search::current_len() > 0 {
-                            break;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(500));
-                    }
-                    if !is_elevated() && crate::search::current_len() < 8_000_000 {
-                        log_line("[life] 启动自动全量: 索引未达全量 → 静默提权 MFT 重建");
-                        let _ = request_full_reindex(h, false);
-                    }
-                });
-            }
+            // 全盘索引默认只留在磁盘；首次真实搜索才加载，空闲后再释放。
             // warm the file-tag store (path→tags) so the first keystroke already weights tags
             std::thread::spawn(|| tags::warm());
             // P2: localhost HTTP collector for the 录像 extensions (own thread, blocking accept).
@@ -1372,6 +1352,7 @@ pub fn run() {
             notesstore::notes_version_del_one,
             notesstore::notes_version_del_all,
             search::search,
+            search::search_index_ready,
             search::search_reindex,
             request_full_reindex,
             icon::file_icon,

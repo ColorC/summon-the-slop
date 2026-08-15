@@ -16,6 +16,7 @@ use crate::mft::{self, Nodes, MASK};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::read_unaligned;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::System::Ioctl::{
@@ -31,6 +32,31 @@ use windows::Win32::System::Threading::{
 const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 const STILL_ACTIVE: u32 = 259;
 const BATCH_INTERVAL: Duration = Duration::from_millis(500);
+const PUSH_BACKOFF_MAX_SECS: u64 = 60;
+
+// One reusable HTTP pool per drive thread. Building an Agent for every 500 ms
+// batch disables keep-alive and left hundreds of loopback sockets in TIME_WAIT.
+thread_local! {
+    static PUSH_AGENT: ureq::Agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_millis(800))
+        .timeout_read(Duration::from_millis(2000))
+        .build();
+}
+
+static PUSH_FAILURES: AtomicU32 = AtomicU32::new(0);
+static PUSH_RETRY_AFTER_MS: AtomicU64 = AtomicU64::new(0);
+static PUSH_LAST_ERROR_LOG_MS: AtomicU64 = AtomicU64::new(0);
+
+fn unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+fn push_backoff_secs(failures: u32) -> u64 {
+    (1u64 << failures.saturating_sub(1).min(6)).min(PUSH_BACKOFF_MAX_SECS)
+}
 
 // 推给 /usn/batch 的一条变更, 序列化后要和 search.rs 的 UsnOp(内部标签 "op") 对得上。
 #[derive(serde::Serialize)]
@@ -254,6 +280,13 @@ fn flush(batch: &mut Vec<Op>) {
     if batch.is_empty() {
         return;
     }
+    let now_ms = unix_millis();
+    if now_ms < PUSH_RETRY_AFTER_MS.load(Ordering::Relaxed) {
+        // The periodic full rebuild is the recovery path. Do not retain an
+        // unbounded change backlog while the collector is unavailable.
+        batch.clear();
+        return;
+    }
     let ops = std::mem::take(batch);
     let n = ops.len();
     let Some(token) = read_token() else {
@@ -264,17 +297,41 @@ fn flush(batch: &mut Vec<Op>) {
         Ok(s) => s,
         Err(_) => return,
     };
-    let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_millis(800))
-        .timeout_read(Duration::from_millis(2000))
-        .build();
-    if let Err(e) = agent
-        .post("http://127.0.0.1:8732/usn/batch")
-        .set("Content-Type", "application/json")
-        .set("Authorization", &format!("Bearer {token}"))
-        .send_string(&body)
-    {
-        crate::search::ilog(&format!("[usn] 推送 {n} 条变更失败: {e}(下一批照常继续, 靠周期全量重建自愈)"));
+    let result = PUSH_AGENT.with(|agent| {
+        agent
+            .post("http://127.0.0.1:8732/usn/batch")
+            .set("Content-Type", "application/json")
+            .set("Authorization", &format!("Bearer {token}"))
+            .send_string(&body)
+    });
+    if let Err(e) = result {
+        let failures = PUSH_FAILURES.fetch_add(1, Ordering::Relaxed) + 1;
+        let retry_secs = push_backoff_secs(failures);
+        PUSH_RETRY_AFTER_MS.store(now_ms + retry_secs * 1000, Ordering::Relaxed);
+
+        let last_log = PUSH_LAST_ERROR_LOG_MS.load(Ordering::Relaxed);
+        if last_log == 0 || now_ms.saturating_sub(last_log) >= 30_000 {
+            PUSH_LAST_ERROR_LOG_MS.store(now_ms, Ordering::Relaxed);
+            crate::search::ilog(&format!(
+                "[usn] 推送 {n} 条变更失败: {e}; {retry_secs}s 后重试(期间合并批次)"
+            ));
+        }
+    } else {
+        PUSH_FAILURES.store(0, Ordering::Relaxed);
+        PUSH_RETRY_AFTER_MS.store(0, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::push_backoff_secs;
+
+    #[test]
+    fn push_failures_back_off_and_cap() {
+        assert_eq!(push_backoff_secs(1), 1);
+        assert_eq!(push_backoff_secs(2), 2);
+        assert_eq!(push_backoff_secs(7), 60);
+        assert_eq!(push_backoff_secs(99), 60);
     }
 }
 

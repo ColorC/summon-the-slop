@@ -19,6 +19,9 @@ installDoubleCtrlForwarder();
       case "search":
       case "file_inspect":
         return webNotesInvoke(cmd, args);
+      case "search_index_ready":
+        // The browser bridge does not own the desktop process' lazy arena lifecycle.
+        return Promise.resolve(true);
       case "nb_pending":
       case "nb_respond":
         return webNotesInvoke(cmd, args);

@@ -10,6 +10,16 @@ html, body {
   font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
 }
 
+/* Transparent Tauri windows need an explicit hit surface while idle; otherwise
+   pointer-events:none on the canvases lets clicks fall through to the desktop. */
+#inputSurface {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: auto;
+  background: transparent;
+}
+
 #screen, #anno {
   position: fixed;
   inset: 0;

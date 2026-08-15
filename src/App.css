@@ -695,6 +695,33 @@ body,
   }
 }
 
+.pf-notes-workspace {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  pointer-events: auto;
+  background: #0b1830;
+}
+.pf-notes-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 30;
+  width: 32px;
+  height: 32px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid rgba(235, 245, 255, 0.35);
+  border-radius: 0;
+  color: #eef4ff;
+  background: #133163;
+  cursor: pointer;
+}
+.pf-notes-close:hover {
+  border-color: rgba(235, 245, 255, 0.75);
+  background: #173a72;
+}
+
 /* ===== panel system (#1): draggable / resizable panels in the middle stage ===== */
 .pf-stage {
   position: fixed;

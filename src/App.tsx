@@ -24,7 +24,8 @@ import { SearchBar } from "./regions/SearchBar";
 import { Notifications } from "./regions/Notifications";
 import { TerminalBar } from "./regions/TerminalBar";
 import { ProjectSurface, ReviewSurface } from "./surfaces";
-import { NotesWorkspace } from "./regions/NotesWorkspace";
+import { MaterialNotesWorkspace } from "./regions/MaterialNotesWorkspace";
+import { applyNotesAppearance } from "./regions/notesAppearance";
 import { DockStage, PersistentChatDock, type PanelKind } from "./panels";
 import GoalsSurface from "./goalsSurface";
 import PinnedSurface from "./pinnedSurface";
@@ -319,7 +320,10 @@ export default function App() {
 
   const isOpen = (k: PanelKind) => open.includes(k);
   const openPanel = useCallback(
-    (k: PanelKind) => setOpen((o) => (o.includes(k) ? o : [...o, k])),
+    (k: PanelKind) => {
+      if (k === "notes") applyNotesAppearance("omni");
+      setOpen((o) => (o.includes(k) ? o : [...o, k]));
+    },
     []
   );
   const closePanel = useCallback((k: PanelKind) => setOpen((o) => o.filter((x) => x !== k)), []);
@@ -372,9 +376,12 @@ export default function App() {
     hide();
   }, [hide]);
 
-  // Ctrl+Alt+N (Rust) shows main + emits open-notes → open the fullscreen 笔记 workspace.
+  // Ctrl+Alt+N (Rust) shows main + emits open-notes → open the fullscreen 札记 workspace.
   useEffect(() => {
-    const un = listen("open-notes", () => openPanel("notes"));
+    const un = listen("open-notes", () => {
+      applyNotesAppearance("omni");
+      openPanel("notes");
+    });
     return () => { un.then((f) => f()).catch(() => {}); };
   }, [openPanel]);
 
@@ -415,7 +422,7 @@ export default function App() {
 
   function panelContent(k: PanelKind) {
     if (k === "clips") return <ContentManager />;
-    if (k === "notes") return <NotesWorkspace embedded onClose={() => closePanel("notes")} />;
+    if (k === "notes") return null;
     return (
       <div className="pf-scroll">
         {k === "project" ? <ProjectSurface /> : k === "goals" ? <GoalsSurface /> : k === "pinned" ? <PinnedSurface /> : <ReviewSurface />}
@@ -433,12 +440,20 @@ export default function App() {
       {/* middle band — real dock: panels are flush-to-edge, full-height sidebars
           (left / right) with a drag-sash on the inner seam, or floating cards. */}
       <DockStage
-        open={open.filter((k) => k !== "chat")}
+        open={open.filter((k) => k !== "chat" && k !== "notes")}
         pinned={pinned}
         onPin={togglePin}
         onClose={closePanel}
         renderContent={panelContent}
       />
+      {isOpen("notes") && (
+        <div className="pf-notes-workspace" data-testid="overlay-notes-workspace" onMouseDown={(e) => e.stopPropagation()}>
+          <button type="button" className="pf-notes-close" onClick={() => closePanel("notes")} title="关闭札记" aria-label="关闭札记">
+            <X size={16} />
+          </button>
+          <MaterialNotesWorkspace />
+        </div>
+      )}
 
       {/* 对话 / 终端 — 常驻挂载(不进 DockStage), 关面板/召出只隐藏不卸载, 终端与对话会话一直保留 */}
       <PersistentChatDock open={isOpen("chat")} onClose={() => closePanel("chat")}>

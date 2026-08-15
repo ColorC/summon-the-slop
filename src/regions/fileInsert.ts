@@ -78,7 +78,7 @@ export async function insertFileIntoNote(
   doc: any,
   path: string,
   name?: string,
-  opts?: { raw?: boolean }
+  opts?: { raw?: boolean; xywh?: string }
 ): Promise<string | null> {
   const fileName = name || (path.replace(/\\/g, "/").split("/").pop() ?? path);
   const ext = extOf(fileName) || extOf(path);
@@ -105,6 +105,13 @@ export async function insertFileIntoNote(
     if (kind === "image") {
       const blob = b64ToBlob(await readFileB64(path), IMAGE_MIME[ext] || "image/png");
       const sourceId = await getCollection().blobSync.set(blob as any);
+      // 给了 xywh → 摆上 edgeless 画布(surface, 同 aiblock 范式); 没给 → 照旧插笔记内容区
+      if (opts?.xywh) {
+        const surface = doc.getBlocksByFlavour?.("affine:surface")?.[0];
+        const surfaceId = surface?.model?.id ?? surface?.id;
+        if (!surfaceId) return null;
+        return doc.addBlock("affine:image", { sourceId, xywh: opts.xywh }, surfaceId);
+      }
       return doc.addBlock("affine:image", { sourceId }, noteId);
     }
     // pdf + 其它二进制都走 attachment;只有 pdf 开 embed(内嵌预览)

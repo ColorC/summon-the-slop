@@ -11,6 +11,7 @@
     "check": "tsc --noEmit && cargo test --manifest-path src-tauri/Cargo.toml && cargo test --manifest-path agent-scanner/Cargo.toml"
   },
   "dependencies": {
+    "@omni/material-note-core": "file:../webworks/packages/material-note-core",
     "@blocksuite/affine-shared": "^0.19.5",
     "@blocksuite/blocks": "^0.19.5",
     "@blocksuite/presets": "^0.19.5",
@@ -28,6 +29,7 @@
     "cmdk": "^1.1.1",
     "dockview": "^6.6.1",
     "dompurify": "^3.4.11",
+    "elkjs": "^0.12.0",
     "lucide-react": "^1.21.0",
     "micromark": "^4.0.2",
     "react": "^19.1.0",
