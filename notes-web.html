@@ -79,6 +79,53 @@
         <small>首次打开可能需要几秒</small>
       </div>
     </div>
+    <script>
+      // 启动观测哨(2026-08-16): 模块加载前就开始收集错误; 启动门 9s 未过自动上报到
+      // workshop 收集端, 运维侧不再依赖用户肉眼描述。上报走 /bside 写白名单(Bearer 由代理注入)。
+      (function () {
+        var errors = [];
+        function note(msg) {
+          if (errors.length < 20 && typeof msg === "string") errors.push(msg.slice(0, 500));
+        }
+        window.addEventListener("error", function (e) {
+          note((e && e.message ? e.message : "error") + " @" + (e && e.filename ? e.filename.split("/").pop() : "") + ":" + (e && e.lineno || 0));
+        });
+        window.addEventListener("unhandledrejection", function (e) {
+          note("unhandledrejection: " + String(e && e.reason).slice(0, 300));
+        });
+        var origErr = console.error;
+        console.error = function () {
+          note("console.error: " + Array.prototype.slice.call(arguments).join(" ").slice(0, 400));
+          return origErr.apply(console, arguments);
+        };
+        function report(reason) {
+          try {
+            fetch("/bside/api/client-boot-report", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              keepalive: true,
+              body: JSON.stringify({
+                at: new Date().toISOString(),
+                reason: reason,
+                href: location.href,
+                ua: navigator.userAgent,
+                errors: errors,
+                gateState: document.querySelector("[data-notes-boot]") ?
+                  document.querySelector("[data-notes-boot]").getAttribute("data-notes-boot") : "gone",
+              }),
+            }).catch(function () {});
+          } catch (e) { /* 上报失败静默 */ }
+        }
+        window.__notesBootReport = report;
+        setTimeout(function () {
+          var gate = document.querySelector("[data-notes-boot]");
+          if (gate && gate.getAttribute("data-notes-boot") === "loading") {
+            gate.querySelector("small").textContent = "加载时间过长 — 正在上报诊断，可尝试强制刷新（Ctrl+F5）";
+            report("gate-timeout-9s");
+          }
+        }, 9000);
+      })();
+    </script>
     <script type="module" src="/src/notes-web.tsx"></script>
   </body>
 </html>

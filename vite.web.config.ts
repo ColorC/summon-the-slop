@@ -32,9 +32,11 @@ export default defineConfig({
       },
       preserveEntrySignatures: "strict",
       output: {
+        // 主入口带哈希(2026-08-16): 固定文件名 + 浏览器 304 缓存会在部署交界处造成
+        // "新 html 配旧 js" 的版本错配 → 启动崩死在加载门且无可见报错(远端卡死根因嫌疑)。
         entryFileNames: (chunk) => chunk.name === "notes-embed"
           ? "assets/notes-embed.js"
-          : "assets/notes-web.js",
+          : "assets/notes-web-[hash].js",
         chunkFileNames: "assets/[name]-[hash].js",
         assetFileNames: "assets/[name][extname]",
       },
