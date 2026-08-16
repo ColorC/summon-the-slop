@@ -559,7 +559,14 @@ mod hook {
             // a "tap" if no other key was pressed while it was held — so Ctrl+C, Ctrl+Alt+A etc. don't count.
             if down {
                 if is_ctrl(vk) {
-                    if !CTRL_HELD.swap(true, Ordering::SeqCst) { DIRTY.store(false, Ordering::SeqCst); }
+                    if !CTRL_HELD.swap(true, Ordering::SeqCst) {
+                        DIRTY.store(false, Ordering::SeqCst);
+                    } else {
+                        // 上一次 hold 的 keyup 被丢了(钩子回调超时被系统跳过 / EDR 拦截) → CTRL_HELD 卡在
+                        // true, 之后所有 Ctrl 点击永远不算 tap("按不出来")。这里自愈: 视为新一轮 hold。
+                        CTRL_HELD.store(true, Ordering::SeqCst);
+                        DIRTY.store(false, Ordering::SeqCst);
+                    }
                 } else {
                     DIRTY.store(true, Ordering::SeqCst);
                 }
@@ -842,15 +849,35 @@ fn fit_main(main: &tauri::WebviewWindow) {
 fn summon_main(app: &tauri::AppHandle, restore_floats: bool) {
     use tauri::{Emitter, Manager};
     let Some(main) = app.get_webview_window("main") else { return };
-    if main.is_visible().unwrap_or(false) && !restore_floats {
-        let _ = main.hide(); // double-tap while it's already up → tuck it away
+    // 可见性以 Win32 为准并落日志: tauri is_visible() 在反复 show/hide 后可能返回陈旧缓存,
+    // 误报"未显示"会把收起路径退化成再次 show —— 菜单变成只进不出的全屏陷阱(2026-08-16 桌面卡死)。
+    let os_visible = main
+        .hwnd()
+        .map(|h| unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible(h.0 as isize) != 0
+        })
+        .unwrap_or_else(|_| main.is_visible().unwrap_or(false));
+    log_line(&format!(
+        "[menu] summon restore={restore_floats} os_visible={os_visible} cached={:?}",
+        main.is_visible()
+    ));
+    if os_visible && !restore_floats {
+        log_line(&format!("[menu] tuck hide={:?}", main.hide())); // double-tap while it's already up → tuck it away
         return;
     }
     let _ = main.unminimize();
     fit_main(&main); // 改分辨率/缩放后窗口尺寸会过时, 召出前重新贴合
-    let _ = main.show();
+    let shown = main.show();
     let _ = main.set_always_on_top(true);
-    let _ = main.set_focus();
+    let focused = main.set_focus();
+    log_line(&format!(
+        "[menu] present show={:?} focus={:?} os_visible_after={}",
+        shown,
+        focused,
+        main.hwnd()
+            .map(|h| unsafe { windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible(h.0 as isize) != 0 })
+            .unwrap_or(false)
+    ));
     // payload = full?  双击Ctrl(false) → 干净搜索(收起侧栏面板);三击Ctrl(true) → 还原面板
     let _ = app.emit("summon", restore_floats);
     // ONLY touch floats that are actually open. A hidden/never-shown window must be left hidden —
@@ -1294,6 +1321,7 @@ pub fn run() {
                             }
                             Ok(hook::Sig::CtrlTap) => {
                                 taps += 1;
+                                log_line(&format!("[menu] CtrlTap #{taps}"));
                                 if taps >= 3 {
                                     taps = 0;
                                     let h = handle.clone();
