@@ -48,6 +48,8 @@ export interface ReviewItemData {
   /** 文本卡正文材料 id(内联摘要预取用) */
   editableId: string | null;
   submission: CardSubmission;
+  /** 画布所属域(canvas-domain 架构, 2026-08-16): builtin/workshop...; 缺省按 workshop 处理。 */
+  domain?: string;
 }
 
 /** 全模态内联预览(M1b 定稿): image/audio/video/pdf 直接渲, 文本预取摘要, 其它给类型签。
