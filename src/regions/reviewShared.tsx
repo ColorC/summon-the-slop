@@ -59,6 +59,9 @@ export function ReviewThumb({ item, fetchText, variant = "thumb" }: {
 }) {
   const full = variant === "full";
   const [snippet, setSnippet] = useState<string | null>(null);
+  // 换目标必须重取: 组件实例在列表/详情间复用, snippet!==null 守卫会拦住新目标的取文
+  // (2026-08-16 审阅台串台实测) —— 先按目标键清空, 守卫只负责同一目标去重。
+  useEffect(() => { setSnippet(null) }, [item.editableId])
   useEffect(() => {
     if (item.kind !== "text" || !item.editableId || snippet !== null) return;
     let live = true;
