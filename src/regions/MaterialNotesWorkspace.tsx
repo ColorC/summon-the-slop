@@ -2559,13 +2559,40 @@ export function MaterialNotesWorkspace({
     .sort((a, b) => String(b.submission.submittedAt).localeCompare(String(a.submission.submittedAt)));
 
   const loadGlobalReview = useCallback(async () => {
-    // 真源: GET /lofa/overlay/review-queue(material 契约聚合); 老进程没这端点(未重启)则 invoke 桥逐画布兜底
+    // 真源(M4 后): GET /bside/api/review/inbox(workshop 画布存储, 同源代理); 取不到则 invoke 桥逐画布兜底。
+    // 旧 /lofa/overlay/review-queue 读 dashboard 侧画布存储, M4 提交换源后恒空, 已弃。
     let rows: Record<string, unknown>[] | null = null;
     try {
-      const resp = await fetch("/lofa/overlay/review-queue");
+      const resp = await fetch("/bside/api/review/inbox");
       if (resp.ok) {
         const payload = await resp.json();
-        if (payload?.ok && Array.isArray(payload.items)) rows = payload.items;
+        if (Array.isArray(payload?.unread)) {
+          rows = payload.unread.map((entry: Record<string, unknown>) => {
+            const canvas = String(entry.canvas ?? "");
+            let pty = "";
+            if (canvas.startsWith("session-")) {
+              try {
+                const decoded = atob(canvas.slice("session-".length).replace(/-/g, "+").replace(/_/g, "/"));
+                if (decoded.startsWith("external:")) pty = decoded.slice("external:".length);
+              } catch { /* 非标准编码 */ }
+            }
+            return {
+              canvas,
+              card: entry.cardId,
+              title: entry.title,
+              canvasTitle: entry.canvasTitle,
+              session_id: pty,
+              kind: "",
+              adapter: "",
+              source: null,
+              submission: {
+                state: entry.state ?? "unreviewed",
+                submittedAt: entry.submittedAt,
+                submittedBy: entry.origin ?? "",
+              },
+            };
+          });
+        }
       }
     } catch { /* 落桥兜底 */ }
     const items: ReviewItemData[] = [];
